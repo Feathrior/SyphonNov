@@ -34,8 +34,7 @@ double gaussRand([double mean = 0, double std = 1]) {
   while (v == 0) {
     v = _rand.nextDouble();
   }
-  return mean +
-      std * math.sqrt(-2 * math.log(u)) * math.cos(2 * math.pi * v);
+  return mean + std * math.sqrt(-2 * math.log(u)) * math.cos(2 * math.pi * v);
 }
 
 class XY {
@@ -237,7 +236,9 @@ List<Bin> histogram(List<double> values, int bins) {
     counts[idx]++;
   }
   return List.generate(
-      b, (i) => Bin(mn + i * step, mn + (i + 1) * step, counts[i]));
+    b,
+    (i) => Bin(mn + i * step, mn + (i + 1) * step, counts[i]),
+  );
 }
 
 String fmt(double v, [int digits = 4]) {
@@ -260,7 +261,6 @@ double Function(double x, double y)? compileFormula(String src) {
       .replaceAll('abs', 'ABS')
       .replaceAll(RegExp('pi', caseSensitive: false), 'PI')
       .replaceAll('e', 'E');
-  s = s.replaceAll(RegExp(r'(\d)\s*\*\s*'), r'$1*');
   try {
     final parser = _ExprParser(s);
     final fn = parser.parse();
@@ -286,7 +286,9 @@ class _ExprParser {
 
   double Function(double, double) _parseExpr() {
     var left = _parseTerm();
-    while (_pos < src.length) {
+    while (true) {
+      _skipWs(); // 运算符前允许空格(修复 '4 - x' 被解析成常数 4 的问题)
+      if (_pos >= src.length) break;
       final ch = src[_pos];
       if (ch == '+' || ch == '-') {
         _pos++;
@@ -306,9 +308,17 @@ class _ExprParser {
 
   double Function(double, double) _parseTerm() {
     var left = _parseFactor();
-    while (_pos < src.length) {
+    while (true) {
+      _skipWs(); // 运算符前允许空格
+      if (_pos >= src.length) break;
       final ch = src[_pos];
-      if (ch == '*' || ch == '/') {
+      if (ch == '*' && _pos + 1 < src.length && src[_pos + 1] == '*') {
+        // 幂(优先于单个乘号检测)
+        _pos += 2;
+        final right = _parseFactor();
+        final l = left;
+        left = (x, y) => math.pow(l(x, y), right(x, y)).toDouble();
+      } else if (ch == '*' || ch == '/') {
         _pos++;
         final right = _parseFactor();
         final l = left;
@@ -317,12 +327,6 @@ class _ExprParser {
         } else {
           left = (x, y) => l(x, y) / right(x, y);
         }
-      } else if (ch == '*' && _pos + 1 < src.length && src[_pos + 1] == '*') {
-        // 幂
-        _pos += 2;
-        final right = _parseFactor();
-        final l = left;
-        left = (x, y) => math.pow(l(x, y), right(x, y)).toDouble();
       } else {
         break;
       }
@@ -356,7 +360,8 @@ class _ExprParser {
       final start = _pos;
       while (_pos < src.length &&
           (src[_pos] == '.' ||
-              ((src[_pos].codeUnitAt(0) >= 0x30 && src[_pos].codeUnitAt(0) <= 0x39)) ||
+              ((src[_pos].codeUnitAt(0) >= 0x30 &&
+                  src[_pos].codeUnitAt(0) <= 0x39)) ||
               src[_pos] == 'e' ||
               src[_pos] == 'E')) {
         _pos++;

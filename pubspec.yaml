@@ -39,6 +39,8 @@ dependencies:
   path_provider: ^2.1.6
   fluent_ui: ^4.16.1
   window_manager: ^0.4.3
+  archive: ^3.6.1
+  xml: ^6.6.1
 
 dev_dependencies:
   flutter_test:

@@ -949,6 +949,8 @@ class GraphStore extends ChangeNotifier {
             ? Map<String, dynamic>.from(raw)
             : <String, dynamic>{};
         var configId = '${n['configId'] ?? ''}';
+        // 旧版"面输入"(3D 网格)已改为"平面输入":加载旧画布时迁移
+        if (configId == 'face_input') configId = 'plane_input';
         if (configId == 'viz_preset') {
           final params = n['params'] is Map ? n['params'] as Map : const {};
           final ct = '${params['chartType'] ?? 'scatter'}';

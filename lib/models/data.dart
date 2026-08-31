@@ -39,8 +39,10 @@ class GradientStop {
 
   Map<String, dynamic> toJson() => {'offset': offset, 'color': color};
 
-  factory GradientStop.fromJson(Map<String, dynamic> j) =>
-      GradientStop(offset: toNum(j['offset']) ?? 0, color: '${j['color'] ?? '#888888'}');
+  factory GradientStop.fromJson(Map<String, dynamic> j) => GradientStop(
+    offset: toNum(j['offset']) ?? 0,
+    color: '${j['color'] ?? '#888888'}',
+  );
 }
 
 /// 热力图默认渐变色带(蓝→青→黄→橙→红)
@@ -62,7 +64,9 @@ List<GradientStop> parseGradient(dynamic v) {
       } else if (s is Map) {
         final color = s['color'];
         if (color is String && color.isNotEmpty) {
-          stops.add(GradientStop(offset: toNum(s['offset']) ?? 0, color: color));
+          stops.add(
+            GradientStop(offset: toNum(s['offset']) ?? 0, color: color),
+          );
         }
       }
     }
@@ -132,6 +136,7 @@ class TableData extends DataObject {
 class SeriesData extends DataObject {
   final String name;
   final List<Pt> points;
+
   /// 线样式(由"表格转曲线"等源节点提供)
   final double? lineWidth;
   final String? lineColor;
@@ -154,6 +159,7 @@ class SeriesData extends DataObject {
 class ScatterData extends DataObject {
   final String name;
   final List<Pt3> points;
+
   /// 点样式(由"表格转散点"等源节点提供)
   final double? pointSize;
   final String? pointColor;
@@ -161,6 +167,7 @@ class ScatterData extends DataObject {
   /// 逐点大小/颜色(由暴露参数接入数据列驱动,与 points 一一对应)
   final List<double>? sizes;
   final List<String>? colors;
+
   /// 逐点形状(由"聚合点输入"等节点提供,与 points 一一对应)
   final List<String>? shapes;
 
@@ -181,7 +188,25 @@ class MeshData extends DataObject {
   final List<Vec3> vertices;
   final List<List<int>> faces;
 
-  MeshData({required this.name, required this.vertices, required this.faces});
+  /// 面样式(由"平面输入"等节点提供;为空时使用渲染层默认)
+  final String? color; // 面填充色
+  final double? opacity; // 面透明度 0~1
+  final bool? showEdge; // 是否绘制边缘线(空白时按渲染层默认:true)
+  final String? edgeColor; // 边缘线颜色(仅 showEdge 时生效,空则同填充色)
+  final bool? wireframe; // 线框模式:true 仅画三角形边线不填充
+  final bool? fill; // 填充面:false 不填充(与 wireframe 独立)
+
+  MeshData({
+    required this.name,
+    required this.vertices,
+    required this.faces,
+    this.color,
+    this.opacity,
+    this.showEdge,
+    this.edgeColor,
+    this.wireframe,
+    this.fill,
+  });
 }
 
 class GridData extends DataObject {
@@ -190,7 +215,12 @@ class GridData extends DataObject {
   final List<double> y;
   final List<List<double>> values;
 
-  GridData({required this.name, required this.x, required this.y, required this.values});
+  GridData({
+    required this.name,
+    required this.x,
+    required this.y,
+    required this.values,
+  });
 }
 
 class DistributionBin {
@@ -206,13 +236,19 @@ class DistributionData extends DataObject {
   final List<DistributionBin> bins;
   final int sampleCount;
 
-  DistributionData({required this.name, required this.bins, required this.sampleCount});
+  DistributionData({
+    required this.name,
+    required this.bins,
+    required this.sampleCount,
+  });
 }
 
 class TextData extends DataObject {
   final String text;
+
   /// 文本大小(厘米,在坐标轴盒语境下与图元同比例)
   final double fontSize;
+
   /// 轴盒内水平位置
   final String halign; // left|center|right
   /// 轴盒内垂直位置
@@ -236,14 +272,22 @@ class TextData extends DataObject {
 class ColorbarData extends DataObject {
   /// 渐变色带停止点
   final List<GradientStop> stops;
+
   /// 色带数值范围(标签显示用)
   final double? min;
   final double? max;
   final String? label;
+
   /// 色带方向:水平(默认) / 垂直
   final bool? horizontal;
 
-  ColorbarData({required this.stops, this.min, this.max, this.label, this.horizontal});
+  ColorbarData({
+    required this.stops,
+    this.min,
+    this.max,
+    this.label,
+    this.horizontal,
+  });
 }
 
 class AxisColors {
@@ -286,6 +330,11 @@ class AxesData extends DataObject {
   final String? axisPreset;
   final AxisArrows? arrows;
 
+  /// 原理化 3D 视角旋转角(度);2D 坐标系下不生效
+  final double rotX;
+  final double rotY;
+  final double rotZ;
+
   AxesData({
     required this.name,
     required this.dim,
@@ -313,6 +362,9 @@ class AxesData extends DataObject {
     required this.fontFamily,
     this.axisPreset,
     this.arrows,
+    this.rotX = -20,
+    this.rotY = 25,
+    this.rotZ = 0,
   });
 }
 
@@ -326,18 +378,29 @@ class PointInput {
   String shape;
   String color;
 
-  PointInput({this.x = 0, this.y = 0, this.size = 4, this.shape = 'circle', this.color = '#1f77b4'});
+  PointInput({
+    this.x = 0,
+    this.y = 0,
+    this.size = 4,
+    this.shape = 'circle',
+    this.color = '#1f77b4',
+  });
 
-  Map<String, dynamic> toJson() =>
-      {'x': x, 'y': y, 'size': size, 'shape': shape, 'color': color};
+  Map<String, dynamic> toJson() => {
+    'x': x,
+    'y': y,
+    'size': size,
+    'shape': shape,
+    'color': color,
+  };
 
   factory PointInput.fromJson(Map<String, dynamic> j) => PointInput(
-        x: j['x'],
-        y: j['y'],
-        size: j['size'],
-        shape: '${j['shape'] ?? 'circle'}',
-        color: '${j['color'] ?? '#1f77b4'}',
-      );
+    x: j['x'],
+    y: j['y'],
+    size: j['size'],
+    shape: '${j['shape'] ?? 'circle'}',
+    color: '${j['color'] ?? '#1f77b4'}',
+  );
 }
 
 class Socket {
@@ -346,13 +409,19 @@ class Socket {
   final SocketType type;
   final bool? multi; // 是否允许多路连接
 
-  const Socket({required this.id, required this.name, required this.type, this.multi});
+  const Socket({
+    required this.id,
+    required this.name,
+    required this.type,
+    this.multi,
+  });
 }
 
 class ParamSpec {
   final String key;
   final String label;
-  final String type; // text|number|select|boolean|color|textarea|range|button|points|gradient
+  final String
+  type; // text|number|select|boolean|color|textarea|range|button|points|gradient
   final dynamic defaultValue;
   final List<Map<String, String>>? options;
   final double? min;
@@ -384,7 +453,11 @@ class ExecContext {
   final Map<String, dynamic> params;
   final Map<String, DataObject?> inputs;
 
-  ExecContext({required this.nodeId, required this.params, required this.inputs});
+  ExecContext({
+    required this.nodeId,
+    required this.params,
+    required this.inputs,
+  });
 }
 
 typedef ExecFn = DataMap Function(ExecContext ctx);
@@ -468,7 +541,11 @@ class ColorPreset {
   final String label;
   final PresetColors colors;
 
-  const ColorPreset({required this.value, required this.label, required this.colors});
+  const ColorPreset({
+    required this.value,
+    required this.label,
+    required this.colors,
+  });
 }
 
 class PresetColors {
@@ -496,49 +573,102 @@ const List<ColorPreset> kColorPresets = [
     value: 'paper',
     label: '论文白(亮色)',
     colors: PresetColors(
-        bg: '#ffffff', point: '#1f77b4', line: '#ff7f0e', face: '#2ca02c', dist: '#9467bd', axis: '#333333', grid: '#d9dee4'),
+      bg: '#ffffff',
+      point: '#1f77b4',
+      line: '#ff7f0e',
+      face: '#2ca02c',
+      dist: '#9467bd',
+      axis: '#333333',
+      grid: '#d9dee4',
+    ),
   ),
   ColorPreset(
     value: 'tech',
     label: '暗色科技',
     colors: PresetColors(
-        bg: '#0b1220', point: '#3b82f6', line: '#f59e0b', face: '#ec4899', dist: '#a78bfa', axis: '#f8fafc', grid: 'rgba(148,163,184,0.18)'),
+      bg: '#0b1220',
+      point: '#3b82f6',
+      line: '#f59e0b',
+      face: '#ec4899',
+      dist: '#a78bfa',
+      axis: '#f8fafc',
+      grid: 'rgba(148,163,184,0.18)',
+    ),
   ),
   ColorPreset(
     value: 'ocean',
     label: '海洋蓝',
     colors: PresetColors(
-        bg: '#02101f', point: '#38bdf8', line: '#818cf8', face: '#22d3ee', dist: '#7dd3fc', axis: '#e0f2fe', grid: 'rgba(125,211,252,0.14)'),
+      bg: '#02101f',
+      point: '#38bdf8',
+      line: '#818cf8',
+      face: '#22d3ee',
+      dist: '#7dd3fc',
+      axis: '#e0f2fe',
+      grid: 'rgba(125,211,252,0.14)',
+    ),
   ),
   ColorPreset(
     value: 'sunset',
     label: '落日橙',
     colors: PresetColors(
-        bg: '#1c0f1c', point: '#fb923c', line: '#fde047', face: '#f472b6', dist: '#fb7185', axis: '#fef3c7', grid: 'rgba(253,224,71,0.12)'),
+      bg: '#1c0f1c',
+      point: '#fb923c',
+      line: '#fde047',
+      face: '#f472b6',
+      dist: '#fb7185',
+      axis: '#fef3c7',
+      grid: 'rgba(253,224,71,0.12)',
+    ),
   ),
   ColorPreset(
     value: 'forest',
     label: '森林绿',
     colors: PresetColors(
-        bg: '#06130c', point: '#4ade80', line: '#a3e635', face: '#2dd4bf', dist: '#86efac', axis: '#ecfccb', grid: 'rgba(163,230,53,0.12)'),
+      bg: '#06130c',
+      point: '#4ade80',
+      line: '#a3e635',
+      face: '#2dd4bf',
+      dist: '#86efac',
+      axis: '#ecfccb',
+      grid: 'rgba(163,230,53,0.12)',
+    ),
   ),
   ColorPreset(
     value: 'neon',
     label: '霓虹紫',
     colors: PresetColors(
-        bg: '#0a0618', point: '#c084fc', line: '#22d3ee', face: '#f0abfc', dist: '#a5b4fc', axis: '#f5d0fe', grid: 'rgba(192,132,252,0.14)'),
+      bg: '#0a0618',
+      point: '#c084fc',
+      line: '#22d3ee',
+      face: '#f0abfc',
+      dist: '#a5b4fc',
+      axis: '#f5d0fe',
+      grid: 'rgba(192,132,252,0.14)',
+    ),
   ),
   ColorPreset(
     value: 'gray',
     label: '灰度',
     colors: PresetColors(
-        bg: '#0a0a0a', point: '#d4d4d8', line: '#a1a1aa', face: '#71717a', dist: '#3f3f46', axis: '#fafafa', grid: 'rgba(244,244,245,0.12)'),
+      bg: '#0a0a0a',
+      point: '#d4d4d8',
+      line: '#a1a1aa',
+      face: '#71717a',
+      dist: '#3f3f46',
+      axis: '#fafafa',
+      grid: 'rgba(244,244,245,0.12)',
+    ),
   ),
 ];
 
 PresetColors presetColors(Map<String, dynamic> params) {
-  final preset = kColorPresets.where((p) => p.value == '${params['colorPreset'] ?? 'paper'}').toList();
-  if (preset.isNotEmpty && preset.first.value != 'custom') return preset.first.colors;
+  final preset = kColorPresets
+      .where((p) => p.value == '${params['colorPreset'] ?? 'paper'}')
+      .toList();
+  if (preset.isNotEmpty && preset.first.value != 'custom') {
+    return preset.first.colors;
+  }
   return PresetColors(
     bg: '${params['bgColor'] ?? '#ffffff'}',
     point: '${params['pointColor'] ?? '#1f77b4'}',

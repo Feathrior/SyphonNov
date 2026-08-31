@@ -25,7 +25,7 @@ Flutter 桌面版重写。用户像搭积木一样把"输入 → 处理 → 可�
   `.csv` / `.xlsx` 等文件**直接拖拽进窗口**,松开左键即在鼠标位置生成已导入数据的
   "表格输入"节点。
 - **数据处理**:数据清洗(缺失值/去重)、标准化、条件筛选、抽样;提取列 / 行;表格与
-  散点 / 曲线 / 分布互转。
+  散点 / 曲线互转。
 - **数据运算**:数值求导、积分、多项式/指数拟合、滑动平均平滑、公式运算。
 - **数据可视化**:散点 / 折线 / 柱状 / 火山 / 热力 / 箱线 / 小提琴 / 桑基 / 网络共 9 类图表,
   全部由 CustomPaint 自绘(无图表库依赖),支持缩放平移与**导出 PNG**。
@@ -39,10 +39,10 @@ Flutter 桌面版重写。用户像搭积木一样把"输入 → 处理 → 可�
 
 | 分类 | 分类名 | 节点 |
 | --- | --- | --- |
-| 组输入 | Input | 表格输入、坐标系输入、文本输入、色带输入、线输入、面输入、网格数据输入、聚合点输入、曲线输入、函数曲线 |
+| 组输入 | Input | 表格输入、坐标系输入、文本输入、色带输入、线输入、平面输入、网格数据输入、聚合点输入、曲线输入、函数曲线 |
 | 数据初步 | Clean | 数据清洗、标准化、条件筛选、数据抽样 |
-| 数据运算 | Compute | 数值求导、数值积分、曲线拟合、平滑、公式运算 |
-| 数据转化 | Transform | 提取列、提取行、表格转散点、表格转曲线、表格转分布、曲线转散点 |
+| 数据运算 | Compute | 数值求导、数值积分、曲线拟合、平滑、公式运算、曲线求交 |
+| 数据转化 | Transform | 提取列、提取行、表格转散点、表格转曲线、曲线转散点、散点转表格 |
 | 数据可视化 | Visualize | 散点图、折线图、柱状图、火山图、热力图、箱线图、小提琴图、桑基图、网络示意图、原理化输出、数据输出 |
 
 ### 快速上手
@@ -128,7 +128,7 @@ automatically** and the figure updates in real time.
   panel; or simply **drag a `.csv` / `.xlsx` file into the window** — releasing the mouse
   creates a "Table Input" node at the drop point, already loaded with the data.
 - **Data processing**: clean (missing values / dedupe), normalize, filter, sample; extract
-  columns / rows; convert table ↔ scatter / series / distribution.
+  columns / rows; convert table ↔ scatter / series.
 - **Data math**: numerical derivative, integral, polynomial/exponential fit, moving-average
   smoothing, formula evaluation.
 - **Visualization**: 9 chart types (scatter, line, bar, volcano, heatmap, box, violin, sankey,
@@ -146,10 +146,10 @@ automatically** and the figure updates in real time.
 
 | Category | Nodes |
 | --- | --- |
-| Input | Table Input, Axis System, Text, Colorbar, Line, Face, Grid, Aggregate Points, Series, Function Curve |
+| Input | Table Input, Axis System, Text, Colorbar, Line, Plane, Grid, Aggregate Points, Series, Function Curve |
 | Clean | Clean, Normalize, Filter, Sample |
-| Compute | Derivative, Integral, Curve Fit, Smooth, Formula |
-| Transform | Extract Columns, Extract Rows, Table→Scatter, Table→Series, Table→Distribution, Series→Scatter |
+| Compute | Derivative, Integral, Curve Fit, Smooth, Formula, Curve Intersect |
+| Transform | Extract Columns, Extract Rows, Table→Scatter, Table→Series, Series→Scatter, Scatter→Table |
 | Visualize | Scatter, Line, Bar, Volcano, Heatmap, Box, Violin, Sankey, Graph, Principled Output, Data Output |
 
 ### Quick Start

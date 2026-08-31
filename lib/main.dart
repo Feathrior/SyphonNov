@@ -164,14 +164,28 @@ class _AppShellState extends State<_AppShell> {
     return ctx.findAncestorWidgetOfExactType<EditableText>() != null;
   }
 
+  /// 全局级快捷键(输入框聚焦时也优先响应的组合键)
+  bool _isGlobalShortcut(KeyEvent event) {
+    final ctrl =
+        HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (!ctrl) return false;
+    final k = event.logicalKey;
+    return k == LogicalKeyboardKey.keyZ || k == LogicalKeyboardKey.keyY;
+  }
+
   /// 全局键盘快捷键(对应 React 版 App.tsx 的 keydown 监听):
   /// Ctrl+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做、Escape 取消选中、Delete/Backspace 删除
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    // 输入框聚焦时不拦截,交由输入框自身处理(文本内 Ctrl+Z/Delete 等)
-    if (_editing()) return KeyEventResult.ignored;
+    // 输入框聚焦时:普通编辑键交还给输入框自身处理(文本内 Ctrl+Z/Delete 等),
+    // 但 Ctrl+Z/Ctrl+Y 属于全局撤销/重做——即使焦点在参数输入框内也优先
+    // 撤销画布/参数操作(修复"改完参数后 Ctrl+Z 无反应")
+    if (_editing() && !_isGlobalShortcut(event)) {
+      return KeyEventResult.ignored;
+    }
 
     final ctrl =
         HardwareKeyboard.instance.isControlPressed ||

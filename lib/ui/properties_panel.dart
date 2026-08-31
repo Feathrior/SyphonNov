@@ -2,8 +2,11 @@
 // (由 React 版 PropertiesPanel.tsx 移植)
 library;
 
+import 'dart:math' as math;
+
 import 'package:file_selector/file_selector.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
+import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 
 import '../models/csv.dart';
@@ -725,45 +728,10 @@ class _ParamControl extends StatelessWidget {
           ),
         );
       case 'number':
-        return _NumField(text: _valStr(v, ''), onChanged: onChanged);
       case 'range':
-        final min = spec.min ?? 0.0;
-        final max = spec.max ?? 1.0;
-        final n = v is num
-            ? v.toDouble()
-            : (spec.defaultValue is num
-                  ? (spec.defaultValue as num).toDouble()
-                  : min);
-        final step = spec.step;
-        return Row(
-          children: [
-            Expanded(
-              child: fluent.Slider(
-                value: n.clamp(min, max),
-                min: min,
-                max: max,
-                divisions: step != null && step > 0
-                    ? ((max - min) / step).round().clamp(1, 1000)
-                    : null,
-                onChanged: (d) =>
-                    onChanged(step != null ? (d / step).round() * step : d),
-              ),
-            ),
-            // .nf-range-val:fontSize 11、textDim、右对齐、等宽、min-width 42
-            SizedBox(
-              width: 42,
-              child: Text(
-                n.toStringAsFixed(2),
-                textAlign: TextAlign.right,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: t.textDim,
-                  fontFamily: SyphonDims.monoFont,
-                ),
-              ),
-            ),
-          ],
-        );
+        // 数字参数:有明确 min/max 时"输入框 + 拉杆";
+        // 取值无界(实数域或 0~∞)时仅输入框,滚轮在输入框上滑/下滑步进
+        return _buildNumControl(spec, v);
       case 'color':
         return _ColorField(value: _valStr(v, '#888888'), onChanged: onChanged);
       case 'points':
@@ -786,6 +754,78 @@ class _ParamControl extends StatelessWidget {
           onChanged: onChanged,
         );
     }
+  }
+
+  /// 数字参数控件:
+  /// - 有明确 min/max → 输入框 + 拉杆(滑块按 step 取整,输入框自由输入,
+  ///   输入框内滚轮可步进);
+  /// - 无界(实数域 / 0~∞)→ 仅输入框占满整行,不提供滚轮增减。
+  Widget _buildNumControl(md.ParamSpec spec, dynamic v) {
+    final cv = v is num
+        ? v.toDouble()
+        : (spec.defaultValue is num
+              ? (spec.defaultValue as num).toDouble()
+              : 0.0);
+    final bounded = spec.min != null && spec.max != null;
+    final step = spec.step;
+
+    final field = _NumField(
+      text: _valStr(v, ''),
+      // 空/非法输入不提交,保持当前值
+      onChanged: (nv) {
+        if (nv is num) onChanged(nv);
+      },
+    );
+
+    // 无界参数:仅输入框(整行宽度),无拉杆、无滚轮步进
+    if (!bounded) return field;
+
+    // 有界参数:拉杆 + 输入框;输入框内滚轮上滑/下滑按数量级步进
+    final wheelField = Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerSignal: (e) {
+        if (e is! PointerScrollEvent) return;
+        // 上滑(scrollDelta.dy<0)递增,下滑递减;幅度按滚动量折算 1~12 步
+        final count = (e.scrollDelta.dy.abs() / 24).ceil().clamp(1, 12);
+        final dir = e.scrollDelta.dy < 0 ? 1 : -1;
+        var nv = cv + dir * count * _wheelUnit(spec, cv);
+        nv = nv.clamp(spec.min!, spec.max!);
+        if (step != null && step > 0) nv = (nv / step).round() * step;
+        onChanged(nv);
+      },
+      child: field,
+    );
+
+    final min = spec.min ?? 0.0;
+    final max = spec.max ?? 1.0;
+    final snapped = step != null && step > 0 ? (cv / step).round() * step : cv;
+    return Row(
+      children: [
+        Expanded(
+          child: fluent.Slider(
+            value: snapped.clamp(min, max),
+            min: min,
+            max: max,
+            divisions: step != null && step > 0
+                ? ((max - min) / step).round().clamp(1, 1000)
+                : null,
+            onChanged: (d) =>
+                onChanged(step != null ? (d / step).round() * step : d),
+          ),
+        ),
+        SizedBox(width: 64, child: wheelField),
+      ],
+    );
+  }
+
+  /// 滚轮步进步长:参数定义了 step 用之;否则按当前值数量级取整
+  /// (1/0.1/0.01… 与 1/10/100…),保证任意量级都能"合适地"步进。
+  double _wheelUnit(md.ParamSpec spec, double cv) {
+    final s = spec.step;
+    if (s != null && s > 0) return s;
+    final a = cv.abs();
+    if (a < 1e-12) return 1.0;
+    return math.pow(10, (math.log(a) / math.ln10).floor()).toDouble();
   }
 
   Future<void> _pickDataFile(BuildContext context) async {

@@ -1569,13 +1569,27 @@ class ChartPainter extends CustomPainter {
     double px(double x) => _mapV(x, xmin, xmax, plot.left, plot.right);
     double py(double y) => _mapV(y, ymin, ymax, plot.bottom, plot.top);
 
-    // 面:三角形线框(XY 俯视投影,最底层)
+    // 面:XY 俯视投影;按平面自带样式填充 + 可选边缘线(最底层)
     if (meshes.isNotEmpty) {
-      final paint = Paint()
-        ..color = const Color(0xFF2CA02C)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1;
       for (final m in meshes) {
+        final base = (m.color ?? '').isEmpty
+            ? const Color(0xFF2CA02C)
+            : parseColor(m.color!);
+        final opacity = (m.opacity ?? 0.85).clamp(0.05, 1.0);
+        final edgeColor = (m.edgeColor ?? '').isEmpty
+            ? base
+            : parseColor(m.edgeColor!);
+        final fillPaint = Paint()
+          ..color = base.withValues(alpha: opacity)
+          ..style = PaintingStyle.fill;
+        final edgePaint = Paint()
+          ..color = edgeColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1;
+        // 线框模式强制画边线;填充由平面输入控制
+        final fill = m.fill ?? true;
+        final wireframe = m.wireframe == true;
+        final showEdge = (m.showEdge ?? true) || wireframe;
         for (final tri in m.faces) {
           if (tri.length < 3) continue;
           final path = Path();
@@ -1591,7 +1605,8 @@ class ChartPainter extends CustomPainter {
             }
           }
           path.close();
-          canvas.drawPath(path, paint);
+          if (fill) canvas.drawPath(path, fillPaint);
+          if (showEdge) canvas.drawPath(path, edgePaint);
         }
       }
     }
