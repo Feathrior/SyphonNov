@@ -26,24 +26,39 @@ class StatusBar extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Text('节点数: ${store.nodes.length}',
-                  style: TextStyle(fontSize: 11, color: t.textFaint)),
+              Text(
+                '节点数: ${store.nodes.length}',
+                style: TextStyle(fontSize: 11, color: t.textFaint),
+              ),
               const SizedBox(width: 16),
-              Text('连接数: ${store.edges.length}',
-                  style: TextStyle(fontSize: 11, color: t.textFaint)),
+              Text(
+                '连接数: ${store.edges.length}',
+                style: TextStyle(fontSize: 11, color: t.textFaint),
+              ),
               const SizedBox(width: 16),
               Text(
                 store.hasCycle ? '回路警告' : '拓扑正常',
                 style: TextStyle(fontSize: 11, color: statusColor),
               ),
               const SizedBox(width: 16),
-              Text('自动执行:${store.autoRun ? '开' : '关'}',
-                  style: TextStyle(fontSize: 11, color: t.textFaint)),
-              const Spacer(),
               Text(
-                '右键新建节点 · 删除键移除 · Ctrl+拖拽连线 · Ctrl+滚轮缩放画布 · 滚轮在预览窗内缩放 · Alt+悬停曲线拆分',
-                style: TextStyle(
-                    fontSize: 11, color: t.textFaint.withValues(alpha: 0.75)),
+                '自动执行:${store.autoRun ? '开' : '关'}',
+                style: TextStyle(fontSize: 11, color: t.textFaint),
+              ),
+              const Spacer(),
+              // 提示文案允许收缩:窄窗口(或测试用的小窗口)下省略号截断,
+              // 避免 RenderFlex 溢出
+              Flexible(
+                child: Text(
+                  '右键新建节点 · 删除键移除 · Ctrl+拖拽连线 · Ctrl+滚轮缩放画布 · 滚轮在预览窗内缩放 · Alt+悬停曲线拆分',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: t.textFaint.withValues(alpha: 0.75),
+                  ),
+                ),
               ),
             ],
           ),
