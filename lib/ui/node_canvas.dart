@@ -1125,7 +1125,8 @@ class NodeCanvasState extends State<NodeCanvas>
   _handleAt(Offset flow) {
     const hw = 11.0; // handle 宽
     final m = 5.0 / _zoom; // 屏幕恒定 5px 命中边距
-    for (final n in store.nodes) {
+    // 逆序遍历:后绘制的节点位于图层上方,其端口判定区优先(与渲染顺序一致)
+    for (final n in store.nodes.reversed) {
       final size = nodeSize(n, store.edges);
       for (final s in inputSockets(n, store.edges)) {
         final hh = handleH(portCount(n.id, s.id, store.edges));
@@ -1281,9 +1282,12 @@ class NodeCanvasState extends State<NodeCanvas>
         return;
       }
     }
-    // 命中节点本体:开始拖动(画布层 Listener 统一管理,绕开手势竞技场)
-    for (final n in store.nodes) {
-      final r = n.position & nodeSize(n, store.edges);
+    // 命中节点本体:拖动只从顶部着色层(标题栏 headerH 高)发起(画布层 Listener
+    // 统一管理,绕开手势竞技场)。逆序遍历:后绘制的节点在图层上方,应优先命中
+    // (与渲染顺序一致)。主体内按下仅完成选中,不拖动节点。
+    for (final n in store.nodes.reversed) {
+      final size = nodeSize(n, store.edges);
+      final r = n.position & size;
       if (r.contains(flow)) {
         if (_shift) {
           // Shift:已在多选的节点保持原状(tap 时切换去留),未选中的立即加入
@@ -1304,7 +1308,16 @@ class NodeCanvasState extends State<NodeCanvas>
             store.setMultiSelected({n.id});
           }
         }
-        _startNodeDrag(store.multiSelected);
+        // 仅标题栏着色层可拖动;主体点击选中但保持原位置
+        final headerRect = Rect.fromLTWH(
+          n.position.dx,
+          n.position.dy,
+          size.width,
+          NodeGeom.headerH,
+        );
+        if (headerRect.contains(flow)) {
+          _startNodeDrag(store.multiSelected);
+        }
         if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
         return;
       }

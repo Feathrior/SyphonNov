@@ -321,7 +321,19 @@ class GraphStore extends ChangeNotifier {
     final defaults = <String, dynamic>{};
     if (cfg != null) {
       for (final p in cfg.params) {
-        if (p.type != 'button') defaults[p.key] = p.defaultValue;
+        if (p.type != 'button') {
+          final d = p.defaultValue;
+          // 列表型默认值(渐变停止点等)规范化为 Map:GradientStop 对象
+          // 无法 JSON 序列化,且属性面板按 Map 解析——统一转 toJson
+          if (d is List) {
+            defaults[p.key] = [
+              for (final s in d)
+                if (s is GradientStop) s.toJson() else s,
+            ];
+          } else {
+            defaults[p.key] = d;
+          }
+        }
       }
     }
     final node = GraphNode(
@@ -844,11 +856,15 @@ class GraphStore extends ChangeNotifier {
     if (autoRun) runPipeline();
   }
 
-  /// 更新连线 data(mid 分割点;不入撤销历史)
+  /// 更新连线 data(mid 分割点;不入撤销历史)。
+  /// 注意:mid 为 null 表示删除断点——copyWith 的 midDel 哨兵区分"保持"与"清除"
   void updateEdgeData(String id, Offset? mid) {
     edges = edges.map((e) {
       if (e.id != id) return e;
-      return e.copyWith(mid: mid);
+      if (mid != null) {
+        return e.copyWith(mid: mid);
+      }
+      return e.copyWith(midDel: const Object()); // 非空哨兵 → 清除分割点
     }).toList();
     notifyListeners();
   }

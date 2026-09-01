@@ -9,6 +9,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 
+import '../models/color_utils.dart';
 import '../models/csv.dart';
 import '../models/data.dart' as md;
 import '../models/exec_engine.dart';
@@ -31,9 +32,6 @@ String _describeOutput(md.DataObject? obj) {
   }
   if (obj is md.MeshData) {
     return '${obj.vertices.length} 顶点 / ${obj.faces.length} 面';
-  }
-  if (obj is md.GridData) {
-    return '${obj.x.length} × ${obj.y.length} 网格';
   }
   if (obj is md.DistributionData) {
     return '${obj.bins.length} 组 / ${obj.sampleCount} 样本';
@@ -462,193 +460,587 @@ class _ShapeDropdown extends StatelessWidget {
   }
 }
 
-// ==================== 渐变编辑器 ====================
+// ==================== 渐变编辑器(PS 风格) ====================
 
-class _GradientEditor extends StatelessWidget {
+/// PS 风格渐变编辑器:
+/// - 渐变条上方为相邻停止点之间的"中点"菱形(水平拖动调整过渡重心)
+/// - 渐变条下方为颜色停止点标记(点击选中;水平拖动改位置;向下拖出条带删除)
+/// - 点击渐变条空白处新增停止点(取当前位置的插值色),并自动选中
+/// - 选中停止点后可改位置 / 颜色(HSV 取色器)/ 删除
+class _GradientEditor extends StatefulWidget {
   final List<dynamic> stops;
   final ValueChanged<List<dynamic>> onChanged;
 
   const _GradientEditor({required this.stops, required this.onChanged});
 
+  @override
+  State<_GradientEditor> createState() => _GradientEditorState();
+}
+
+class _GradientEditorState extends State<_GradientEditor> {
+  static const _barH = 22.0;
+  static const _zoneH = 16.0; // 停止点标记区高度
+
+  int _sel = 0; // 选中停止点索引(按 offset 排序)
+  late double _dragT = 0; // 拖动起点时的 offset/mid 基准
+  late double _dragX = 0; // 拖动起点全局 X
+  late double _dragY = 0; // 拖动起点全局 Y
+
   List<Map<String, dynamic>> get _parsed => [
-    for (final s in stops)
-      if (s is Map)
+    for (final s in widget.stops)
+      if (s is md.GradientStop)
+        {'offset': s.offset, 'color': s.color, 'mid': s.mid ?? 0.5}
+      else if (s is Map)
         {
           'offset': (s['offset'] is num)
               ? (s['offset'] as num).toDouble()
               : 0.0,
           'color': '${s['color'] ?? '#888888'}',
+          'mid': s['mid'] is num ? (s['mid'] as num).toDouble() : 0.5,
         },
   ];
 
-  void _addStop(double offset) {
-    final clamped = offset.clamp(0.0, 1.0);
-    final sorted = [
-      ...stops,
-      {'offset': clamped, 'color': '#f97316'},
-    ];
-    sorted.sort((a, b) {
-      final ao = a is Map
-          ? (a['offset'] is num ? (a['offset'] as num).toDouble() : 0)
-          : 0;
-      final bo = b is Map
-          ? (b['offset'] is num ? (b['offset'] as num).toDouble() : 0)
-          : 0;
-      return ao.compareTo(bo);
-    });
-    onChanged(sorted);
+  List<md.GradientStop> _toStops(List<Map<String, dynamic>> parsed) => [
+    for (final s in parsed)
+      md.GradientStop(
+        offset: s['offset'] as double,
+        color: s['color'] as String,
+        mid: (s['mid'] as double) == 0.5 ? null : (s['mid'] as double),
+      ),
+  ];
+
+  void _emit(List<Map<String, dynamic>> list) {
+    final sorted = List<Map<String, dynamic>>.of(
+      list,
+    )..sort((a, b) => (a['offset'] as double).compareTo(b['offset'] as double));
+    widget.onChanged(List<dynamic>.of(sorted));
   }
 
-  void _setStop(int i, Map<String, dynamic> patch) {
-    final out = List<dynamic>.of(stops);
-    final rec = (out[i] is Map)
-        ? Map<String, dynamic>.from(out[i] as Map)
-        : <String, dynamic>{};
-    out[i] = {...rec, ...patch};
-    final changed = List<dynamic>.of(out);
-    changed.sort((a, b) {
-      final ao = a is Map
-          ? (a['offset'] is num ? (a['offset'] as num).toDouble() : 0)
-          : 0;
-      final bo = b is Map
-          ? (b['offset'] is num ? (b['offset'] as num).toDouble() : 0)
-          : 0;
-      return ao.compareTo(bo);
-    });
-    onChanged(changed);
+  void _addStop(double raw) {
+    final parsed = _parsed;
+    final t = raw.clamp(0.0, 1.0);
+    if (parsed.any((s) => ((s['offset'] as double) - t).abs() < 0.004)) return;
+    final color = colorToHex(md.gradientColorAt(_toStops(parsed), t));
+    final next = [
+      ...parsed,
+      {'offset': t, 'color': color, 'mid': 0.5},
+    ]..sort((a, b) => (a['offset'] as double).compareTo(b['offset'] as double));
+    final idx = next.indexWhere((s) => (s['offset'] as double) == t);
+    setState(() => _sel = idx < 0 ? next.length - 1 : idx);
+    _emit(next);
+  }
+
+  void _moveStop(int i, double raw) {
+    final parsed = _parsed;
+    final prev = i > 0 ? (parsed[i - 1]['offset'] as double) + 0.006 : 0.0;
+    final max = i < parsed.length - 1
+        ? (parsed[i + 1]['offset'] as double) - 0.006
+        : 1.0;
+    final o = raw.clamp(prev, max);
+    final out = List<Map<String, dynamic>>.of(parsed);
+    out[i] = {...out[i], 'offset': o};
+    _emit(out);
+  }
+
+  void _moveMid(int i, double raw) {
+    final parsed = _parsed;
+    if (i >= parsed.length - 1) return; // 最后一段无中点
+    final out = List<Map<String, dynamic>>.of(parsed);
+    out[i] = {...out[i], 'mid': raw.clamp(0.05, 0.95)};
+    _emit(out);
+  }
+
+  void _removeStop(int i) {
+    if (widget.stops.length <= 1) return; // 至少保留一个停止点
+    _emit([..._parsed.take(i), ..._parsed.skip(i + 1)]);
+    setState(() => _sel = i == 0 ? 0 : i - 1);
+  }
+
+  void _setStopColor(int i, String c) {
+    final out = List<Map<String, dynamic>>.of(_parsed);
+    out[i] = {...out[i], 'color': c};
+    _emit(out);
+  }
+
+  double _midX(List<Map<String, dynamic>> parsed, int i, double w) {
+    final o0 = parsed[i]['offset'] as double;
+    final o1 = parsed[i + 1]['offset'] as double;
+    return (o0 + (parsed[i]['mid'] as double) * (o1 - o0)) * w;
   }
 
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
     final parsed = _parsed;
-    final colors = parsed.isNotEmpty
-        ? [for (final s in parsed) _swatch(s['color'] ?? '#888888')]
-        : const [Color(0xFF888888)];
-    final stopsList = parsed.isNotEmpty
-        ? parsed
-        : [
-            const {'offset': 0.0, 'color': '#888888'},
-          ];
+    if (parsed.isEmpty) return const SizedBox.shrink();
+    if (_sel >= parsed.length) _sel = parsed.length - 1;
+    final sel = parsed[_sel];
+    final selColor = parseColor(sel['color'] as String);
+    final preview = _previewColors(parsed);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         LayoutBuilder(
           builder: (ctx, cons) {
             final w = cons.maxWidth;
-            return GestureDetector(
-              onTapDown: (d) {
-                if (w > 0) _addStop(d.localPosition.dx / w);
-              },
-              child: Container(
-                height: 22,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(SyphonDims.radiusM),
-                  gradient: LinearGradient(
-                    colors: colors,
-                    stops: _stopsFractions(parsed),
+            if (w <= 0) return const SizedBox.shrink();
+            return SizedBox(
+              height: _barH + _zoneH,
+              width: w,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  // 渐变条(点击空白 → 新增停止点)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: _barH,
+                    child: GestureDetector(
+                      onTapDown: (d) => _addStop(d.localPosition.dx / w),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(
+                            SyphonDims.radiusM,
+                          ),
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            colors: [for (final p in preview) p.$2],
+                            stops: [for (final p in preview) p.$1],
+                          ),
+                          border: Border.all(color: t.stroke, width: 1),
+                        ),
+                      ),
+                    ),
                   ),
-                  border: Border.all(color: t.stroke, width: 1),
-                ),
+                  // 中点菱形(相邻停止点之间)
+                  for (var i = 0; i < parsed.length - 1; i++)
+                    Positioned(
+                      left: _midX(parsed, i, w) - 4,
+                      top: -3,
+                      child: _midDiamond(i, w),
+                    ),
+                  // 颜色停止点标记(条带下方,PS 屋檐形)
+                  for (var i = 0; i < parsed.length; i++)
+                    Positioned(
+                      left: (parsed[i]['offset'] as double) * w - 6,
+                      top: _barH - 2,
+                      child: _colorMarker(i, w),
+                    ),
+                ],
               ),
             );
           },
         ),
         const SizedBox(height: 4),
-        for (var i = 0; i < stopsList.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: _stopRow(context, t, i, stopsList[i]),
+        // 选中停止点控制:颜色 / 位置 / 删除
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          decoration: BoxDecoration(
+            color: t.bgRaise,
+            border: Border.all(color: t.stroke, width: 1),
+            borderRadius: BorderRadius.circular(SyphonDims.radiusM),
           ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: fluent.Button(
-            onPressed: () => _addStop(0.5),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.add, size: 14),
-                SizedBox(width: 4),
-                Text('添加停止点', style: TextStyle(fontSize: 12)),
-              ],
-            ),
+          child: Row(
+            children: [
+              GestureDetector(
+                onTap: () => _pickColor(context),
+                child: Tooltip(
+                  message: '打开取色器',
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: selColor,
+                      borderRadius: BorderRadius.circular(SyphonDims.radiusS),
+                      border: Border.all(color: t.strokeStrong),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              const _RowLabel('位置'),
+              Expanded(
+                child: _NumField(
+                  text: (sel['offset'] as double).toStringAsFixed(2),
+                  onChanged: (v) {
+                    final n = v is num ? v.toDouble() : 0.0;
+                    if (n.isFinite && n >= 0 && n <= 1) {
+                      _moveStop(_sel, n);
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              const _RowLabel('颜色'),
+              Expanded(
+                child: _TextField(
+                  text: sel['color'] as String,
+                  onChanged: (c) => _setStopColor(_sel, c),
+                ),
+              ),
+              fluent.IconButton(
+                icon: const Icon(Icons.close, size: 14),
+                onPressed: () => _removeStop(_sel),
+              ),
+            ],
           ),
         ),
       ],
     );
   }
 
-  Color _swatch(String hex) =>
-      Color(int.tryParse(hex.replaceFirst('#', '0xFF')) ?? 0xFF888888);
-
-  List<double>? _stopsFractions(List<Map<String, dynamic>> parsed) {
-    if (parsed.length < 2) return null;
-    final v = <double>[];
-    for (final s in parsed) {
-      v.add((s['offset'] is num) ? (s['offset'] as num).toDouble() : 0);
-    }
-    // 等间距化,避免 LinearGradient 的 offset 非递增报错
-    var ok = true;
-    for (var i = 1; i < v.length; i++) {
-      if (v[i] <= v[i - 1]) ok = false;
-    }
-    return ok ? v : null;
+  /// 按 PS 中点语义重采样预览渐变(与渲染共用 gradientColorAt)
+  List<(double, Color)> _previewColors(List<Map<String, dynamic>> parsed) {
+    final stops = _toStops(parsed);
+    const n = 64;
+    return [
+      for (var i = 0; i <= n; i++) (i / n, md.gradientColorAt(stops, i / n)),
+    ];
   }
 
-  // .nf-gradient-stop-row:bg-raise、border stroke、radius-m、padding 4 6
-  Widget _stopRow(
-    BuildContext context,
-    SyphonTheme t,
-    int i,
-    Map<String, dynamic> s,
-  ) {
-    final offset = (s['offset'] is num) ? (s['offset'] as num).toDouble() : 0.0;
-    final color = '${s['color'] ?? '#888888'}';
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-      decoration: BoxDecoration(
-        color: t.bgRaise,
-        border: Border.all(color: t.stroke, width: 1),
-        borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+  Widget _colorMarker(int i, double w) {
+    final s = _parsed[i];
+    final selected = i == _sel;
+    final t = SyphonTheme.of(context);
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: () => setState(() => _sel = i),
+      onPanStart: (d) {
+        _sel = i;
+        setState(() {});
+        _dragT = s['offset'] as double;
+        _dragX = d.globalPosition.dx;
+        _dragY = d.globalPosition.dy;
+      },
+      onPanUpdate: (d) {
+        _moveStop(i, _dragT + (d.globalPosition.dx - _dragX) / w);
+        // 向下拖出条带区域 → 删除(PS 行为)
+        if (d.globalPosition.dy - _dragY > 24) _removeStop(i);
+      },
+      child: CustomPaint(
+        size: const Size(12, 13),
+        painter: _StopMarkerPainter(
+          color: parseColor(s['color'] as String),
+          selected: selected,
+          accent: t.accent,
+        ),
       ),
-      child: Row(
-        children: [
-          // .nf-gradient-swatch:20x20、radius-s、border strokeStrong
-          Container(
-            width: 20,
-            height: 20,
-            decoration: BoxDecoration(
-              color: _swatch(color),
-              borderRadius: BorderRadius.circular(SyphonDims.radiusS),
-              border: Border.all(color: t.strokeStrong),
-            ),
-          ),
-          const SizedBox(width: 6),
-          const _RowLabel('位置'),
-          Expanded(
-            child: _NumField(
-              text: offset.toStringAsFixed(2),
-              onChanged: (v) {
-                final n = v is num ? v.toDouble() : 0.0;
-                _setStop(i, {'offset': n.isFinite ? n.clamp(0.0, 1.0) : 0.0});
+    );
+  }
+
+  Widget _midDiamond(int i, double w) {
+    final s = _parsed[i];
+    final t = SyphonTheme.of(context);
+    final seg =
+        ((s['offset'] as double) - (_parsed[i + 1]['offset'] as double)).abs() *
+        w;
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onPanStart: (d) {
+        _dragT = s['mid'] as double;
+        _dragX = d.globalPosition.dx;
+      },
+      onPanUpdate: (d) {
+        if (seg > 1.0) {
+          _moveMid(i, _dragT + (d.globalPosition.dx - _dragX) / seg);
+        }
+      },
+      child: Container(
+        width: 9,
+        height: 9,
+        margin: const EdgeInsets.only(top: 3),
+        transform: Matrix4.rotationZ(0.785398), // 45° 菱形
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: t.strokeStrong, width: 1),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickColor(BuildContext context) async {
+    final initial = _parsed[_sel]['color'] as String;
+    final picked = await fluent.showDialog<String>(
+      context: context,
+      builder: (ctx) => _HsvPickerDialog(initial: initial),
+    );
+    if (picked != null && picked.isNotEmpty) _setStopColor(_sel, picked);
+  }
+}
+
+/// 颜色停止点标记:PS 屋檐形小旗(上方三角 + 下方窄条),选中时白描边
+class _StopMarkerPainter extends CustomPainter {
+  final Color color;
+  final bool selected;
+  final Color accent;
+
+  _StopMarkerPainter({
+    required this.color,
+    required this.selected,
+    required this.accent,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final tri = Path()
+      ..moveTo(0, 0)
+      ..lineTo(w, 0)
+      ..lineTo(w / 2, h - 4)
+      ..close();
+    canvas.drawPath(
+      tri,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawPath(
+      tri,
+      Paint()
+        ..color = selected ? accent : Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = selected ? 1.6 : 1,
+    );
+    // 底部小柄
+    canvas.drawRect(
+      Rect.fromLTWH(w / 2 - 1.5, h - 4, 3, 4),
+      Paint()
+        ..color = selected ? accent : Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _StopMarkerPainter old) =>
+      old.color != color || old.selected != selected || old.accent != accent;
+}
+
+/// HSV 取色器对话框(SV 方形取色区 + 色相滑杆 + 十六进制输入)
+class _HsvPickerDialog extends StatefulWidget {
+  final String initial;
+  const _HsvPickerDialog({required this.initial});
+
+  @override
+  State<_HsvPickerDialog> createState() => _HsvPickerDialogState();
+}
+
+class _HsvPickerDialogState extends State<_HsvPickerDialog> {
+  late double _h, _s, _v;
+
+  @override
+  void initState() {
+    super.initState();
+    final c = parseColor(widget.initial, const Color(0xFF888888));
+    final hsv = HSVColor.fromColor(c);
+    _h = hsv.hue;
+    _s = hsv.saturation;
+    _v = hsv.value;
+  }
+
+  Color get _color => HSVColor.fromAHSV(1, _h, _s, _v).toColor();
+
+  void _updateSv(Offset pos, Size size) {
+    setState(() {
+      _s = (pos.dx / size.width).clamp(0.0, 1.0);
+      _v = 1 - (pos.dy / size.height).clamp(0.0, 1.0);
+    });
+  }
+
+  void _updateH(double x, double w) {
+    setState(() => _h = (x / w).clamp(0.0, 1.0) * 360);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    return fluent.ContentDialog(
+      title: const Text('选择颜色', style: TextStyle(fontSize: 14)),
+      content: SizedBox(
+        width: 320,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // SV 方形取色区
+            LayoutBuilder(
+              builder: (ctx, cons) {
+                final w = cons.maxWidth;
+                final h = 140.0;
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => _updateSv(d.localPosition, Size(w, h)),
+                  onPanDown: (d) => _updateSv(d.localPosition, Size(w, h)),
+                  onPanUpdate: (d) => _updateSv(d.localPosition, Size(w, h)),
+                  child: SizedBox(
+                    width: w,
+                    height: h,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(
+                                SyphonDims.radiusS,
+                              ),
+                              gradient: LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                colors: [
+                                  Colors.white,
+                                  HSVColor.fromAHSV(1, _h, 1, 1).toColor(),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(
+                                SyphonDims.radiusS,
+                              ),
+                              gradient: const LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [Colors.transparent, Colors.black],
+                              ),
+                            ),
+                          ),
+                        ),
+                        // 取色圆环
+                        Positioned(
+                          left: _s * w - 6,
+                          top: (1 - _v) * h - 6,
+                          child: IgnorePointer(
+                            child: Container(
+                              width: 12,
+                              height: 12,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.transparent,
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
               },
             ),
-          ),
-          const SizedBox(width: 6),
-          const _RowLabel('颜色'),
-          Expanded(
-            child: _ColorField(
-              value: color,
-              onChanged: (c) => _setStop(i, {'color': c}),
+            const SizedBox(height: 8),
+            // 色相滑杆
+            LayoutBuilder(
+              builder: (ctx, cons) {
+                final w = cons.maxWidth;
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) => _updateH(d.localPosition.dx, w),
+                  onPanDown: (d) => _updateH(d.localPosition.dx, w),
+                  onPanUpdate: (d) => _updateH(d.localPosition.dx, w),
+                  child: SizedBox(
+                    height: 16,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(
+                                SyphonDims.radiusS,
+                              ),
+                              gradient: const LinearGradient(
+                                colors: [
+                                  Color(0xFFFF0000),
+                                  Color(0xFFFFFF00),
+                                  Color(0xFF00FF00),
+                                  Color(0xFF00FFFF),
+                                  Color(0xFF0000FF),
+                                  Color(0xFFFF00FF),
+                                  Color(0xFFFF0000),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          left: _h / 360 * w - 4,
+                          top: -2,
+                          child: IgnorePointer(
+                            child: Container(
+                              width: 8,
+                              height: 20,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
-          ),
-          fluent.IconButton(
-            icon: const Icon(Icons.close, size: 14),
-            onPressed: () =>
-                onChanged([...stops.take(i), ...stops.skip(i + 1)]),
-          ),
-        ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: _color,
+                    borderRadius: BorderRadius.circular(SyphonDims.radiusS),
+                    border: Border.all(color: t.strokeStrong),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const _RowLabel('HEX'),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: _TextField(
+                    text: colorToHex(_color),
+                    onChanged: (s) {
+                      final c = parseColor(s, const Color(0xFF808080));
+                      if (s.startsWith('#')) {
+                        final hsv = HSVColor.fromColor(c);
+                        setState(() {
+                          _h = hsv.hue;
+                          _s = hsv.saturation;
+                          _v = hsv.value;
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
+      actions: [
+        fluent.Button(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        fluent.FilledButton(
+          onPressed: () => Navigator.pop(context, colorToHex(_color)),
+          child: const Text('确定'),
+        ),
+      ],
     );
   }
 }

@@ -11,39 +11,60 @@ class Preset {
   const Preset({required this.name, required this.desc, required this.json});
 }
 
-String _buildGraph(List<Map<String, dynamic>> nodes, List<Map<String, dynamic>> edges) {
+String _buildGraph(
+  List<Map<String, dynamic>> nodes,
+  List<Map<String, dynamic>> edges,
+) {
   return const JsonEncoder.withIndent('  ').convert({
     'format': 'syphon-graph',
     'version': 1,
     'nodes': nodes
-        .map((n) => {
-              'id': n['id'],
-              'configId': n['configId'],
-              'params': n['params'] ?? <String, dynamic>{},
-              'exposed': n['exposed'] ?? <String>[],
-              'collapsed': n['collapsed'] ?? false,
-              'position': n['position'],
-            })
+        .map(
+          (n) => {
+            'id': n['id'],
+            'configId': n['configId'],
+            'params': n['params'] ?? <String, dynamic>{},
+            'exposed': n['exposed'] ?? <String>[],
+            'collapsed': n['collapsed'] ?? false,
+            'position': n['position'],
+          },
+        )
         .toList(),
     'edges': edges
-        .map((e) => {
-              'id': e['id'],
-              'source': e['source'],
-              'target': e['target'],
-              'sourceHandle': e['sourceHandle'] ?? 'out0',
-              'targetHandle': e['targetHandle'] ?? 'in0',
-              'mid': e['mid'],
-            })
+        .map(
+          (e) => {
+            'id': e['id'],
+            'source': e['source'],
+            'target': e['target'],
+            'sourceHandle': e['sourceHandle'] ?? 'out0',
+            'targetHandle': e['targetHandle'] ?? 'in0',
+            'mid': e['mid'],
+          },
+        )
         .toList(),
   });
 }
 
 String _tableToChart(
-    Map<String, dynamic> tableParams, String chartConfigId, Map<String, dynamic> chartParams, double y) {
+  Map<String, dynamic> tableParams,
+  String chartConfigId,
+  Map<String, dynamic> chartParams,
+  double y,
+) {
   return _buildGraph(
     [
-      {'id': 't', 'configId': 'table_input', 'params': tableParams, 'position': {'x': 40, 'y': y}},
-      {'id': 'v', 'configId': chartConfigId, 'params': chartParams, 'position': {'x': 420, 'y': y}},
+      {
+        'id': 't',
+        'configId': 'table_input',
+        'params': tableParams,
+        'position': {'x': 40, 'y': y},
+      },
+      {
+        'id': 'v',
+        'configId': chartConfigId,
+        'params': chartParams,
+        'position': {'x': 420, 'y': y},
+      },
     ],
     [
       {'id': 't-v', 'source': 't', 'target': 'v'},
@@ -95,7 +116,41 @@ List<Preset> _buildPresets() {
           ].join('\n'),
         },
         'viz_sankey',
-        {'sourceCol': '来源', 'targetCol': '去向', 'valueCol': '流量', 'title': '收支流程'},
+        {
+          'sourceCol': '来源',
+          'targetCol': '去向',
+          'valueCol': '流量',
+          'title': '收支流程',
+        },
+        60,
+      ),
+    ),
+    Preset(
+      name: '网络示意图',
+      desc: '关系网络图(力导向布局):按 源→目标 构建节点与连线,权重控制线宽',
+      json: _tableToChart(
+        {
+          'mode': 'manual',
+          'dataText': [
+            '来源,目标,权重',
+            'Alice,Bob,5',
+            'Alice,Carol,3',
+            'Bob,Carol,2',
+            'Bob,David,4',
+            'Carol,Eve,6',
+            'David,Eve,2',
+            'David,Frank,3',
+            'Eve,Frank,5',
+            'Frank,Alice,1',
+          ].join('\n'),
+        },
+        'viz_graph',
+        {
+          'sourceCol': '来源',
+          'targetCol': '目标',
+          'valueCol': '权重',
+          'title': '通信网络',
+        },
         60,
       ),
     ),

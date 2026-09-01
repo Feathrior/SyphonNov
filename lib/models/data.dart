@@ -3,6 +3,10 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/material.dart' show Color;
+
+import 'color_utils.dart';
+
 /// 节点类别
 enum Category { input, clean, compute, transform, visualize }
 
@@ -20,7 +24,6 @@ enum SocketType {
   series, // 曲线/线(一维轴也可视作 series)
   scatter, // 散点
   mesh, // 面/网格体
-  grid, // 规则网格数据
   distribution, // 分布
   axes, // 坐标系
   text, // 文本
@@ -28,20 +31,28 @@ enum SocketType {
   any, // 任意
 }
 
-/// 渐变停止点:offset 0~1,color 为颜色
+/// 渐变停止点:offset 0~1,color 为颜色。
+/// [mid] 为该停止点与下一停止点之间渐变的中点(0~1,0.5 = 线性过渡,
+/// PS 中点语义:两个颜色 50% 混色点位于段内 mid 处);最后一段无中点。
 class GradientStop {
   double offset;
   String color;
+  double? mid;
 
-  GradientStop({required this.offset, required this.color});
+  GradientStop({required this.offset, required this.color, this.mid});
 
-  GradientStop copy() => GradientStop(offset: offset, color: color);
+  GradientStop copy() => GradientStop(offset: offset, color: color, mid: mid);
 
-  Map<String, dynamic> toJson() => {'offset': offset, 'color': color};
+  Map<String, dynamic> toJson() => {
+    'offset': offset,
+    'color': color,
+    if (mid != null) 'mid': mid,
+  };
 
   factory GradientStop.fromJson(Map<String, dynamic> j) => GradientStop(
     offset: toNum(j['offset']) ?? 0,
     color: '${j['color'] ?? '#888888'}',
+    mid: j['mid'] is num ? (j['mid'] as num).toDouble() : null,
   );
 }
 
@@ -65,7 +76,11 @@ List<GradientStop> parseGradient(dynamic v) {
         final color = s['color'];
         if (color is String && color.isNotEmpty) {
           stops.add(
-            GradientStop(offset: toNum(s['offset']) ?? 0, color: color),
+            GradientStop(
+              offset: toNum(s['offset']) ?? 0,
+              color: color,
+              mid: s['mid'] is num ? (s['mid'] as num).toDouble() : null,
+            ),
           );
         }
       }
@@ -80,6 +95,29 @@ List<GradientStop> parseGradient(dynamic v) {
     }
   }
   return kDefaultGradient.map((s) => s.copy()).toList();
+}
+
+/// PS 风格渐变插值:相邻停止点之间按各自中点(mid,0.5=线性)分段映射。
+/// 段内位置 u∈[0,1]:u < mid 时线性过渡到 50% 混色,之后过渡到下一色。
+Color gradientColorAt(List<GradientStop> stops, double v01) {
+  if (stops.isEmpty) return const Color(0xFF3B82F6);
+  if (stops.length == 1) return parseColor(stops.first.color);
+  final t = v01.clamp(0.0, 1.0);
+  var i = 0;
+  while (i < stops.length - 2 && stops[i + 1].offset <= t) {
+    i++;
+  }
+  final a = stops[i];
+  final b = stops[i + 1];
+  final span = (b.offset - a.offset).abs();
+  final u = span <= 1e-9 ? 0.0 : ((t - a.offset) / span);
+  final mid = (a.mid ?? 0.5).clamp(0.02, 0.98);
+  final f = u < mid ? (0.5 / mid) * u : 0.5 + 0.5 * (u - mid) / (1 - mid);
+  return Color.lerp(
+    parseColor(a.color),
+    parseColor(b.color),
+    f.clamp(0.0, 1.0),
+  )!;
 }
 
 /// 表格列:values 元素为 num / String / null
@@ -206,20 +244,6 @@ class MeshData extends DataObject {
     this.edgeColor,
     this.wireframe,
     this.fill,
-  });
-}
-
-class GridData extends DataObject {
-  final String name;
-  final List<double> x;
-  final List<double> y;
-  final List<List<double>> values;
-
-  GridData({
-    required this.name,
-    required this.x,
-    required this.y,
-    required this.values,
   });
 }
 
@@ -493,7 +517,6 @@ const Map<SocketType, String> kSocketLabel = {
   SocketType.series: '曲线/线',
   SocketType.scatter: '散点',
   SocketType.mesh: '面/网格',
-  SocketType.grid: '网格数据',
   SocketType.distribution: '分布',
   SocketType.axes: '坐标系',
   SocketType.text: '文本',
@@ -506,7 +529,6 @@ const Map<SocketType, String> kSocketColor = {
   SocketType.series: '#f59e0b',
   SocketType.scatter: '#3b82f6',
   SocketType.mesh: '#ec4899',
-  SocketType.grid: '#14b8a6',
   SocketType.distribution: '#a78bfa',
   SocketType.axes: '#22d3ee',
   SocketType.text: '#e879f9',

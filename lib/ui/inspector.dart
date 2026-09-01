@@ -13,7 +13,6 @@ String _kindName(md.DataObject o) {
   if (o is md.SeriesData) return 'series';
   if (o is md.ScatterData) return 'scatter';
   if (o is md.MeshData) return 'mesh';
-  if (o is md.GridData) return 'grid';
   if (o is md.DistributionData) return 'distribution';
   if (o is md.AxesData) return 'axes';
   if (o is md.TextData) return 'text';
@@ -58,10 +57,12 @@ class _MiniTable extends StatelessWidget {
                     ],
                   ),
                   for (final r in rows)
-                    TableRow(children: [
-                      _Cell('${rows.indexOf(r)}'),
-                      for (var i = 0; i < r.length; i++) _Cell(r[i]),
-                    ]),
+                    TableRow(
+                      children: [
+                        _Cell('${rows.indexOf(r)}'),
+                        for (var i = 0; i < r.length; i++) _Cell(r[i]),
+                      ],
+                    ),
                 ],
               ),
             ),
@@ -71,8 +72,10 @@ class _MiniTable extends StatelessWidget {
           // .nf-table-more:textFaint、fontSize 10、padding 3 0
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 3),
-            child: Text(footer!,
-                style: TextStyle(fontSize: 10, color: t.textFaint)),
+            child: Text(
+              footer!,
+              style: TextStyle(fontSize: 10, color: t.textFaint),
+            ),
           ),
       ],
     );
@@ -142,7 +145,10 @@ class ObjectPreview extends StatelessWidget {
         headers: [for (final c in cols) c.name],
         rows: [
           for (var r = 0; r < shown; r++)
-            [for (final c in cols) c.values[r] == null ? '—' : '${c.values[r]}'],
+            [
+              for (final c in cols)
+                c.values[r] == null ? '—' : '${c.values[r]}',
+            ],
         ],
         footer: rows > shown ? '…共 $rows 行' : null,
       );
@@ -175,31 +181,16 @@ class ObjectPreview extends StatelessWidget {
         '名称: ${o.name}',
       ]);
     }
-    if (o is md.GridData) {
-      final finite = <double>[
-        for (final row in o.values)
-          for (final v in row)
-            if (v.isFinite) v
-      ];
-      final zMin = finite.isEmpty ? double.nan : finite.reduce((a, b) => a < b ? a : b);
-      final zMax = finite.isEmpty ? double.nan : finite.reduce((a, b) => a > b ? a : b);
-      final x0 = o.x.isEmpty ? 0 : o.x.first;
-      final x1 = o.x.isEmpty ? 0 : o.x.last;
-      final y0 = o.y.isEmpty ? 0 : o.y.first;
-      final y1 = o.y.isEmpty ? 0 : o.y.last;
-      return _Summary([
-        'X 范围: $x0 ~ $x1(${o.x.length})',
-        'Y 范围: $y0 ~ $y1(${o.y.length})',
-        'Z 范围: ${zMin.isNaN ? '—' : zMin} ~ ${zMax.isNaN ? '—' : zMax}',
-      ]);
-    }
     if (o is md.DistributionData) {
       final bins = o.bins.length < 12 ? o.bins : o.bins.sublist(0, 12);
       return _MiniTable(
         headers: const ['区间', '计数'],
         rows: [
           for (final b in bins)
-            ['[${b.x0.toStringAsFixed(3)}, ${b.x1.toStringAsFixed(3)})', '${b.count}'],
+            [
+              '[${b.x0.toStringAsFixed(3)}, ${b.x1.toStringAsFixed(3)})',
+              '${b.count}',
+            ],
         ],
         footer: '共 ${o.bins.length} 组, ${o.sampleCount} 个样本',
       );
@@ -291,7 +282,10 @@ class _InspectorState extends State<Inspector> {
               Expanded(
                 child: Container(
                   color: t.bgRaise,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   child: _tab == 'data'
                       ? _dataTab(context, t, store)
                       : _logTab(context, t, store, errors),
@@ -304,7 +298,9 @@ class _InspectorState extends State<Inspector> {
     );
   }
 
-  List<({String nodeId, String label, String msg})> _collectErrors(GraphStore store) {
+  List<({String nodeId, String label, String msg})> _collectErrors(
+    GraphStore store,
+  ) {
     final out = <({String nodeId, String label, String msg})>[];
     for (final entry in store.results.entries) {
       final r = entry.value;
@@ -346,8 +342,10 @@ class _InspectorState extends State<Inspector> {
         // .nf-inspector-title:fontSize 12、textFaint、margin-bottom 8
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: Text('${cfg.label} 的输出',
-              style: TextStyle(fontSize: 12, color: t.textFaint)),
+          child: Text(
+            '${cfg.label} 的输出',
+            style: TextStyle(fontSize: 12, color: t.textFaint),
+          ),
         ),
         if (result.outputs.isEmpty)
           _hint(
@@ -361,11 +359,14 @@ class _InspectorState extends State<Inspector> {
             // .nf-inspector-block-title:fontSize 10、textFaint、mono、margin-bottom 4
             Padding(
               padding: const EdgeInsets.only(bottom: 4),
-              child: Text('${entry.key} · ${_kindName(entry.value)}',
-                  style: TextStyle(
-                      fontSize: 10,
-                      color: t.textFaint,
-                      fontFamily: SyphonDims.monoFont)),
+              child: Text(
+                '${entry.key} · ${_kindName(entry.value)}',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: t.textFaint,
+                  fontFamily: SyphonDims.monoFont,
+                ),
+              ),
             ),
             ObjectPreview(obj: entry.value),
             const SizedBox(height: 10), // .nf-inspector-block margin-bottom 10
@@ -377,8 +378,11 @@ class _InspectorState extends State<Inspector> {
   // ---------------- 日志 ----------------
 
   Widget _logTab(
-      BuildContext context, SyphonTheme t, GraphStore store,
-      List<({String nodeId, String label, String msg})> errors) {
+    BuildContext context,
+    SyphonTheme t,
+    GraphStore store,
+    List<({String nodeId, String label, String msg})> errors,
+  ) {
     final okCount = store.results.values.where((r) => r.error == null).length;
     return ListView(
       padding: EdgeInsets.zero,
@@ -391,16 +395,13 @@ class _InspectorState extends State<Inspector> {
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: _DashedLine(t.strokeStrong),
           ),
-        if (store.hasCycle)
-          _logLine(t, '⚠ 检测到连接回路,部分节点未按顺序执行', error: true),
-        if (store.lastError != null)
-          _logLine(t, store.lastError!, error: true),
+        if (store.hasCycle) _logLine(t, '⚠ 检测到连接回路,部分节点未按顺序执行', error: true),
+        if (store.lastError != null) _logLine(t, store.lastError!, error: true),
         if (errors.isEmpty && !store.hasCycle && store.logs.isEmpty)
           _logLine(t, '执行正常,无错误。'),
         for (final e in errors)
           _logLine(t, '[${e.label}] ${e.msg}', error: true),
-        if (okCount > 0)
-          _logLine(t, '$okCount 个节点执行成功', ok: true),
+        if (okCount > 0) _logLine(t, '$okCount 个节点执行成功', ok: true),
       ],
     );
   }
@@ -408,14 +409,22 @@ class _InspectorState extends State<Inspector> {
   // .nf-log-line:padding 3 0、textDim;error → danger;ok → success
   Widget _logEntry(SyphonTheme t, LogEntry l) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3), // .nf-log-line padding 3 0
+      padding: const EdgeInsets.symmetric(
+        vertical: 3,
+      ), // .nf-log-line padding 3 0
       child: Text.rich(
         TextSpan(
           style: TextStyle(
-              fontFamily: SyphonDims.monoFont, fontSize: 11, color: t.textDim),
+            fontFamily: SyphonDims.monoFont,
+            fontSize: 11,
+            color: t.textDim,
+          ),
           children: [
             // .nf-log-time:textFaint、mono、margin-right 6
-            TextSpan(text: l.time, style: TextStyle(color: t.textFaint)),
+            TextSpan(
+              text: l.time,
+              style: TextStyle(color: t.textFaint),
+            ),
             TextSpan(
               text: '  ${l.msg}',
               style: TextStyle(
@@ -431,13 +440,23 @@ class _InspectorState extends State<Inspector> {
   }
 
   // .nf-log-line:padding 3 0、textDim;error → danger;ok → success
-  Widget _logLine(SyphonTheme t, String text, {bool error = false, bool ok = false}) {
+  Widget _logLine(
+    SyphonTheme t,
+    String text, {
+    bool error = false,
+    bool ok = false,
+  }) {
     final color = error ? t.danger : (ok ? t.success : t.textDim);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Text(text,
-          style: TextStyle(
-              fontFamily: SyphonDims.monoFont, fontSize: 11, color: color)),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontFamily: SyphonDims.monoFont,
+          fontSize: 11,
+          color: color,
+        ),
+      ),
     );
   }
 
@@ -478,9 +497,7 @@ class _TabBtnState extends State<_TabBtn> {
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final fg = widget.active
-        ? t.accent
-        : (_hover ? t.text : t.textFaint);
+    final fg = widget.active ? t.accent : (_hover ? t.text : t.textFaint);
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -510,12 +527,14 @@ class _TabBtnState extends State<_TabBtn> {
       ),
       child: Row(
         children: [
-          Text(widget.text,
-              style: TextStyle(
-                  fontSize: 12,
-                  color: fg,
-                  fontWeight:
-                      widget.active ? FontWeight.w600 : FontWeight.w400)),
+          Text(
+            widget.text,
+            style: TextStyle(
+              fontSize: 12,
+              color: fg,
+              fontWeight: widget.active ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
           if (widget.showBadge && widget.errorCount > 0) _buildBadge(t),
         ],
       ),
@@ -534,8 +553,10 @@ class _TabBtnState extends State<_TabBtn> {
         color: t.danger,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text('${widget.errorCount}',
-          style: const TextStyle(fontSize: 10, color: Color(0xFFFFFFFF))),
+      child: Text(
+        '${widget.errorCount}',
+        style: const TextStyle(fontSize: 10, color: Color(0xFFFFFFFF)),
+      ),
     );
   }
 

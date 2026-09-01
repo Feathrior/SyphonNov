@@ -318,7 +318,7 @@ Map<String, ExecFn> _buildExec() {
           }
         }
         if (pts.isEmpty) throw Exception('未解析到有效点(格式:每行 x,y)');
-        return {'out0': SeriesData(name: name, points: pts)};
+        return {'out0': styledSeries(ctx, name, pts)};
       }
       final start = num_(p['start'], 0);
       final end = num_(p['end'], 10);
@@ -332,29 +332,10 @@ Map<String, ExecFn> _buildExec() {
         final py = fy != null ? fy(x, 0) : 0.0;
         if (px.isFinite && py.isFinite) points.add(Pt(px, py));
       }
-      return {'out0': SeriesData(name: name, points: points)};
+      return {'out0': styledSeries(ctx, name, points)};
     },
 
     'plane_input': (ctx) => {'out0': genPlane(ctx.params)},
-
-    'grid_input': (ctx) {
-      final p = ctx.params;
-      final name = str(p['name'], '网格');
-      final nx = math.max(2, num_(p['nx'], 40).round());
-      final ny = math.max(2, num_(p['ny'], 40).round());
-      final xmin = num_(p['xmin'], -4);
-      final xmax = num_(p['xmax'], 4);
-      final ymin = num_(p['ymin'], -4);
-      final ymax = num_(p['ymax'], 4);
-      final f = compileFormula(str(p['formula'], 'sin(sqrt(x*x+y*y))'));
-      final x = linspace(xmin, xmax, nx);
-      final y = linspace(ymin, ymax, ny);
-      final values = <List<double>>[];
-      for (final yi in y) {
-        values.add(x.map((xi) => f != null ? f(xi, yi) : double.nan).toList());
-      }
-      return {'out0': GridData(name: name, x: x, y: y, values: values)};
-    },
 
     'scatter_input': (ctx) {
       final p = ctx.params;
@@ -390,13 +371,18 @@ Map<String, ExecFn> _buildExec() {
         colors.add(color.isEmpty ? '#1f77b4' : color);
       }
       if (points.isEmpty) throw Exception('请添加点(至少一个有效点)');
+      // 基础样式(点形状/大小/颜色):逐点未设置或未暴露时作为兜底
+      final base = pointStyleFields(ctx, points.length);
       return {
         'out0': ScatterData(
           name: name,
           points: points,
-          sizes: hasSize ? sizes : null,
+          pointSize: base.size,
+          pointColor: base.color,
+          pointShape: base.shape,
+          sizes: hasSize ? sizes : base.sizes,
           shapes: hasShape ? shapes : null,
-          colors: hasColor ? colors : null,
+          colors: hasColor ? colors : base.colors,
         ),
       };
     },
@@ -424,11 +410,13 @@ Map<String, ExecFn> _buildExec() {
         }
       }
       if (points.isEmpty) throw Exception('函数在此范围内无有效值');
-      return {'out0': SeriesData(name: name, points: points)};
+      return {'out0': styledSeries(ctx, name, points)};
     },
 
     'series_input': (ctx) {
-      return {'out0': presetSeries(str(ctx.params['preset'], 'quadratic'))};
+      final s =
+          presetSeries(str(ctx.params['preset'], 'quadratic')) as SeriesData;
+      return {'out0': styledSeries(ctx, s.name, s.points)};
     },
 
     // ---------- 数据初步 ----------
@@ -644,9 +632,10 @@ Map<String, ExecFn> _buildExec() {
     'derivative': (ctx) {
       final pts = makeSeries(ctx, 'in0');
       return {
-        'out0': SeriesData(
-          name: str(ctx.params['name'], '导数'),
-          points: derivative(pts)
+        'out0': styledSeries(
+          ctx,
+          str(ctx.params['name'], '导数'),
+          derivative(pts)
               .map(
                 (p) => Pt(
                   double.parse(p.x.toStringAsFixed(6)),
@@ -661,9 +650,10 @@ Map<String, ExecFn> _buildExec() {
     'integral': (ctx) {
       final pts = makeSeries(ctx, 'in0');
       return {
-        'out0': SeriesData(
-          name: str(ctx.params['name'], '积分'),
-          points: cumulativeIntegral(pts)
+        'out0': styledSeries(
+          ctx,
+          str(ctx.params['name'], '积分'),
+          cumulativeIntegral(pts)
               .map(
                 (p) => Pt(
                   double.parse(p.x.toStringAsFixed(6)),
@@ -697,7 +687,7 @@ Map<String, ExecFn> _buildExec() {
             )
             .toList();
         return {
-          'out0': SeriesData(name: name, points: out),
+          'out0': styledSeries(ctx, name, out),
           'out1': TableData([
             Column(
               name: '参数',
@@ -725,7 +715,7 @@ Map<String, ExecFn> _buildExec() {
           )
           .toList();
       return {
-        'out0': SeriesData(name: name, points: out),
+        'out0': styledSeries(ctx, name, out),
         'out1': TableData([
           Column(
             name: '参数',
@@ -779,9 +769,10 @@ Map<String, ExecFn> _buildExec() {
       final pts = makeSeries(ctx, 'in0');
       final window = math.max(1, num_(ctx.params['window'], 5).round());
       return {
-        'out0': SeriesData(
-          name: str(ctx.params['name'], '平滑曲线'),
-          points: movingAverage(pts, window),
+        'out0': styledSeries(
+          ctx,
+          str(ctx.params['name'], '平滑曲线'),
+          movingAverage(pts, window),
         ),
       };
     },
@@ -800,9 +791,10 @@ Map<String, ExecFn> _buildExec() {
         );
       }).toList();
       return {
-        'out0': SeriesData(
-          name: str(ctx.params['name'], 'f(x)=$expr'),
-          points: points,
+        'out0': styledSeries(
+          ctx,
+          str(ctx.params['name'], 'f(x)=$expr'),
+          points,
         ),
       };
     },
@@ -855,9 +847,7 @@ Map<String, ExecFn> _buildExec() {
         }
         if (list.length >= 10000) break;
       }
-      return {
-        'out0': ScatterData(name: str(ctx.params['name'], '交点'), points: list),
-      };
+      return {'out0': styledScatter(ctx, str(ctx.params['name'], '交点'), list)};
     },
 
     // ---------- 数据转化 ----------
@@ -1071,6 +1061,120 @@ Column? _findCol(List<Column> cols, String name) {
   return null;
 }
 
+// ---------- 输出样式:曲线 / 点(供所有弧线/散点生产者复用) ----------
+
+/// 由节点参数 + 暴露输入解析曲线样式(线型/线宽/线色;接入数据列后逐段变化)
+({
+  double width,
+  String color,
+  String style,
+  List<double>? sizes,
+  List<String>? colors,
+})
+lineStyleFields(ExecContext ctx, int n) {
+  final widthVals = exposedValues(ctx.inputs['exp_lineWidth']);
+  final colorVals = exposedValues(ctx.inputs['exp_lineColor']);
+  final normW = widthVals != null ? norm01(widthVals) : null;
+  final normC = colorVals != null ? norm01(colorVals) : null;
+  final baseW = math.max(0.5, num_(ctx.params['lineWidth'], 2));
+  final baseC = str(ctx.params['lineColor'], '#ff7f0e');
+  final style = str(ctx.params['lineStyle'], 'solid') == 'dashed'
+      ? 'dashed'
+      : 'solid';
+  List<double>? sizes;
+  if (normW != null) {
+    sizes = [
+      for (var i = 0; i < n; i++)
+        baseW * math.max(0.3, normW.isEmpty ? 0.5 : normW[i % normW.length]),
+    ];
+  }
+  List<String>? colors;
+  if (normC != null) {
+    colors = [
+      for (var i = 0; i < n; i++)
+        valueColor(normC.isEmpty ? 0 : normC[i % normC.length]),
+    ];
+  }
+  return (
+    width: baseW,
+    color: baseC,
+    style: style,
+    sizes: sizes,
+    colors: colors,
+  );
+}
+
+/// 由节点参数 + 暴露输入解析点样式(形状/大小/颜色;接入数据列后逐点变化)
+({
+  double size,
+  String color,
+  String shape,
+  List<double>? sizes,
+  List<String>? colors,
+})
+pointStyleFields(ExecContext ctx, int n) {
+  final sizeVals = exposedValues(ctx.inputs['exp_pointSize']);
+  final colorVals = exposedValues(ctx.inputs['exp_pointColor']);
+  final normSize = sizeVals != null ? norm01(sizeVals) : null;
+  final normColor = colorVals != null ? norm01(colorVals) : null;
+  final baseSize = math.max(1.0, num_(ctx.params['pointSize'], 4));
+  final baseColor = str(ctx.params['pointColor'], '#1f77b4');
+  final shape = str(ctx.params['pointShape'], 'circle');
+  List<double>? sizes;
+  if (normSize != null) {
+    sizes = [
+      for (var i = 0; i < n; i++)
+        baseSize *
+            math.max(
+              0.3,
+              normSize.isEmpty ? 0.5 : normSize[i % normSize.length],
+            ),
+    ];
+  }
+  List<String>? colors;
+  if (normColor != null) {
+    colors = [
+      for (var i = 0; i < n; i++)
+        valueColor(normColor.isEmpty ? 0 : normColor[i % normColor.length]),
+    ];
+  }
+  return (
+    size: baseSize,
+    color: baseColor,
+    shape: shape,
+    sizes: sizes,
+    colors: colors,
+  );
+}
+
+/// 构造携带曲线样式的输出(所有输出弧线节点的统一个出口)
+SeriesData styledSeries(ExecContext ctx, String name, List<Pt> points) {
+  final s = lineStyleFields(ctx, points.length);
+  return SeriesData(
+    name: name,
+    points: points,
+    lineWidth: s.width,
+    lineColor: s.color,
+    lineStyle: s.style,
+    sizes: s.sizes,
+    colors: s.colors,
+  );
+}
+
+/// 构造携带点样式的输出(所有输出散点节点的统一个出口)
+ScatterData styledScatter(ExecContext ctx, String name, List<Pt3> points) {
+  final s = pointStyleFields(ctx, points.length);
+  return ScatterData(
+    name: name,
+    points: points,
+    pointSize: s.size,
+    pointColor: s.color,
+    pointShape: s.shape,
+    sizes: s.sizes,
+    colors: s.colors,
+  );
+}
+
 /// 平面生成:仅构建 x-y 平面(z=0)上的多边形面,适配 2D 坐标系
 /// (或 3D 坐标系的 x-y 轴)。预设:圆面/椭圆面/矩形面;自定义:点列多边形。
 /// 携带颜色/透明度/边缘线样式,渲染层优先使用。
@@ -1191,15 +1295,6 @@ List<double>? exposedValues(DataObject? obj) {
   }
   if (obj is SeriesData) return obj.points.map((p) => p.y).toList();
   if (obj is ScatterData) return obj.points.map((p) => p.y).toList();
-  if (obj is GridData) {
-    final flat = <double>[];
-    for (final row in obj.values) {
-      for (final v in row) {
-        if (v.isFinite) flat.add(v);
-      }
-    }
-    return flat.isEmpty ? null : flat;
-  }
   if (obj is DistributionData) {
     return obj.bins.map((b) => b.count.toDouble()).toList();
   }

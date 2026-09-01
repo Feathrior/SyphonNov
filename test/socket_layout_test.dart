@@ -44,10 +44,10 @@ void main() {
 
   testWidgets('端口行间距与几何 socketGap 一致', (tester) async {
     await pumpNode(tester);
-    // viz_line 输入依次:表格 / 曲线(可选) / 点(散点·可多连) / 线(曲线·可多连) ...
-    final y1 = tester.getTopLeft(find.text('曲线(可选)')).dy;
-    final y2 = tester.getTopLeft(find.text('点(散点·可多连)')).dy;
-    final y3 = tester.getTopLeft(find.text('线(曲线·可多连)')).dy;
+    // viz_line 输入依次:表格 / 点(散点·可多连) / 线(曲线·可多连) / 面(网格·可多连) / 文本(可多连)
+    final y1 = tester.getTopLeft(find.text('点(散点·可多连)')).dy;
+    final y2 = tester.getTopLeft(find.text('线(曲线·可多连)')).dy;
+    final y3 = tester.getTopLeft(find.text('面(网格·可多连)')).dy;
     // 每行间距 = 行高(单连线 18)+ socketGap(5),与 _rows 几何累计一致
     final expected = rowH(0) + NodeGeom.socketGap;
     expect(y2 - y1, closeTo(expected, 0.01));
