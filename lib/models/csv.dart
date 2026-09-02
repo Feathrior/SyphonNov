@@ -5,7 +5,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
-import 'package:excel/excel.dart' as xls;
 import 'package:xml/xml.dart';
 
 import 'data.dart';
@@ -79,79 +78,10 @@ List<Column> parseDelimitedText(String text, [String delimiter = ',']) {
   return columns;
 }
 
-/// 解析 Excel 文件字节(取第一个工作表)→ 表格列
-/// 依赖 excel 包,失败时抛出异常
-List<Column> excelBytesToColumns(List<int> bytes) {
-  final excel = xls.Excel.decodeBytes(bytes);
-  final tables = excel.tables;
-  if (tables.isEmpty) throw Exception('Excel 文件没有工作表');
-  final sheet = tables.values.first;
-  final rows = sheet.rows;
-  if (rows.isEmpty) return [];
-  var width = 0;
-  for (final r in rows) {
-    if (r.length > width) width = r.length;
-  }
-  if (width == 0) return [];
-  // 首行作为列名
-  final names = <String>[];
-  for (var c = 0; c < width; c++) {
-    final cell = rows[0].length > c ? rows[0][c] : null;
-    final raw = _cellText(cell).trim();
-    names.add(raw.isNotEmpty && num.tryParse(raw) == null ? raw : '列${c + 1}');
-  }
-  final columns = names
-      .map((n) => Column(name: n, values: <dynamic>[]))
-      .toList();
-  for (var r = 1; r < rows.length; r++) {
-    for (var c = 0; c < width; c++) {
-      final cell = rows[r].length > c ? rows[r][c] : null;
-      final raw = _cellText(cell).trim();
-      if (raw.isEmpty) {
-        columns[c].values.add(null);
-      } else {
-        final n = num.tryParse(raw);
-        columns[c].values.add(n ?? raw);
-      }
-    }
-  }
-  return columns;
-}
-
-String _cellText(xls.Data? cell) {
-  if (cell == null) return '';
-  final v = cell.value;
-  if (v == null) return '';
-  return '$v';
-}
-
-// ==================== xlsx 兑底解析(不依赖 excel 包) ====================
-
-/// 提取元素的本地名属性
-String? _attrLocal(XmlElement e, String local) {
-  for (final a in e.attributes) {
-    if (a.name.local == local) return a.value;
-  }
-  return null;
-}
-
-/// 从 zip 中读取第一个后缀匹配的文件内容(UTF-8)
-String? _xlsxPart(Archive archive, String suffix) {
-  for (final f in archive.files) {
-    if (f.name.endsWith(suffix)) {
-      final content = f.content;
-      if (content is List<int>) {
-        return utf8.decode(content, allowMalformed: true);
-      }
-    }
-  }
-  return null;
-}
-
-/// 自研 xlsx 解析:直接解压 zip 读取 OOXML(workbook / sharedStrings / sheet)。
-/// 用于 excel 包对某些工具生成的文件解析失败时的兼容兑底;
-/// 取第一个工作表,首行为列名,数值转为 num,其余为字符串。
-List<Column> xlsxBytesToColumnsFallback(List<int> bytes) {
+/// 解析 Excel 文件字节(取第一个工作表)→ 表格列。
+/// 直接解压 zip 读取 OOXML(workbook / sharedStrings / sheet),
+/// 首行为列名,数值转为 num,其余为字符串。
+List<Column> xlsxBytesToColumns(List<int> bytes) {
   final archive = ZipDecoder().decodeBytes(bytes);
 
   // 1) 工作簿:sheets 顺序 + 名称 + rId
@@ -279,25 +209,36 @@ List<Column> xlsxBytesToColumnsFallback(List<int> bytes) {
   return columns;
 }
 
+/// 提取元素的本地名属性
+String? _attrLocal(XmlElement e, String local) {
+  for (final a in e.attributes) {
+    if (a.name.local == local) return a.value;
+  }
+  return null;
+}
+
+/// 从 zip 中读取第一个后缀匹配的文件内容(UTF-8)
+String? _xlsxPart(Archive archive, String suffix) {
+  for (final f in archive.files) {
+    if (f.name.endsWith(suffix)) {
+      return utf8.decode(f.content, allowMalformed: true);
+    }
+  }
+  return null;
+}
+
 /// 读取数据文件(csv/tsv/txt/xlsx/xls)并转为统一 CSV 文本。
 /// - 文本文件按 UTF-8 解码(容错),避免中文乱码;
-/// - Excel 取第一个工作表并序列化为 CSV 文本:优先 excel 包解析,
-///   失败时回退到自研 OOXML 解析器(xlsx 兼容性兜底);
+/// - Excel 取第一个工作表并序列化为 CSV 文本(自研 OOXML 解析器);
 /// 失败(不存在/损坏/不支持格式)时抛出异常。
 Future<String> dataFileToCsvText(String path) async {
   final lower = path.toLowerCase();
   final bytes = await File(path).readAsBytes();
   if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
     try {
-      return columnsToCsv(excelBytesToColumns(bytes));
-    } catch (first) {
-      // excel 包解析失败(文件由不同工具生成时较常见),改用自研解析器;
-      // 都失败时抛出更易读的错误
-      try {
-        return columnsToCsv(xlsxBytesToColumnsFallback(bytes));
-      } catch (e) {
-        throw Exception('无法解析 Excel 文件(仅支持 .xlsx):$first;备选解析也失败:$e');
-      }
+      return columnsToCsv(xlsxBytesToColumns(bytes));
+    } catch (e) {
+      throw Exception('无法解析 Excel 文件(仅支持 .xlsx):$e');
     }
   }
   return utf8.decode(bytes, allowMalformed: true);

@@ -1,11 +1,48 @@
-// CSV/Excel 导入修复回归测试:UTF-8 中文文本文件不乱码,Excel 转换正常。
+// CSV/Excel 导入回归测试:UTF-8 中文文本文件不乱码,xlsx(OOML)解析正常。
+// 测试夹具用 archive 包手写最小 xlsx zip,不依赖 excel 包。
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:excel/excel.dart' as xls;
+import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:syphon_nov/models/csv.dart';
 import 'package:syphon_nov/models/data.dart';
+
+/// 手写最小 xlsx(zip + OOXML):一张表,首行列名,混合 inlineStr/数值
+List<int> minimalXlsx() {
+  final wb =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>';
+  final rels =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      '<Relationship Id="rId1" '
+      'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+      'Target="worksheets/sheet1.xml"/></Relationships>';
+  final sheet =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      '<sheetData>'
+      '<row r="1"><c r="A1" t="inlineStr"><is><t>名称</t></is></c>'
+      '<c r="B1" t="inlineStr"><is><t>数值</t></is></c></row>'
+      '<row r="2"><c r="A2" t="inlineStr"><is><t>甲</t></is></c><c r="B2"><v>1</v></c></row>'
+      '<row r="3"><c r="A3" t="inlineStr"><is><t>乙</t></is></c><c r="B3"><v>2.5</v></c></row>'
+      '<row r="4"><c r="A4" t="inlineStr"><is><t>丙</t></is></c>'
+      '<c r="B4" t="inlineStr"><is><t>3</t></is></c></row>'
+      '</sheetData></worksheet>';
+  final zip = Archive();
+  void add(String name, String content) {
+    final data = utf8.encode(content);
+    zip.addFile(ArchiveFile(name, data.length, data));
+  }
+
+  add('xl/workbook.xml', wb);
+  add('xl/_rels/workbook.xml.rels', rels);
+  add('xl/worksheets/sheet1.xml', sheet);
+  return ZipEncoder().encode(zip);
+}
 
 void main() {
   test('UTF-8 中文 CSV 解码不乱码', () async {
@@ -29,18 +66,9 @@ void main() {
     expect(cols[1].values[1], 2);
   });
 
-  test('xlsx 兜底解析器:字符串/数字/中文列名/稀疏单元格', () async {
-    final excel = xls.Excel.createExcel();
-    final sheet = excel['Sheet1'];
-    sheet.appendRow([xls.TextCellValue('名称'), xls.TextCellValue('数值')]);
-    sheet.appendRow([xls.TextCellValue('甲'), xls.IntCellValue(1)]);
-    sheet.appendRow([xls.TextCellValue('乙'), xls.DoubleCellValue(2.5)]);
-    sheet.appendRow([xls.TextCellValue('丙'), xls.TextCellValue('3')]);
-    // 稀疏单元格:B2 留空(单元格缺省)
-    final bytes = excel.encode()!;
-
-    // 兜底解析器应能读出与 excel 包一致的结果
-    final cols = xlsxBytesToColumnsFallback(bytes);
+  test('xlsx OOXML 解析器:字符串/数字/中文列名', () {
+    final bytes = minimalXlsx();
+    final cols = xlsxBytesToColumns(bytes);
     expect(cols.length, 2);
     expect(cols[0].name, '名称');
     expect(cols[0].values, ['甲', '乙', '丙']);
@@ -48,17 +76,13 @@ void main() {
     expect(cols[1].values[1], 2.5);
   });
 
-  test('兜底解析器输出与 excel 包输出一致', () async {
-    final excel = xls.Excel.createExcel();
-    final sheet = excel['Sheet1'];
-    sheet.appendRow([xls.TextCellValue('a'), xls.TextCellValue('b')]);
-    sheet.appendRow([xls.IntCellValue(7), xls.TextCellValue('x')]);
-    final bytes = excel.encode()!;
-    final viaExcel = excelBytesToColumns(bytes);
-    final viaFallback = xlsxBytesToColumnsFallback(bytes);
-    expect(viaFallback.length, viaExcel.length);
-    expect(viaFallback[0].name, viaExcel[0].name);
-    expect(viaFallback[0].values, viaExcel[0].values);
-    expect(viaFallback[1].values, viaExcel[1].values);
+  test('dataFileToCsvText 读取 xlsx 文件', () async {
+    final file = File('${Directory.systemTemp.path}/syphon_xlsx_test.xlsx');
+    await file.writeAsBytes(minimalXlsx());
+    final text = await dataFileToCsvText(file.path);
+    expect(text, contains('名称'));
+    expect(text, contains('甲'));
+    expect(text, contains('2.5'));
+    await file.delete();
   });
 }

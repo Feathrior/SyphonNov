@@ -35,12 +35,11 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   file_selector: ^1.1.0
-  excel: ^4.0.6
   path_provider: ^2.1.6
   fluent_ui: ^4.16.1
-  window_manager: ^0.4.3
-  archive: ^3.6.1
-  xml: ^6.6.1
+  window_manager: ^0.5.2
+  archive: ^4.2.0
+  xml: ^7.0.1
 
 dev_dependencies:
   flutter_test:
