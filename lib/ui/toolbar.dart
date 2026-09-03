@@ -8,9 +8,9 @@
 //   _LeftArea         —— 可拖拽移动窗口:品牌 + 菜单栏
 //   _RightArea        —— 主题 / 设置 / 运行 + 窗口控制按钮
 //
-// ==================== 按钮体系:全部统一为 _Pressable ====================
+// ==================== 按钮体系 ====================
 //
-//   所有按钮(文字菜单 / 圆形图标 / 窗口控制)共用同一个交互外壳 _Pressable:
+//   图标按钮(主题/设置/运行 + 窗口控制)统一为 _Pressable 交互外壳:
 //
 //     _Pressable = MouseRegion(悬停) + GestureDetector(按下/抬起/点击)
 //     ├── 视觉:builder(hover, pressed) 把两个状态交给按钮上色
@@ -18,6 +18,9 @@
 //
 //   无 InkWell / 波纹 / Timer / 动画容器——状态即时生效:
 //   按下无延迟,快速点击不闪烁。按钮类只剩"长什么样"一种职责。
+//
+//   顶栏文字菜单(文件/编辑/视图/帮助)为 Material MenuBar + SubmenuButton:
+//   见文件底部 _AppMenuBar,视觉同样适配 fluent(悬停底色、无波纹)。
 library;
 
 import 'dart:async';
@@ -41,18 +44,12 @@ import 'theme.dart';
 /// 交互外壳:悬停 + 按下/抬起 + 点击动作。
 ///
 /// - `builder(hover, pressed)`:按两个布尔值给按钮上色;
-/// - `onTap`:点击完成的瞬间触发;
-/// - `onHoverEnter`:鼠标进入时回调(菜单栏用它做"已展开时滑过即切换")。
+/// - `onTap`:点击完成的瞬间触发。
 class _Pressable extends StatefulWidget {
   final VoidCallback onTap;
   final Widget Function(bool hover, bool pressed) builder;
-  final VoidCallback? onHoverEnter;
 
-  const _Pressable({
-    required this.onTap,
-    required this.builder,
-    this.onHoverEnter,
-  });
+  const _Pressable({required this.onTap, required this.builder});
 
   @override
   State<_Pressable> createState() => _PressableState();
@@ -66,10 +63,7 @@ class _PressableState extends State<_Pressable> {
   Widget build(BuildContext context) {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
-      onEnter: (_) {
-        setState(() => _hover = true);
-        widget.onHoverEnter?.call();
-      },
+      onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -135,10 +129,11 @@ class Toolbar extends StatelessWidget {
     final t = SyphonTheme.of(context);
     return Row(
       children: [
-        // 主题切换:图标随当前主题取反
+        // 主题切换:图标随当前主题取反;悬停有轻微旋转动画
         _CircleIconBtn(
           icon: t.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
           tooltip: t.isDark ? '切换到亮色主题' : '切换到暗色主题',
+          spinOnHover: true,
           onPressed: () => SettingsStore.instance.setTheme(
             t.isDark ? AppTheme.light : AppTheme.dark,
           ),
@@ -146,119 +141,181 @@ class Toolbar extends StatelessWidget {
         _CircleIconBtn(
           icon: Icons.settings_outlined,
           tooltip: '设置',
+          spinOnHover: true,
           onPressed: onOpenSettings,
         ),
-        _CircleIconBtn(icon: Icons.play_arrow, tooltip: '运行数据流', isRun: true, onPressed: onRun),
+        _CircleIconBtn(
+          icon: Icons.play_arrow,
+          tooltip: '运行数据流',
+          isRun: true,
+          onPressed: onRun,
+        ),
         const SizedBox(width: 8),
         const _WindowButtons(),
       ],
     );
   }
 
-  // ---------- 菜单项(fluent.MenuFlyout) ----------
+  // ---------- 菜单项(Material MenuBar 次级菜单,视觉适配 fluent) ----------
 
   List<_MenuEntry> _menuEntries(BuildContext context) {
     final t = SyphonTheme.of(context);
     return [
       _MenuEntry('文件', _fileMenu(context, t)),
       _MenuEntry('编辑', _editMenu(context, t)),
-      _MenuEntry('视图', _viewMenu()),
-      _MenuEntry('帮助', _helpMenu(context)),
+      _MenuEntry('视图', _viewMenu(t)),
+      _MenuEntry('帮助', _helpMenu(context, t)),
     ];
   }
 
+  /// 普通菜单项:图标 + 文字(+ 快捷键)
+  MenuItemButton _mItem(
+    SyphonTheme t,
+    String label, {
+    IconData? icon,
+    String? shortcut,
+    bool danger = false,
+    VoidCallback? onTap,
+  }) {
+    return MenuItemButton(
+      onPressed: onTap,
+      style: _flyoutItemStyle(t, danger: danger),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 20,
+            child: icon == null
+                ? null
+                : Icon(icon, size: 16, color: danger ? t.danger : t.textDim),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: danger ? t.danger : t.text,
+              ),
+            ),
+          ),
+          if (shortcut != null) Text(shortcut, style: _shortcutStyle(t)),
+        ],
+      ),
+    );
+  }
+
+  /// 勾选菜单项(带 ✓,如"框选模式")
+  MenuItemButton _mCheck(
+    SyphonTheme t,
+    String label,
+    bool checked,
+    VoidCallback onToggle,
+  ) {
+    return MenuItemButton(
+      onPressed: onToggle,
+      style: _flyoutItemStyle(t),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 20,
+            child: checked
+                ? Icon(Icons.check, size: 16, color: t.accent)
+                : null,
+          ),
+          const SizedBox(width: 8),
+          Text(label, style: TextStyle(fontSize: 12.5, color: t.text)),
+        ],
+      ),
+    );
+  }
+
+  /// 菜单分隔线:细线 + 上下留白,贴近 fluent MenuFlyoutSeparator
+  Widget _mDivider(SyphonTheme t) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Divider(height: 1, thickness: 1, color: t.stroke),
+  );
+
   /// 文件:保存 / 加载 / 预设列表 / 清空
-  List<fluent.MenuFlyoutItemBase> _fileMenu(BuildContext context, SyphonTheme t) {
+  List<Widget> _fileMenu(BuildContext context, SyphonTheme t) {
     return [
-      fluent.MenuFlyoutItem(
-        text: const Text('保存画布'),
-        leading: const Icon(Icons.save_outlined, size: 16),
-        onPressed: () => _saveCanvas(context),
+      _mItem(
+        t,
+        '保存画布',
+        icon: Icons.save_outlined,
+        onTap: () => _saveCanvas(context),
       ),
-      fluent.MenuFlyoutItem(
-        text: const Text('加载画布'),
-        leading: const Icon(Icons.folder_open_outlined, size: 16),
-        onPressed: () => _loadCanvas(context),
+      _mItem(
+        t,
+        '加载画布',
+        icon: Icons.folder_open_outlined,
+        onTap: () => _loadCanvas(context),
       ),
-      const fluent.MenuFlyoutSeparator(),
+      _mDivider(t),
       for (final preset in kPresetsReady)
-        fluent.MenuFlyoutItem(
-          text: Text('预设 · ${preset.name}'),
-          leading: const Icon(Icons.dashboard_outlined, size: 16),
-          onPressed: () => _loadPreset(context, preset),
+        _mItem(
+          t,
+          '预设 · ${preset.name}',
+          icon: Icons.dashboard_outlined,
+          onTap: () => _loadPreset(context, preset),
         ),
-      const fluent.MenuFlyoutSeparator(),
-      fluent.MenuFlyoutItem(
-        text: Text('清空画布', style: TextStyle(color: t.danger)),
-        leading: Icon(Icons.delete_outline, size: 16, color: t.danger),
-        onPressed: () => _clearCanvas(context),
+      _mDivider(t),
+      _mItem(
+        t,
+        '清空画布',
+        icon: Icons.delete_outline,
+        danger: true,
+        onTap: () => _clearCanvas(context),
       ),
     ];
   }
 
   /// 编辑:撤销 / 重做 / 框选模式
-  List<fluent.MenuFlyoutItemBase> _editMenu(BuildContext context, SyphonTheme t) {
+  List<Widget> _editMenu(BuildContext context, SyphonTheme t) {
     return [
-      fluent.MenuFlyoutItem(
-        text: const Text('撤销'),
-        leading: const Icon(Icons.undo, size: 16),
-        trailing: Text('Ctrl+Z', style: _shortcutStyle(t)),
-        onPressed: () => GraphStore.instance.undo(),
+      _mItem(
+        t,
+        '撤销',
+        icon: Icons.undo,
+        shortcut: 'Ctrl+Z',
+        onTap: () => GraphStore.instance.undo(),
       ),
-      fluent.MenuFlyoutItem(
-        text: const Text('重做'),
-        leading: const Icon(Icons.redo, size: 16),
-        trailing: Text('Ctrl+Y', style: _shortcutStyle(t)),
-        onPressed: () => GraphStore.instance.redo(),
+      _mItem(
+        t,
+        '重做',
+        icon: Icons.redo,
+        shortcut: 'Ctrl+Y',
+        onTap: () => GraphStore.instance.redo(),
       ),
-      const fluent.MenuFlyoutSeparator(),
-      fluent.ToggleMenuFlyoutItem(
-        text: const Text('框选模式'),
-        value: boxSelect,
-        onChanged: onBoxSelectChanged,
-      ),
+      const PopupMenuDivider(height: 9),
+      _mCheck(t, '框选模式', boxSelect, () => onBoxSelectChanged(!boxSelect)),
     ];
   }
 
   /// 视图:适应视图 / 一键整理
-  List<fluent.MenuFlyoutItemBase> _viewMenu() {
+  List<Widget> _viewMenu(SyphonTheme t) {
     return [
-      fluent.MenuFlyoutItem(
-        text: const Text('适应视图'),
-        leading: const Icon(Icons.fit_screen_outlined, size: 16),
-        onPressed: onFitView,
-      ),
-      fluent.MenuFlyoutItem(
-        text: const Text('一键整理'),
-        leading: const Icon(Icons.grid_view_outlined, size: 16),
-        onPressed: onAutoLayout,
-      ),
+      _mItem(t, '适应视图', icon: Icons.fit_screen_outlined, onTap: onFitView),
+      _mItem(t, '一键整理', icon: Icons.grid_view_outlined, onTap: onAutoLayout),
     ];
   }
 
   /// 帮助:快捷键 / 关于
-  List<fluent.MenuFlyoutItemBase> _helpMenu(BuildContext context) {
+  List<Widget> _helpMenu(BuildContext context, SyphonTheme t) {
     return [
-      fluent.MenuFlyoutItem(
-        text: const Text('快捷键'),
-        leading: const Icon(Icons.keyboard_outlined, size: 16),
-        onPressed: onOpenShortcuts,
-      ),
-      const fluent.MenuFlyoutSeparator(),
-      fluent.MenuFlyoutItem(
-        text: const Text('关于 Syphon'),
-        leading: const Icon(Icons.info_outline, size: 16),
-        onPressed: () => _showAbout(context),
+      _mItem(t, '快捷键', icon: Icons.keyboard_outlined, onTap: onOpenShortcuts),
+      _mDivider(t),
+      _mItem(
+        t,
+        '关于 Syphon',
+        icon: Icons.info_outline,
+        onTap: () => _showAbout(context),
       ),
     ];
   }
 
   /// 菜单项快捷键小字样式
-  TextStyle _shortcutStyle(SyphonTheme t) => TextStyle(
-    fontSize: 11,
-    color: t.textFaint,
-    fontFamily: SyphonDims.monoFont,
-  );
+  TextStyle _shortcutStyle(SyphonTheme t) =>
+      TextStyle(fontSize: 11, color: t.textFaint);
 
   // ---------- 文件动作 ----------
 
@@ -342,7 +399,7 @@ class Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            const Text('Syphon v0.2.0', style: TextStyle(fontSize: 15)),
+            const Text('Syphon v0.3.1', style: TextStyle(fontSize: 15)),
           ],
         ),
         content: const Text(
@@ -483,173 +540,139 @@ class _Brand extends StatelessWidget {
 /// 一个菜单入口(标题 + 菜单项)
 class _MenuEntry {
   final String label;
-  final List<fluent.MenuFlyoutItemBase> items;
+  final List<Widget> items;
 
   const _MenuEntry(this.label, this.items);
 }
 
-// ---------- 信号总线:按钮按下/悬停 → 菜单呼出 ----------
+// ════════════════════════════════════════════════════════════════════
+//  菜单栏:Material MenuBar + 次级菜单(MenuItemButton),视觉适配 fluent
+// ════════════════════════════════════════════════════════════════════
 
-/// 菜单信号总线:按钮侧只管"发送",菜单栏侧只管"接收",两侧互不持有引用。
-///
-/// - 按下信号(press):点击按钮 → 呼出/关闭对应菜单
-/// - 悬停信号(hover):已有菜单展开时滑过按钮 → 切换到它
-///
-/// 用 broadcast Stream 而非直接回调:事件先进队列、同一微任务批次内依次消费,
-/// 避免按钮的视觉 setState 与菜单栏的 setState 挤在同一帧内竞争渲染。
-class _MenuSignal {
-  final _press = StreamController<int>.broadcast();
-  final _hover = StreamController<int>.broadcast();
-
-  /// 发送:按钮被点击(索引)
-  void sendPress(int index) => _press.add(index);
-
-  /// 发送:鼠标滑入按钮(索引)
-  void sendHover(int index) => _hover.add(index);
-
-  /// 接收:点击信号流
-  Stream<int> get press => _press.stream;
-
-  /// 接收:悬停信号流
-  Stream<int> get hover => _hover.stream;
-
-  void dispose() {
-    _press.close();
-    _hover.close();
-  }
-}
-
-/// 菜单栏:订阅按钮信号并呼出 MenuFlyout(与 Win11 原生菜单栏行为一致)。
-class _AppMenuBar extends StatefulWidget {
+/// 顶栏菜单栏:Material MenuBar + SubmenuButton,视觉适配 fluent。
+/// 弹层 bgFloat 底 + stroke 边框 + 圆角 6 + 投影;栏内按钮悬停 bgFloat、无波纹;
+/// 首次点击展开后可在各菜单间悬停切换(贴近原生 Windows 菜单栏交互)。
+/// 应用根是 FluentApp(无 MaterialApp),这里显式提供 Theme 供 Material 组件使用。
+class _AppMenuBar extends StatelessWidget {
   final List<_MenuEntry> entries;
 
   const _AppMenuBar({required this.entries});
 
   @override
-  State<_AppMenuBar> createState() => _AppMenuBarState();
-}
-
-class _AppMenuBarState extends State<_AppMenuBar> {
-  late final _MenuSignal _signal = _MenuSignal();
-  late final List<fluent.FlyoutController> _controllers =
-      List.generate(widget.entries.length, (_) => fluent.FlyoutController());
-  late final List<StreamSubscription<int>> _signalSubs;
-  int? _openIndex;
-
-  @override
-  void initState() {
-    super.initState();
-    // 订阅信号:按下 → 呼出菜单;悬停 → 展开状态下切换
-    _signalSubs = [
-      _signal.press.listen(_onPressed),
-      _signal.hover.listen(_onHovered),
-    ];
-  }
-
-  @override
-  void dispose() {
-    for (final s in _signalSubs) {
-      s.cancel();
-    }
-    _signal.dispose();
-    for (final c in _controllers) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  /// 接收「按下」信号:呼出第 index 个菜单;重复点击同一按钮由 barrier 关闭。
-  void _onPressed(int index) {
-    if (_openIndex != null && _openIndex != index) {
-      _controllers[_openIndex!].close();
-    }
-    _show(index);
-  }
-
-  /// 接收「悬停」信号:已有菜单展开时,滑到其他按钮上即切换到它。
-  void _onHovered(int index) {
-    if (_openIndex == null || _openIndex == index) return;
-    _show(index);
-  }
-
-  Future<void> _show(int index) async {
-    if (mounted) setState(() => _openIndex = index);
-    await _controllers[index].showFlyout(
-      barrierColor: Colors.transparent, // 菜单语义:点击外部即关,不遮暗界面
-      placementMode: fluent.FlyoutPlacementMode.bottomCenter,
-      additionalOffset: 0,
-      transitionDuration: Duration.zero, // 松开即显示,无淡入等待
-      builder: (ctx) => fluent.MenuFlyout(items: widget.entries[index].items),
-    );
-    // 关闭后复位;若因悬停切换已指向新菜单,则不覆盖
-    if (mounted && _openIndex == index) {
-      setState(() => _openIndex = null);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      spacing: 2,
-      children: [
-        for (var i = 0; i < widget.entries.length; i++)
-          fluent.FlyoutTarget(
-            controller: _controllers[i],
-            child: _MenuBtn(
-              label: widget.entries[i].label,
-              index: i,
-              signal: _signal,
-              open: _openIndex == i,
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-/// 菜单文字按钮:只发送信号,不关心菜单如何呼出。
-/// Win11 风格外观——圆角 5,悬停/展开 bgFloat,按下 strokeStrong。
-class _MenuBtn extends StatelessWidget {
-  final String label;
-  final int index;
-  final _MenuSignal signal;
-  final bool open;
-
-  const _MenuBtn({
-    required this.label,
-    required this.index,
-    required this.signal,
-    required this.open,
-  });
-
-  @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    return _Pressable(
-      onTap: () => signal.sendPress(index), // 按下信号 → 菜单栏接收后呼出
-      onHoverEnter: () => signal.sendHover(index), // 悬停信号 → 展开状态下切换
-      builder: (hover, pressed) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-        decoration: BoxDecoration(
-          color: pressed
-              ? t.strokeStrong
-              : (open || hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0)),
-          borderRadius: BorderRadius.circular(5),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 12.5,
-            height: 1.2,
-            color: t.text,
-            letterSpacing: 0.2,
-          ),
-        ),
+    // 弹层(次级菜单)样式:bgFloat 底 + 细边框 + 圆角 6 + 投影
+    final flyoutStyle = MenuStyle(
+      backgroundColor: WidgetStatePropertyAll(t.bgFloat),
+      surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+      elevation: const WidgetStatePropertyAll(6),
+      shadowColor: const WidgetStatePropertyAll(Colors.black26),
+      side: WidgetStatePropertyAll(BorderSide(color: t.stroke, width: 1)),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+      ),
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+      ),
+    );
+    // 栏体本身透明:毛玻璃背景由 _ToolbarScaffold 提供
+    final barStyle = MenuStyle(
+      backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+      surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+      elevation: const WidgetStatePropertyAll(0),
+      shadowColor: const WidgetStatePropertyAll(Colors.transparent),
+      side: const WidgetStatePropertyAll(BorderSide.none),
+      padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+    );
+    return Theme(
+      data: ThemeData(
+        useMaterial3: true,
+        // 顶栏按钮与弹出菜单统一使用微软雅黑(中文渲染更清晰)
+        fontFamily: 'Microsoft YaHei',
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: t.accent,
+          brightness: t.isDark ? Brightness.dark : Brightness.light,
+        ).copyWith(surface: t.bgFloat),
+        menuTheme: MenuThemeData(style: flyoutStyle),
+        menuButtonTheme: MenuButtonThemeData(style: _barBtnStyle(t)),
+      ),
+      child: MenuBar(
+        style: barStyle,
+        children: [
+          for (final e in entries)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 1),
+              child: SubmenuButton(
+                menuChildren: e.items,
+                child: Text(
+                  e.label,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    height: 1.2,
+                    color: t.text,
+                    letterSpacing: 0.2,
+                    // 显式指定常规字重:统一四个按钮为细体(避免 CJK 回退渲染出粗体)
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
 }
+
+/// 菜单栏顶层按钮(MenuBar):圆角 5、紧凑行高、悬停 bgFloat、无波纹
+ButtonStyle _barBtnStyle(SyphonTheme t) => ButtonStyle(
+  minimumSize: const WidgetStatePropertyAll(Size(0, 32)),
+  padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 11)),
+  shape: WidgetStatePropertyAll(
+    RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+  ),
+  backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+  foregroundColor: WidgetStatePropertyAll(t.text),
+  overlayColor: WidgetStateProperty.resolveWith((states) {
+    if (states.contains(WidgetState.pressed)) {
+      return t.strokeStrong.withValues(alpha: 0.4);
+    }
+    if (states.contains(WidgetState.hovered) ||
+        states.contains(WidgetState.focused)) {
+      return t.bgFloat.withValues(alpha: 0.9);
+    }
+    return Colors.transparent;
+  }),
+  splashFactory: NoSplash.splashFactory,
+  elevation: const WidgetStatePropertyAll(0),
+  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+);
+
+/// 弹层内菜单项:行高 34 + 悬停底色提亮(贴近 fluent MenuFlyoutItem)
+ButtonStyle _flyoutItemStyle(SyphonTheme t, {bool danger = false}) =>
+    ButtonStyle(
+      minimumSize: const WidgetStatePropertyAll(Size(0, 34)),
+      padding: const WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 10),
+      ),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+      ),
+      backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+      foregroundColor: WidgetStatePropertyAll(danger ? t.danger : t.text),
+      overlayColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.pressed)) {
+          return t.strokeStrong.withValues(alpha: 0.6);
+        }
+        if (states.contains(WidgetState.hovered) ||
+            states.contains(WidgetState.focused)) {
+          return t.lighten(t.bgFloat, t.isDark ? 0.07 : 0.04);
+        }
+        return Colors.transparent;
+      }),
+      splashFactory: NoSplash.splashFactory,
+      elevation: const WidgetStatePropertyAll(0),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
 
 // ════════════════════════════════════════════════════════════════════
 //  圆形图标按钮:30x30(主题 / 设置 / 运行)
@@ -660,12 +683,14 @@ class _CircleIconBtn extends StatelessWidget {
   final String tooltip;
   final VoidCallback onPressed;
   final bool isRun; // 运行按钮:accent 色 + 半透明 accent 背景
+  final bool spinOnHover; // 悬停时图标轻微旋转(设置 / 主题切换)
 
   const _CircleIconBtn({
     required this.icon,
     required this.tooltip,
     required this.onPressed,
     this.isRun = false,
+    this.spinOnHover = false,
   });
 
   @override
@@ -689,10 +714,16 @@ class _CircleIconBtn extends StatelessWidget {
               shape: BoxShape.circle,
             ),
             alignment: Alignment.center,
-            child: Icon(
-              icon,
-              size: 16,
-              color: isRun ? t.accent : (active ? t.text : t.textDim),
+            child: AnimatedRotation(
+              // 悬停时旋转约 30°(1/12 圈),移出后转回
+              turns: spinOnHover && hover ? 0.0833 : 0,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+              child: Icon(
+                icon,
+                size: 16,
+                color: isRun ? t.accent : (active ? t.text : t.textDim),
+              ),
             ),
           );
         },
@@ -774,7 +805,11 @@ class _WindowBtn extends StatelessWidget {
   final VoidCallback onTap;
   final bool close;
 
-  const _WindowBtn({required this.icon, required this.onTap, this.close = false});
+  const _WindowBtn({
+    required this.icon,
+    required this.onTap,
+    this.close = false,
+  });
 
   @override
   Widget build(BuildContext context) {

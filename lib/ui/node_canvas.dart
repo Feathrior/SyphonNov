@@ -84,7 +84,8 @@ class _Conn {
   final String socketId;
   final SocketType type;
   final bool isSource;
-  final Offset anchor; // 流坐标锚点
+  final Offset anchor;
+
   const _Conn(
     this.nodeId,
     this.socketId,
@@ -94,16 +95,41 @@ class _Conn {
   );
 }
 
+// ==================== 切断粒子爆裂(模仿水果忍者) ====================
+
+/// 单颗爆裂粒子:初始位置由爆裂原点决定,速度/尺寸为 flow 单位
+/// (生成时按 zoom 折算,保证屏幕上看起来屏幕恒定)。
+class _Particle {
+  final Offset vel; // flow 单位/秒(方向 + 速率)
+  final double size; // 半径(flow)
+  final Color color;
+
+  const _Particle({required this.vel, required this.size, required this.color});
+}
+
+/// 一次切断的粒子爆裂:原点 + 粒子束 + 起始时刻(驱动 450ms 扩散淡出动画)
+class _ParticleBurst {
+  final Offset origin; // flow 坐标
+  final List<_Particle> particles;
+  final DateTime at;
+
+  const _ParticleBurst({
+    required this.origin,
+    required this.particles,
+    required this.at,
+  });
+}
+
 class _EdgesPainter extends CustomPainter {
   final List<GraphEdge> edges;
   final List<NodeGroup> groups; // 分组框(Blender 风格):边框 + 名称标签
   final String? hoverEdge;
-  final String? cutHighlight;
   final String? altSplitEdge;
   final Offset? altSplitPoint;
   final String? insertPreviewEdge;
   final Offset? insertPreviewPoint;
-  final Offset? cutFlash;
+  // 切断粒子爆裂(水果忍者式):每次切断一颗,各带独立动画进度
+  final List<({_ParticleBurst burst, double progress})> liveBursts;
   final _Conn? connecting;
   final Offset? connectPos;
   final String? selectedSplitEdgeId;
@@ -111,7 +137,6 @@ class _EdgesPainter extends CustomPainter {
   final Color flowEdge;
   final Color accent;
   final double zoom; // 当前缩放:Transform 内绘制,所有标记尺寸除以 zoom 保持屏幕恒定
-  final double cutFlashProgress; // 切断标记动画进度 0~1
   // 切水果刀光:划过轨迹点(flow 坐标)与整体淡出进度 0~1
   final List<Offset> slashTrail;
   final double slashTrailProgress;
@@ -126,12 +151,11 @@ class _EdgesPainter extends CustomPainter {
     required this.edges,
     required this.groups,
     this.hoverEdge,
-    this.cutHighlight,
     this.altSplitEdge,
     this.altSplitPoint,
     this.insertPreviewEdge,
     this.insertPreviewPoint,
-    this.cutFlash,
+    this.liveBursts = const [],
     this.connecting,
     this.connectPos,
     this.selectedSplitEdgeId,
@@ -139,7 +163,6 @@ class _EdgesPainter extends CustomPainter {
     required this.flowEdge,
     required this.accent,
     required this.zoom,
-    this.cutFlashProgress = 0,
     this.slashTrail = const [],
     this.slashTrailProgress = 1,
   }) : nodeMap = {for (final n in nodes) n.id: n} {
@@ -225,9 +248,9 @@ class _EdgesPainter extends CustomPainter {
     if (insertPreviewEdge != null && insertPreviewPoint != null) {
       _paintInsertPreview(canvas, insertPreviewPoint!);
     }
-    // Ctrl 切断标记(红色斜线,扩散淡出动画)
-    if (cutFlash != null) {
-      _paintCutFlash(canvas);
+    // 切断粒子爆裂(水果忍者果肉迸溅,扩散 + 淡出)
+    if (liveBursts.isNotEmpty) {
+      _paintBursts(canvas);
     }
     // 切水果刀光(白色渐变光带,随轨迹渐隐)
     if (slashTrail.length >= 2 && slashTrailProgress < 1) {
@@ -250,11 +273,6 @@ class _EdgesPainter extends CustomPainter {
       // 普通悬停:accent 色
       color = accent;
       width = 3.6;
-    }
-    if (e.id == cutHighlight) {
-      // Ctrl 划断悬停:红(对应 React hoverEdge #ef4444)
-      color = const Color(0xFFEF4444);
-      width = 4.0;
     }
     if (e.id == altSplitEdge) {
       // Alt 拆分悬停:紫(React #8b5cf6)
@@ -477,24 +495,19 @@ class _EdgesPainter extends CustomPainter {
     tp.paint(canvas, Offset(p.dx - tp.width / 2, rect.top + 1 / zoom));
   }
 
-  /// Ctrl 切断标记:20px 红色 45° 斜线,scale 0.6→1.6 扩散并淡出(React .nf-cut-flash)
-  void _paintCutFlash(Canvas canvas) {
-    final p = cutFlash;
-    if (p == null) return;
-    final prog = cutFlashProgress.clamp(0.0, 1.0).toDouble();
-    final scale = 0.6 + prog; // 0.6 → 1.6
-    // 透明度:0 → 1(30% 处)→ 0
-    final opacity = (prog < 0.3 ? prog / 0.3 : (1 - prog) / 0.7)
-        .clamp(0.0, 1.0)
-        .toDouble();
-    final len = 20 * scale / zoom;
-    final w = 2.0 / zoom;
-    final dir = Offset(math.cos(math.pi / 4), math.sin(math.pi / 4));
-    final paint = Paint()
-      ..color = const Color(0xFFEF4444).withValues(alpha: opacity)
-      ..strokeWidth = w
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(p - dir * (len / 2), p + dir * (len / 2), paint);
+  /// 切断粒子爆裂:每次切断的粒子束各自沿方向飞散,
+  /// 二次方淡出 + 半径收缩(模仿水果忍者:砍断瞬间果肉从切点迸溅)
+  void _paintBursts(Canvas canvas) {
+    final paint = Paint();
+    for (final lb in liveBursts) {
+      final t = lb.progress.clamp(0.0, 1.0).toDouble();
+      final fade = (1 - t) * (1 - t); // 快出慢隐
+      for (final p in lb.burst.particles) {
+        final pos = lb.burst.origin + p.vel * t;
+        paint.color = p.color.withValues(alpha: fade);
+        canvas.drawCircle(pos, p.size * (1 - 0.45 * t), paint);
+      }
+    }
   }
 
   /// 切水果刀光:沿轨迹绘制渐变光带,头部亮白、尾部淡出,宽度随轨迹衰减
@@ -606,16 +619,14 @@ class _EdgesPainter extends CustomPainter {
       old.groups != groups ||
       old.revision != revision ||
       old.zoom != zoom ||
-      old.cutFlashProgress != cutFlashProgress ||
       old.slashTrailProgress != slashTrailProgress ||
       old.slashTrail != slashTrail ||
       old.hoverEdge != hoverEdge ||
-      old.cutHighlight != cutHighlight ||
       old.altSplitEdge != altSplitEdge ||
       old.altSplitPoint != altSplitPoint ||
       old.insertPreviewEdge != insertPreviewEdge ||
       old.insertPreviewPoint != insertPreviewPoint ||
-      old.cutFlash != cutFlash ||
+      old.liveBursts != liveBursts ||
       old.selectedSplitEdgeId != selectedSplitEdgeId ||
       old.connecting != connecting ||
       old.connectPos != connectPos;
@@ -638,9 +649,9 @@ class NodeCanvasState extends State<NodeCanvas>
   final ValueNotifier<double> _zoomNotifier = ValueNotifier(1);
   final FocusNode _focusNode = FocusNode();
 
-  // 切断标记扩散动画:每帧刷新直到 420ms 动画结束
+  // 切断粒子爆裂动画:每帧刷新直到动画结束
   late final Ticker _cutTicker;
-  DateTime _cutFlashAt = DateTime.now();
+  final List<_ParticleBurst> _bursts = []; // 一次手势可爆出多次(每次切断追加一颗)
 
   double _zoom = 1;
   Offset _pan = Offset.zero;
@@ -672,13 +683,10 @@ class NodeCanvasState extends State<NodeCanvas>
   bool _spaceDown = false;
   bool _panFromNode = false; // 背景 pan 起点落在节点内部:忽略平移(节点内拖动不移动背景)
   String? _hoverEdge;
-  String? _cutHighlight;
   String? _altSplitEdge;
   Offset? _altSplitPoint;
   String? _insertPreviewEdge;
   Offset? _insertPreviewPoint;
-  Offset? _cutFlash;
-  Timer? _cutFlashTimer;
   // 切水果刀光:记录 Ctrl 拖拽划过画布的轨迹点(flow 坐标),用于绘制渐隐光带
   final List<Offset> _slashTrail = [];
   DateTime _slashTrailAt = DateTime.now();
@@ -730,18 +738,22 @@ class NodeCanvasState extends State<NodeCanvas>
   @override
   void initState() {
     super.initState();
-    // 切断/刀光动画:每帧刷新直到动画全部结束(渲染层,不改交互逻辑)
+    // 切断粒子爆裂/刀光动画:每帧刷新直到动画全部结束(渲染层,不改交互逻辑)
     _cutTicker = createTicker((_) {
       if (!mounted) return;
       final now = DateTime.now();
-      final flashAlive =
-          _cutFlash != null &&
-          now.difference(_cutFlashAt).inMicroseconds < 420000;
+      final burstAlive = _bursts.any(
+        (b) => now.difference(b.at).inMilliseconds < 450,
+      );
       final trailAlive =
           _slashTrail.isNotEmpty &&
           now.difference(_slashTrailAt).inMilliseconds < 300;
-      if (!flashAlive && !trailAlive) {
+      if (!burstAlive && !trailAlive) {
         _cutTicker.stop();
+        if (_bursts.isNotEmpty) {
+          _bursts.clear();
+          _bump();
+        }
         if (_slashTrail.isNotEmpty) {
           _slashTrail.clear();
           _bump();
@@ -1432,17 +1444,12 @@ class NodeCanvasState extends State<NodeCanvas>
       _slashTrailAt = DateTime.now();
       if (!_cutTicker.isActive) _cutTicker.start();
       final hit = _hitEdgeAt(flow, threshold: 46 / _zoom);
-      if (hit != null && hit.edge.id != _cutHighlight) {
-        _cutHighlight = hit.edge.id;
+      if (hit != null) {
         store.removeEdge(hit.edge.id);
-        _cutFlash = hit.hit.point;
-        _cutFlashAt = DateTime.now();
-        _cutFlashTimer?.cancel();
-        _cutFlashTimer = Timer(const Duration(milliseconds: 400), () {
-          _cutFlash = null;
-          _cutHighlight = null;
-          _bump();
-        });
+        // 每砍断一条线都在其切点生成一次粒子爆裂(颜色跟随该连线端口色)
+        _bursts.add(_makeBurst(hit.hit.point, _edgeBaseColor(hit.edge)));
+        if (_bursts.length > 16) _bursts.removeAt(0); // 手势中限长防堆积
+        if (!_cutTicker.isActive) _cutTicker.start();
         if (store.autoRun) store.runPipeline();
       }
       _bump();
@@ -1892,12 +1899,64 @@ class NodeCanvasState extends State<NodeCanvas>
 
   @override
   void dispose() {
-    _cutFlashTimer?.cancel();
     _cutTicker.dispose();
     _zoomNotifier.dispose();
     _sockHover.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  /// 切断连线的基准色(与连线绘制一致:源端口颜色,找不到时回退默认色)
+  Color _edgeBaseColor(GraphEdge e) {
+    for (final n in store.nodes) {
+      if (n.id != e.source) continue;
+      final cfg = getConfig(n.configId);
+      if (cfg == null) break;
+      for (final o in cfg.outputs) {
+        if (o.id == e.sourceHandle) {
+          final hex = kSocketColor[o.type];
+          if (hex != null) return socketColor(o.type);
+        }
+      }
+      break;
+    }
+    return const Color(0xFF7C8DB5);
+  }
+
+  /// 生成切断粒子爆裂:10~17 颗粒子,颜色以连线色为基准做同色系轻微偏差
+  /// (色相 ±6°、饱和度/明度小幅随机),速度/尺寸按 zoom 折算成 flow 单位。
+  _ParticleBurst _makeBurst(Offset p, Color base) {
+    final rand = math.Random();
+    final hsv = HSVColor.fromColor(base);
+    final n = 10 + rand.nextInt(8);
+    Color vary() {
+      final hue = (hsv.hue + rand.nextDouble() * 12 - 6) % 360.0;
+      final sat = (hsv.saturation * (0.85 + rand.nextDouble() * 0.3)).clamp(
+        0.0,
+        1.0,
+      );
+      final val = (hsv.value * (0.85 + rand.nextDouble() * 0.3)).clamp(
+        0.0,
+        1.0,
+      );
+      return HSVColor.fromAHSV(1, hue, sat, val).toColor();
+    }
+
+    return _ParticleBurst(
+      origin: p,
+      at: DateTime.now(),
+      particles: [
+        for (var i = 0; i < n; i++)
+          _Particle(
+            vel: Offset.fromDirection(
+              rand.nextDouble() * 2 * math.pi,
+              (45 + rand.nextDouble() * 105) / _zoom,
+            ),
+            size: (1.5 + rand.nextDouble() * 2.6) / _zoom,
+            color: vary(),
+          ),
+      ],
+    );
   }
 
   // ---------------- 交互回调装配 ----------------
@@ -2046,11 +2105,18 @@ class NodeCanvasState extends State<NodeCanvas>
     List<GraphNode> nodes,
     List<GraphEdge> edges,
   ) {
-    // 切断标记动画进度(0~1,420ms)
-    final cutProg = _cutFlash == null
-        ? 0.0
-        : (DateTime.now().difference(_cutFlashAt).inMicroseconds / 420000.0)
-              .clamp(0.0, 1.0);
+    // 切断粒子爆裂:每次切断各自计时(各 0~1,450ms)
+    final now = DateTime.now();
+    final liveBursts = [
+      for (final b in _bursts)
+        (
+          burst: b,
+          progress: (now.difference(b.at).inMilliseconds / 450.0).clamp(
+            0.0,
+            1.0,
+          ),
+        ),
+    ];
     // 刀光整体淡出:距最后一次划过的时刻 0→300ms 内从 0 → 1
     final slashProg = _slashTrail.isEmpty
         ? 1.0
@@ -2061,12 +2127,11 @@ class NodeCanvasState extends State<NodeCanvas>
       edges: edges,
       groups: store.groups,
       hoverEdge: _hoverEdge,
-      cutHighlight: _cutHighlight,
       altSplitEdge: _altSplitEdge,
       altSplitPoint: _altSplitPoint,
       insertPreviewEdge: _insertPreviewEdge,
       insertPreviewPoint: _insertPreviewPoint,
-      cutFlash: _cutFlash,
+      liveBursts: liveBursts,
       connecting: _connecting,
       connectPos: _connectFlowPos,
       selectedSplitEdgeId: store.selectedSplitEdgeId,
@@ -2074,7 +2139,6 @@ class NodeCanvasState extends State<NodeCanvas>
       flowEdge: t.flowEdge,
       accent: t.accent,
       zoom: _zoom,
-      cutFlashProgress: cutProg,
       slashTrail: _slashTrail,
       slashTrailProgress: slashProg,
     );

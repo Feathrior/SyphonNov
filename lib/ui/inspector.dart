@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/data.dart' as md;
 import '../models/registry.dart';
 import '../store/graph_store.dart';
+import 'data_preview.dart';
 import 'theme.dart';
 
 String _kindName(md.DataObject o) {
@@ -20,93 +21,7 @@ String _kindName(md.DataObject o) {
   return 'object';
 }
 
-// ==================== 数据表格 ====================
-
-class _MiniTable extends StatelessWidget {
-  final List<String> headers;
-  final List<List<String>> rows;
-  final String? footer;
-
-  const _MiniTable({required this.headers, required this.rows, this.footer});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    // .nf-table-wrap:overflow auto、max-height 96
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 96),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.vertical,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Table(
-                // .nf-table th,td:border 1px stroke
-                border: TableBorder.all(color: t.stroke, width: 1),
-                columnWidths: {0: const FixedColumnWidth(30)},
-                defaultColumnWidth: const IntrinsicColumnWidth(),
-                children: [
-                  // .nf-table th:bg-float、textDim
-                  TableRow(
-                    decoration: BoxDecoration(color: t.bgFloat),
-                    children: [
-                      _Cell('', header: true),
-                      for (final h in headers) _Cell(h, header: true),
-                    ],
-                  ),
-                  for (final r in rows)
-                    TableRow(
-                      children: [
-                        _Cell('${rows.indexOf(r)}'),
-                        for (var i = 0; i < r.length; i++) _Cell(r[i]),
-                      ],
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        if (footer != null)
-          // .nf-table-more:textFaint、fontSize 10、padding 3 0
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: Text(
-              footer!,
-              style: TextStyle(fontSize: 10, color: t.textFaint),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-// .nf-table th,td:padding 2 8、fontSize 11、nowrap;th 为 textDim + w600
-class _Cell extends StatelessWidget {
-  final String text;
-  final bool header;
-
-  const _Cell(this.text, {this.header = false});
-
-  @override
-  Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      child: Text(
-        text,
-        softWrap: false,
-        overflow: TextOverflow.visible,
-        style: TextStyle(
-          fontSize: 11,
-          color: header ? t.textDim : t.text,
-          fontWeight: header ? FontWeight.w600 : FontWeight.w400,
-        ),
-      ),
-    );
-  }
-}
+// ==================== 数据表格(共用 data_preview.dart 的 MiniTable) ====================
 
 // .nf-obj-summary:fontSize 12、text、line-height 1.8
 class _Summary extends StatelessWidget {
@@ -141,7 +56,7 @@ class ObjectPreview extends StatelessWidget {
       final cols = o.columns;
       final rows = cols.isEmpty ? 0 : cols.first.values.length;
       final shown = rows < 8 ? rows : 8;
-      return _MiniTable(
+      return MiniTable(
         headers: [for (final c in cols) c.name],
         rows: [
           for (var r = 0; r < shown; r++)
@@ -155,7 +70,7 @@ class ObjectPreview extends StatelessWidget {
     }
     if (o is md.SeriesData) {
       final pts = o.points.length < 12 ? o.points : o.points.sublist(0, 12);
-      return _MiniTable(
+      return MiniTable(
         headers: const ['x', 'y'],
         rows: [
           for (final p in pts) [p.x.toString(), p.y.toString()],
@@ -165,7 +80,7 @@ class ObjectPreview extends StatelessWidget {
     }
     if (o is md.ScatterData) {
       final pts = o.points.length < 12 ? o.points : o.points.sublist(0, 12);
-      return _MiniTable(
+      return MiniTable(
         headers: const ['x', 'y', 'z'],
         rows: [
           for (final p in pts)
@@ -183,7 +98,7 @@ class ObjectPreview extends StatelessWidget {
     }
     if (o is md.DistributionData) {
       final bins = o.bins.length < 12 ? o.bins : o.bins.sublist(0, 12);
-      return _MiniTable(
+      return MiniTable(
         headers: const ['区间', '计数'],
         rows: [
           for (final b in bins)
@@ -361,11 +276,7 @@ class _InspectorState extends State<Inspector> {
               padding: const EdgeInsets.only(bottom: 4),
               child: Text(
                 '${entry.key} · ${_kindName(entry.value)}',
-                style: TextStyle(
-                  fontSize: 10,
-                  color: t.textFaint,
-                  fontFamily: SyphonDims.monoFont,
-                ),
+                style: TextStyle(fontSize: 10, color: t.textFaint),
               ),
             ),
             ObjectPreview(obj: entry.value),
@@ -414,11 +325,7 @@ class _InspectorState extends State<Inspector> {
       ), // .nf-log-line padding 3 0
       child: Text.rich(
         TextSpan(
-          style: TextStyle(
-            fontFamily: SyphonDims.monoFont,
-            fontSize: 11,
-            color: t.textDim,
-          ),
+          style: TextStyle(fontSize: 11, color: t.textDim),
           children: [
             // .nf-log-time:textFaint、mono、margin-right 6
             TextSpan(
@@ -449,14 +356,7 @@ class _InspectorState extends State<Inspector> {
     final color = error ? t.danger : (ok ? t.success : t.textDim);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontFamily: SyphonDims.monoFont,
-          fontSize: 11,
-          color: color,
-        ),
-      ),
+      child: Text(text, style: TextStyle(fontSize: 11, color: color)),
     );
   }
 

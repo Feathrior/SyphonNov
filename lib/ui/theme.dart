@@ -172,6 +172,11 @@ class SyphonTheme {
   Color lighten(Color c, double amt) {
     return Color.lerp(c, const Color(0xFFFFFFFF), amt)!;
   }
+
+  // 暗色主题下顶栏压暗:向黑色混合 amt 比例(提升白字可读性)
+  Color darken(Color c, double amt) {
+    return Color.lerp(c, const Color(0xFF000000), amt)!;
+  }
 }
 
 // ==================== 尺寸常量 ====================
@@ -186,8 +191,6 @@ class SyphonDims {
   static const radiusM = 8.0;
   static const viewerH = 230.0;
   static const viewerActionH = 38.0;
-  static const monoFont = 'Consolas';
-  static const fontFamily = 'Segoe UI Variable Text';
 }
 
 // ==================== 分类信息 ====================

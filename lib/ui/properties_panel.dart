@@ -106,7 +106,6 @@ class _TextFieldState extends State<_TextField> {
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final mono = widget.maxLines > 1; // textarea 使用等宽字体
     // Fluent 文本框:placeholder 提示、焦点光晕由 FluentTheme 提供
     return fluent.TextBox(
       controller: _c,
@@ -114,11 +113,7 @@ class _TextFieldState extends State<_TextField> {
       minLines: widget.maxLines,
       maxLines: widget.maxLines,
       onChanged: widget.onChanged,
-      style: TextStyle(
-        fontSize: 12,
-        color: t.text,
-        fontFamily: mono ? SyphonDims.monoFont : null,
-      ),
+      style: TextStyle(fontSize: 12, color: t.text),
     );
   }
 }
@@ -1083,33 +1078,26 @@ class _ParamControl extends StatelessWidget {
           v,
           options.isNotEmpty ? options.first['value'] ?? '' : '',
         );
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          decoration: BoxDecoration(
-            color: t.bgInput,
-            border: Border.all(color: t.strokeStrong),
-            borderRadius: BorderRadius.circular(SyphonDims.radiusS),
-          ),
-          child: fluent.ComboBox<String>(
-            value: cur,
-            isExpanded: true,
-            style: TextStyle(fontSize: 11, color: t.text),
-            iconEnabledColor: t.textDim,
-            popupColor: t.bgFloat,
-            items: [
-              for (final o in options)
-                fluent.ComboBoxItem(
-                  value: o['value'] ?? '',
-                  child: Text(
-                    o['label'] ?? '',
-                    style: TextStyle(fontSize: 11, color: t.text),
-                  ),
+        // 直接用 fluent.ComboBox(自带边框/底色),不再包一层矩形容器
+        return fluent.ComboBox<String>(
+          value: cur,
+          isExpanded: true,
+          style: TextStyle(fontSize: 11, color: t.text),
+          iconEnabledColor: t.textDim,
+          popupColor: t.bgFloat,
+          items: [
+            for (final o in options)
+              fluent.ComboBoxItem(
+                value: o['value'] ?? '',
+                child: Text(
+                  o['label'] ?? '',
+                  style: TextStyle(fontSize: 11, color: t.text),
                 ),
-            ],
-            onChanged: (nv) {
-              if (nv != null) onChanged(nv);
-            },
-          ),
+              ),
+          ],
+          onChanged: (nv) {
+            if (nv != null) onChanged(nv);
+          },
         );
       case 'boolean':
         return Align(
@@ -1160,6 +1148,21 @@ class _ParamControl extends StatelessWidget {
               : 0.0);
     final bounded = spec.min != null && spec.max != null;
     final step = spec.step;
+    // 数据输出节点"预览行数":拉杆上限跟随已连接表格的实际行数
+    // (未接表格或表格为空时退回参数默认上限)。
+    var max = spec.max ?? 1.0;
+    if (spec.key == 'maxRows') {
+      final store = GraphStore.instance;
+      final self = store.nodes.where((n) => n.id == nodeId).toList();
+      if (self.isNotEmpty && self.first.configId == 'data_output') {
+        final obj = store.results[nodeId]?.inputs['in0'];
+        if (obj is md.TableData && obj.columns.isNotEmpty) {
+          final rows = obj.columns.first.values.length.toDouble();
+          final lo = spec.min ?? 1.0;
+          if (rows >= lo) max = rows;
+        }
+      }
+    }
 
     final field = _NumField(
       text: _valStr(v, ''),
@@ -1181,7 +1184,7 @@ class _ParamControl extends StatelessWidget {
         final count = (e.scrollDelta.dy.abs() / 24).ceil().clamp(1, 12);
         final dir = e.scrollDelta.dy < 0 ? 1 : -1;
         var nv = cv + dir * count * _wheelUnit(spec, cv);
-        nv = nv.clamp(spec.min!, spec.max!);
+        nv = nv.clamp(spec.min!, max);
         if (step != null && step > 0) nv = (nv / step).round() * step;
         onChanged(nv);
       },
@@ -1189,7 +1192,6 @@ class _ParamControl extends StatelessWidget {
     );
 
     final min = spec.min ?? 0.0;
-    final max = spec.max ?? 1.0;
     final snapped = step != null && step > 0 ? (cv / step).round() * step : cv;
     return Row(
       children: [

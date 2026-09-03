@@ -60,8 +60,8 @@ class NodeCard extends StatelessWidget {
     final category =
         kCategoryInfo[cfg.category] ?? const CategoryInfo('', '#7c8db5', '•');
     final catColor = parseColor(category.color);
-    // 暗色主题下顶栏提亮 0.22,提升白字可读性
-    final headerBg = dark ? t.lighten(catColor, 0.22) : catColor;
+    // 暗色主题下顶栏稍微压暗 0.15,提升白字可读性(原先提亮会稀释对比度)
+    final headerBg = dark ? t.darken(catColor, 0.15) : catColor;
     // 输出计数:有数据的输出口数量
     final outputCount = cfg.outputs
         .where((o) => result?.outputs[o.id] != null)
@@ -70,8 +70,10 @@ class NodeCard extends StatelessWidget {
     final inSocks = inputSockets(node, edges);
     final outSocks = outputSockets(node, edges);
     final summary = node.collapsed ? '' : paramSummary(node, cfg);
-    // 折叠或缩放过小(React zoom<0.55)时隐藏文字,仅显示端口 handle
-    final bodyHidden = node.collapsed || zoom < 0.55;
+    // 缩放隐藏阈值(React zoom<0.55):仅内容渐隐,端口保持原位置原尺寸;
+    // 折叠时节点变矮走紧凑柄视图(handlesOnly)。
+    final zoomHidden = zoom < 0.55;
+    final collapsed = node.collapsed;
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
@@ -88,26 +90,51 @@ class NodeCard extends StatelessWidget {
             // 节点拖动由画布层 Listener 统一管理,此处不挂手势(见 NodeCardCallbacks 注释)
             _buildHeader(cfg, category, node, result, t, headerBg),
             // 主体(React .nf-node-body: padding 8px 12px 10px)
+            // 折叠/缩放切换时渐隐渐显;切换器子级强制 topLeft 对齐,
+            // 避免 AnimatedSwitcher 默认居中布局把端口挪到中间
             Expanded(
               child: Padding(
                 padding: _bodyPadding(node),
-                child: bodyHidden
-                    ? _handlesOnly(node, inSocks, outSocks, edges, t, zoom)
-                    : _buildBody(
-                        context,
-                        node,
-                        cfg,
-                        inSocks,
-                        outSocks,
-                        edges,
-                        size,
-                        zoom,
-                        t,
-                        dark,
-                        summary,
-                        outputCount,
-                        result,
-                      ),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  layoutBuilder: (currentChild, previousChildren) => Stack(
+                    alignment: Alignment.topLeft,
+                    children: <Widget>[...previousChildren, ?currentChild],
+                  ),
+                  child: collapsed
+                      ? KeyedSubtree(
+                          key: const ValueKey('handles'),
+                          child: _handlesOnly(
+                            node,
+                            inSocks,
+                            outSocks,
+                            edges,
+                            t,
+                            zoom,
+                          ),
+                        )
+                      : KeyedSubtree(
+                          key: const ValueKey('body'),
+                          child: _buildBody(
+                            context,
+                            node,
+                            cfg,
+                            inSocks,
+                            outSocks,
+                            edges,
+                            size,
+                            zoom,
+                            t,
+                            dark,
+                            summary,
+                            outputCount,
+                            result,
+                            contentOpacity: zoomHidden ? 0 : 1,
+                          ),
+                        ),
+                ),
               ),
             ),
             // 底部错误条:danger 背景 10% 透明(React .nf-error)
@@ -230,7 +257,9 @@ class NodeCard extends StatelessWidget {
     );
   }
 
-  /// 主体内容:端口两列 + 参数摘要 + 查看器 + 输出状态行(React .nf-node-body)
+  /// 主体内容:端口两列(始终原位置原尺寸)+ 参数摘要 + 查看器 + 输出状态行
+  /// (React .nf-node-body)。[contentOpacity] 控制非端口内容的渐隐
+  /// (缩放隐藏时端口不动,只有内容淡出)。
   Widget _buildBody(
     BuildContext context,
     GraphNode node,
@@ -244,12 +273,15 @@ class NodeCard extends StatelessWidget {
     bool dark,
     String summary,
     int outputCount,
-    ExecResult? result,
-  ) {
+    ExecResult? result, {
+    double contentOpacity = 1.0,
+  }) {
+    const fade = Duration(milliseconds: 160);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 输入/输出端口两列(React .nf-sockets: gap 8)
+        // 输入/输出端口两列(React .nf-sockets: gap 8)——handle 永不渐隐,
+        // 位置/尺寸与正常模式完全一致;行内名称文字随 contentOpacity 淡出
         _buildSocketColumns(
           context,
           node,
@@ -259,24 +291,44 @@ class NodeCard extends StatelessWidget {
           edges,
           size,
           zoom,
+          labelOpacity: contentOpacity,
         ),
-        if (summary.isNotEmpty) ...[
-          const SizedBox(height: NodeGeom.paramLineMargin),
-          _buildSummary(summary, t, dark),
-        ],
+        // 非端口内容:只改透明度、不动布局
+        AnimatedOpacity(
+          opacity: contentOpacity,
+          duration: fade,
+          curve: Curves.easeOut,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (summary.isNotEmpty) ...[
+                const SizedBox(height: NodeGeom.paramLineMargin),
+                _buildSummary(summary, t, dark),
+              ],
+              if (cfg.outputs.isNotEmpty) ...[
+                const SizedBox(height: NodeGeom.outputsLineMargin),
+                _buildOutputsLine(cfg, outputCount, result, t),
+              ],
+            ],
+          ),
+        ),
         if (cfg.isViewer) ...[
           const SizedBox(height: NodeGeom.viewerMargin),
-          Expanded(child: _viewer(cfg, nodeId)),
-        ],
-        if (cfg.outputs.isNotEmpty) ...[
-          const SizedBox(height: NodeGeom.outputsLineMargin),
-          _buildOutputsLine(cfg, outputCount, result, t),
+          Expanded(
+            child: AnimatedOpacity(
+              opacity: contentOpacity,
+              duration: fade,
+              curve: Curves.easeOut,
+              child: _viewer(cfg, nodeId),
+            ),
+          ),
         ],
       ],
     );
   }
 
-  /// 输入/输出端口两列:输入靠左、输出靠右,行内省略号截断
+  /// 输入/输出端口两列:输入靠左、输出靠右,行内省略号截断。
+  /// [labelOpacity] 控制行内名称/类型文字的渐隐(缩放隐藏时无任何文字)。
   Widget _buildSocketColumns(
     BuildContext context,
     GraphNode node,
@@ -285,8 +337,9 @@ class NodeCard extends StatelessWidget {
     List<SocketGeom> outSocks,
     List<GraphEdge> edges,
     Size size,
-    double zoom,
-  ) {
+    double zoom, {
+    double labelOpacity = 1.0,
+  }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -307,6 +360,7 @@ class NodeCard extends StatelessWidget {
                   sock: i < cfg.inputs.length ? cfg.inputs[i] : null,
                   nodeSize: size,
                   zoom: zoom,
+                  labelOpacity: labelOpacity,
                 ),
               ],
             ],
@@ -328,6 +382,7 @@ class NodeCard extends StatelessWidget {
                   sock: cfg.outputs[i],
                   nodeSize: size,
                   zoom: zoom,
+                  labelOpacity: labelOpacity,
                 ),
               ],
             ],
@@ -351,7 +406,6 @@ class NodeCard extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           fontSize: 10,
-          fontFamily: SyphonDims.monoFont,
           color: dark ? t.textFaint : const Color(0xFF333333),
         ),
       ),
@@ -493,6 +547,7 @@ class NodeCard extends StatelessWidget {
     required Socket? sock,
     required Size nodeSize,
     required double zoom,
+    double labelOpacity = 1.0,
   }) {
     final t = SyphonTheme.of(context);
     final dark = t.isDark;
@@ -559,9 +614,11 @@ class NodeCard extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          // 文字行无手势:拖拽整卡(含行内文字)走 NodeCard 外层 → 移动节点
-          Padding(
-            padding: EdgeInsets.only(left: isSource ? 0 : 0, right: 0),
+          // 名称/类型文字:缩放隐藏时淡出(只留 handle),布局不变
+          AnimatedOpacity(
+            opacity: labelOpacity,
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
             child: textRow,
           ),
           // handle 绝对定位,溢出节点边缘:左输入 left -7,右输出 right -7

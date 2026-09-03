@@ -15,6 +15,7 @@ import '../models/color_utils.dart';
 import '../models/data.dart' as md;
 import '../models/exec_engine.dart';
 import '../store/graph_store.dart';
+import 'data_preview.dart';
 
 // ==================== 表格辅助 ====================
 
@@ -2799,57 +2800,16 @@ class DataOutputView extends StatelessWidget {
     );
   }
 
-  /// 表格主体:横向 + 纵向双层滚动
+  /// 表格主体:复用检查器"数据预览"的 MiniTable(列宽按内容自适应 + 主题配色)
   Widget _buildTable(md.TableData table, int rows) {
-    final headerStyle = const TextStyle(
-      fontSize: 11,
-      fontWeight: FontWeight.w600,
-      color: Color(0xFF1E293B),
-    );
-    final cellStyle = const TextStyle(fontSize: 11, color: Color(0xFF334155));
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: SingleChildScrollView(
-        child: Table(
-          border: TableBorder.all(color: const Color(0xFFE2E8F0), width: 0.5),
-          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-          columnWidths: const {0: FixedColumnWidth(28)},
-          children: [
-            _buildHeaderRow(table.columns, headerStyle),
-            for (var i = 0; i < rows; i++) _buildDataRow(table, i, cellStyle),
-          ],
-        ),
-      ),
-    );
-  }
-
-  TableRow _buildHeaderRow(List<md.Column> columns, TextStyle style) {
-    return TableRow(
-      decoration: const BoxDecoration(color: Color(0xFFF1F5F9)),
-      children: [
-        _cell('#', style),
-        for (final c in columns) _cell(c.name, style),
+    return MiniTable(
+      // 不设高度上限:由外层 Expanded 约束可视高度(行多时出现竖向滚动条)
+      maxHeight: double.infinity,
+      headers: [for (final c in table.columns) c.name],
+      rows: [
+        for (var i = 0; i < rows; i++)
+          [for (final c in table.columns) '${c.values[i] ?? ''}'],
       ],
-    );
-  }
-
-  TableRow _buildDataRow(md.TableData table, int i, TextStyle style) {
-    return TableRow(
-      decoration: BoxDecoration(
-        color: i.isEven ? Colors.white : const Color(0xFFF8FAFC),
-      ),
-      children: [
-        _cell('${i + 1}', style, vPad: 3),
-        for (final c in table.columns)
-          _cell('${c.values[i] ?? ''}', style, vPad: 3),
-      ],
-    );
-  }
-
-  Widget _cell(String text, TextStyle style, {double vPad = 4}) {
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: 6, vertical: vPad),
-      child: Text(text, style: style),
     );
   }
 

@@ -69,6 +69,8 @@ class SyphonApp extends StatelessWidget {
             brightness: Brightness.light,
             accentColor: accent,
             inactiveColor: dim,
+            // 全局默认字体:微软雅黑(全部文字内容统一渲染)
+            fontFamily: 'Microsoft YaHei',
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
             // 细腻过渡动画:菜单/弹窗/ComboBox/InfoBar 等 fluent 控件的动画时长。
@@ -83,6 +85,7 @@ class SyphonApp extends StatelessWidget {
             brightness: Brightness.dark,
             accentColor: accent,
             inactiveColor: dim,
+            fontFamily: 'Microsoft YaHei',
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
             fasterAnimationDuration: const Duration(milliseconds: 60),
@@ -91,7 +94,11 @@ class SyphonApp extends StatelessWidget {
             slowAnimationDuration: const Duration(milliseconds: 358),
           ),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
-          home: const _AppShell(),
+          // 普通 Text 继承微软雅黑(merge 保留各组件自带的字号/颜色)
+          home: DefaultTextStyle.merge(
+            style: const TextStyle(fontFamily: 'Microsoft YaHei'),
+            child: const _AppShell(),
+          ),
         );
       },
     );

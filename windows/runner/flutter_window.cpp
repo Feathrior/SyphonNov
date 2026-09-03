@@ -91,6 +91,25 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_DROPFILES:
       HandleFileDrop(reinterpret_cast<HDROP>(wparam));
       return 0;
+    case WM_GETMINMAXINFO:
+      // Frameless window: when maximized, snap to the working area (exclude
+      // the Windows taskbar). After WS_CAPTION is removed the system may
+      // report full-screen max size, so clamp position/size to the work
+      // area of the current monitor (also fixes Win+Up / snap-to-top).
+      {
+        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfo(mon, &mi)) {
+          LONG w = mi.rcWork.right - mi.rcWork.left;
+          LONG h = mi.rcWork.bottom - mi.rcWork.top;
+          mmi->ptMaxPosition = {mi.rcWork.left, mi.rcWork.top};
+          mmi->ptMaxSize = {w, h};
+          mmi->ptMaxTrackSize = {w, h};
+        }
+      }
+      return 0;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
