@@ -107,15 +107,17 @@ class _Particle {
   const _Particle({required this.vel, required this.size, required this.color});
 }
 
-/// 一次切断的粒子爆裂:原点 + 粒子束 + 起始时刻(驱动 450ms 扩散淡出动画)
+/// 一次切断的粒子爆裂:原点 + 粒子束 + 重力 + 起始时刻(驱动 450ms 扩散淡出动画)
 class _ParticleBurst {
   final Offset origin; // flow 坐标
   final List<_Particle> particles;
+  final double g; // 重力加速度(flow 单位/秒²,向下为正)
   final DateTime at;
 
   const _ParticleBurst({
     required this.origin,
     required this.particles,
+    required this.g,
     required this.at,
   });
 }
@@ -136,6 +138,7 @@ class _EdgesPainter extends CustomPainter {
   final int revision;
   final Color flowEdge;
   final Color accent;
+  final bool isDark; // 亮色模式下连线颜色压暗一档(避免鲜艳色刺眼)
   final double zoom; // 当前缩放:Transform 内绘制,所有标记尺寸除以 zoom 保持屏幕恒定
   // 切水果刀光:划过轨迹点(flow 坐标)与整体淡出进度 0~1
   final List<Offset> slashTrail;
@@ -162,6 +165,7 @@ class _EdgesPainter extends CustomPainter {
     required this.revision,
     required this.flowEdge,
     required this.accent,
+    required this.isDark,
     required this.zoom,
     this.slashTrail = const [],
     this.slashTrailProgress = 1,
@@ -268,6 +272,11 @@ class _EdgesPainter extends CustomPainter {
 
     // 基础连线色 = 源端口颜色(与 React buildEdgeProps 的 SOCKET_COLOR 一致)
     var color = _edgeColor(e, src);
+    if (!isDark) {
+      // 亮色模式:明度压低一档,连线更沉稳不刺眼
+      final hsv = HSVColor.fromColor(color);
+      color = hsv.withValue(hsv.value * 0.82).toColor();
+    }
     var width = 2.2;
     if (e.id == hoverEdge) {
       // 普通悬停:accent 色
@@ -496,16 +505,20 @@ class _EdgesPainter extends CustomPainter {
   }
 
   /// 切断粒子爆裂:每次切断的粒子束各自沿方向飞散,
-  /// 二次方淡出 + 半径收缩(模仿水果忍者:砍断瞬间果肉从切点迸溅)
+  /// 受重力向下弯曲;开头保持近不透明(更显眼),随后线性淡出 + 半径收缩
   void _paintBursts(Canvas canvas) {
     final paint = Paint();
     for (final lb in liveBursts) {
       final t = lb.progress.clamp(0.0, 1.0).toDouble();
-      final fade = (1 - t) * (1 - t); // 快出慢隐
+      // 前 14% 完全不透明,之后线性淡出到 0(比原曲线更显眼)
+      final fade = t < 0.14 ? 1.0 : ((1 - t) / 0.86).clamp(0.0, 1.0);
       for (final p in lb.burst.particles) {
-        final pos = lb.burst.origin + p.vel * t;
+        final pos =
+            lb.burst.origin +
+            p.vel * t +
+            Offset(0, 0.5 * lb.burst.g * t * t); // 重力:½gt² 向下
         paint.color = p.color.withValues(alpha: fade);
-        canvas.drawCircle(pos, p.size * (1 - 0.45 * t), paint);
+        canvas.drawCircle(pos, p.size * (1 - 0.4 * t), paint);
       }
     }
   }
@@ -619,6 +632,7 @@ class _EdgesPainter extends CustomPainter {
       old.groups != groups ||
       old.revision != revision ||
       old.zoom != zoom ||
+      old.isDark != isDark ||
       old.slashTrailProgress != slashTrailProgress ||
       old.slashTrail != slashTrail ||
       old.hoverEdge != hoverEdge ||
@@ -690,6 +704,9 @@ class NodeCanvasState extends State<NodeCanvas>
   // 切水果刀光:记录 Ctrl 拖拽划过画布的轨迹点(flow 坐标),用于绘制渐隐光带
   final List<Offset> _slashTrail = [];
   DateTime _slashTrailAt = DateTime.now();
+  // 鼠标划过速度(flow 单位/秒):由最近几次移动采样测得,作为粒子初速度
+  final List<({Offset pos, DateTime t})> _motionSamples = [];
+  Offset _swipeVel = Offset.zero;
   String? _draggingMidEdge;
   // Alt 划线加断点:按住 Alt 拖拽,划过每条连线自动添加分割点
   bool _altSweeping = false;
@@ -1443,11 +1460,22 @@ class NodeCanvasState extends State<NodeCanvas>
       if (_slashTrail.length > 24) _slashTrail.removeAt(0);
       _slashTrailAt = DateTime.now();
       if (!_cutTicker.isActive) _cutTicker.start();
+      // 采样鼠标运动:最近 4 点求平均速度,作为粒子初速度(与划过速度相同)
+      _motionSamples.add((pos: flow, t: DateTime.now()));
+      if (_motionSamples.length > 4) _motionSamples.removeAt(0);
+      if (_motionSamples.length >= 2) {
+        final a = _motionSamples.first;
+        final b = _motionSamples.last;
+        final dt = b.t.difference(a.t).inMicroseconds / 1e6;
+        if (dt > 0.004) _swipeVel = (b.pos - a.pos) / dt;
+      }
       final hit = _hitEdgeAt(flow, threshold: 46 / _zoom);
       if (hit != null) {
         store.removeEdge(hit.edge.id);
         // 每砍断一条线都在其切点生成一次粒子爆裂(颜色跟随该连线端口色)
-        _bursts.add(_makeBurst(hit.hit.point, _edgeBaseColor(hit.edge)));
+        _bursts.add(
+          _makeBurst(hit.hit.point, _edgeBaseColor(hit.edge), _swipeVel),
+        );
         if (_bursts.length > 16) _bursts.removeAt(0); // 手势中限长防堆积
         if (!_cutTicker.isActive) _cutTicker.start();
         if (store.autoRun) store.runPipeline();
@@ -1923,37 +1951,45 @@ class NodeCanvasState extends State<NodeCanvas>
     return const Color(0xFF7C8DB5);
   }
 
-  /// 生成切断粒子爆裂:10~17 颗粒子,颜色以连线色为基准做同色系轻微偏差
-  /// (色相 ±6°、饱和度/明度小幅随机),速度/尺寸按 zoom 折算成 flow 单位。
-  _ParticleBurst _makeBurst(Offset p, Color base) {
+  /// 生成切断粒子爆裂:10~17 颗,颜色以连线色为基准——隔一颗提亮提饱和
+  /// (更显眼),其余保持原色轻微偏差;初速度 = 自身径向速度 + 鼠标划过速度;
+  /// 重力向下;速度/尺寸/重力均按 zoom 折算成 flow 单位(屏幕恒定)。
+  _ParticleBurst _makeBurst(Offset p, Color base, Offset swipeVel) {
     final rand = math.Random();
     final hsv = HSVColor.fromColor(base);
     final n = 10 + rand.nextInt(8);
-    Color vary() {
-      final hue = (hsv.hue + rand.nextDouble() * 12 - 6) % 360.0;
-      final sat = (hsv.saturation * (0.85 + rand.nextDouble() * 0.3)).clamp(
+    // boost=true:更亮更饱和;否则接近原色(仅轻微偏差)
+    Color vary(bool boost) {
+      final hue = (hsv.hue + rand.nextDouble() * 14 - 7) % 360.0;
+      if (boost) {
+        final sat = (hsv.saturation * 1.3 + 0.1).clamp(0.0, 1.0);
+        final val = (hsv.value * 1.25 + 0.1).clamp(0.0, 1.0);
+        return HSVColor.fromAHSV(1, hue, sat, val).toColor();
+      }
+      final sat = (hsv.saturation * (0.9 + rand.nextDouble() * 0.2)).clamp(
         0.0,
         1.0,
       );
-      final val = (hsv.value * (0.85 + rand.nextDouble() * 0.3)).clamp(
-        0.0,
-        1.0,
-      );
+      final val = (hsv.value * (0.9 + rand.nextDouble() * 0.2)).clamp(0.0, 1.0);
       return HSVColor.fromAHSV(1, hue, sat, val).toColor();
     }
 
     return _ParticleBurst(
       origin: p,
       at: DateTime.now(),
+      // 重力:向屏幕下方,云图上以 zoom 折算保持视觉一致
+      g: 380 / _zoom,
       particles: [
         for (var i = 0; i < n; i++)
           _Particle(
-            vel: Offset.fromDirection(
-              rand.nextDouble() * 2 * math.pi,
-              (45 + rand.nextDouble() * 105) / _zoom,
-            ),
-            size: (1.5 + rand.nextDouble() * 2.6) / _zoom,
-            color: vary(),
+            vel:
+                Offset.fromDirection(
+                  rand.nextDouble() * 2 * math.pi,
+                  (45 + rand.nextDouble() * 105) / _zoom,
+                ) +
+                swipeVel * 0.07, // 刀尖速度衰减为 7%,保留方向不过猛
+            size: (2.0 + rand.nextDouble() * 2.6) / _zoom,
+            color: vary(i.isEven),
           ),
       ],
     );
@@ -2138,6 +2174,7 @@ class NodeCanvasState extends State<NodeCanvas>
       revision: _revision + store.structureVersion + store.runVersion,
       flowEdge: t.flowEdge,
       accent: t.accent,
+      isDark: t.isDark,
       zoom: _zoom,
       slashTrail: _slashTrail,
       slashTrailProgress: slashProg,

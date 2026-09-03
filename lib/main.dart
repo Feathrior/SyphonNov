@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../models/csv.dart';
+import '../models/presets.dart';
 import 'store/graph_store.dart';
 import 'store/settings_store.dart';
 import 'ui/inspector.dart';
@@ -35,6 +36,11 @@ Future<void> main() async {
   });
   await SettingsStore.instance.init();
   GraphStore.instance.autoRun = SettingsStore.instance.autoRun;
+  // 首次启动:载入"功能全景演示"示例节点组(之后不再自动出现,可在 文件→预设 重新加载)
+  if (!SettingsStore.instance.demoLoaded) {
+    GraphStore.instance.loadGraph(kDemoGraphJson, silent: true);
+    SettingsStore.instance.setDemoLoaded();
+  }
   runApp(const SyphonApp());
 }
 
@@ -127,6 +133,12 @@ class _AppShellState extends State<_AppShell> {
   void initState() {
     super.initState();
     _fileDropChannel.setMethodCallHandler(_onFileDrop);
+    // 首次启动载入演示图时:首帧后自动缩放至全图
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (GraphStore.instance.nodes.isNotEmpty) {
+        _canvasKey.currentState?.fitView();
+      }
+    });
   }
 
   @override

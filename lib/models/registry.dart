@@ -1756,7 +1756,7 @@ final List<NodeConfig> kNodeConfigs = [
     label: '数据输出',
     category: Category.visualize,
     description: '输出节点:显示传入表格数据的预览(列名 + 前若干行),便于检查流水线中间结果。',
-    inputs: [s('in0', '表格', SocketType.table), ...kOverlaySockets],
+    inputs: [s('in0', '表格', SocketType.table)],
     outputs: [],
     params: [
       param(

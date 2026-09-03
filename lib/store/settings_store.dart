@@ -20,6 +20,7 @@ class SettingsStore extends ChangeNotifier {
   bool autoRun = true;
   AppTheme theme = AppTheme.light;
   bool loaded = false;
+  bool demoLoaded = false; // 首次启动是否已载入"功能全景演示"示例
 
   static final SettingsStore instance = SettingsStore._();
   SettingsStore._();
@@ -36,6 +37,7 @@ class SettingsStore extends ChangeNotifier {
           if (j['autoRun'] is bool) autoRun = j['autoRun'] as bool;
           final t = '${j['theme'] ?? ''}';
           if (t == 'dark') theme = AppTheme.dark;
+          if (j['demoLoaded'] == true) demoLoaded = true;
         }
       }
     } catch (e) {
@@ -58,18 +60,29 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 标记"功能全景演示"已载入(仅在首次启动时触发一次)
+  void setDemoLoaded() {
+    if (demoLoaded) return;
+    demoLoaded = true;
+    _write();
+    notifyListeners();
+  }
+
   void _write() {
     final json = jsonEncode({
       'autoRun': autoRun,
       'theme': theme == AppTheme.dark ? 'dark' : 'light',
+      'demoLoaded': demoLoaded,
     });
     try {
-      getApplicationSupportDirectory().then((dir) async {
-        final file = File('${dir.path}/settings.json');
-        await file.writeAsString(json);
-      }).catchError((e) {
-        debugPrint('保存设置失败: $e');
-      });
+      getApplicationSupportDirectory()
+          .then((dir) async {
+            final file = File('${dir.path}/settings.json');
+            await file.writeAsString(json);
+          })
+          .catchError((e) {
+            debugPrint('保存设置失败: $e');
+          });
     } catch (_) {
       /* ignore */
     }
