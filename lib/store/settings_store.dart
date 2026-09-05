@@ -6,21 +6,28 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+import '../i18n.dart';
 
 enum AppTheme { light, dark }
 
 class AppSettings {
   bool autoRun;
   AppTheme theme;
+  String locale;
 
-  AppSettings({this.autoRun = true, this.theme = AppTheme.light});
+  AppSettings({
+    this.autoRun = true,
+    this.theme = AppTheme.light,
+    this.locale = 'zh',
+  });
 }
 
 class SettingsStore extends ChangeNotifier {
   bool autoRun = true;
   AppTheme theme = AppTheme.light;
+  String locale = 'zh';
   bool loaded = false;
-  bool demoLoaded = false; // 首次启动是否已载入"功能全景演示"示例
+  bool demoLoaded = false;
 
   static final SettingsStore instance = SettingsStore._();
   SettingsStore._();
@@ -37,6 +44,8 @@ class SettingsStore extends ChangeNotifier {
           if (j['autoRun'] is bool) autoRun = j['autoRun'] as bool;
           final t = '${j['theme'] ?? ''}';
           if (t == 'dark') theme = AppTheme.dark;
+          final l = '${j['locale'] ?? ''}';
+          if (l.isNotEmpty) locale = l;
           if (j['demoLoaded'] == true) demoLoaded = true;
         }
       }
@@ -44,6 +53,7 @@ class SettingsStore extends ChangeNotifier {
       debugPrint('读取设置失败: $e');
     }
     loaded = true;
+    L.load(locale);
     _write();
     notifyListeners();
   }
@@ -60,7 +70,13 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 标记"功能全景演示"已载入(仅在首次启动时触发一次)
+  void setLocale(String l) {
+    locale = l;
+    L.load(l);
+    _write();
+    notifyListeners();
+  }
+
   void setDemoLoaded() {
     if (demoLoaded) return;
     demoLoaded = true;
@@ -72,6 +88,7 @@ class SettingsStore extends ChangeNotifier {
     final json = jsonEncode({
       'autoRun': autoRun,
       'theme': theme == AppTheme.dark ? 'dark' : 'light',
+      'locale': locale,
       'demoLoaded': demoLoaded,
     });
     try {

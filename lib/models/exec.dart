@@ -339,7 +339,7 @@ Map<String, ExecFn> _buildExec() {
 
     'scatter_input': (ctx) {
       final p = ctx.params;
-      final name = str(p['name'], '聚合点');
+      final name = str(p['name'], '点输入');
       final raw = p['points'];
       final list = raw is List ? raw : <dynamic>[];
       final points = <Pt3>[];

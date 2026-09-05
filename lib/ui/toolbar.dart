@@ -32,6 +32,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../i18n.dart';
 import '../models/presets.dart';
 import '../store/graph_store.dart';
 import '../store/settings_store.dart';
@@ -132,7 +133,7 @@ class Toolbar extends StatelessWidget {
         // 主题切换:图标随当前主题取反;悬停有轻微旋转动画
         _CircleIconBtn(
           icon: t.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-          tooltip: t.isDark ? '切换到亮色主题' : '切换到暗色主题',
+          tooltip: t.isDark ? L.t('切换到亮色主题') : L.t('切换到暗色主题'),
           spinOnHover: true,
           onPressed: () => SettingsStore.instance.setTheme(
             t.isDark ? AppTheme.light : AppTheme.dark,
@@ -140,13 +141,13 @@ class Toolbar extends StatelessWidget {
         ),
         _CircleIconBtn(
           icon: Icons.settings_outlined,
-          tooltip: '设置',
+          tooltip: L.t('设置'),
           spinOnHover: true,
           onPressed: onOpenSettings,
         ),
         _CircleIconBtn(
           icon: Icons.play_arrow,
-          tooltip: '运行数据流',
+          tooltip: L.t('运行数据流'),
           isRun: true,
           onPressed: onRun,
         ),
@@ -161,10 +162,10 @@ class Toolbar extends StatelessWidget {
   List<_MenuEntry> _menuEntries(BuildContext context) {
     final t = SyphonTheme.of(context);
     return [
-      _MenuEntry('文件', _fileMenu(context, t)),
-      _MenuEntry('编辑', _editMenu(context, t)),
-      _MenuEntry('视图', _viewMenu(t)),
-      _MenuEntry('帮助', _helpMenu(context, t)),
+      _MenuEntry(L.t('文件'), _fileMenu(context, t)),
+      _MenuEntry(L.t('编辑'), _editMenu(context, t)),
+      _MenuEntry(L.t('视图'), _viewMenu(t)),
+      _MenuEntry(L.t('帮助'), _helpMenu(context, t)),
     ];
   }
 
@@ -240,13 +241,13 @@ class Toolbar extends StatelessWidget {
     return [
       _mItem(
         t,
-        '保存画布',
+        L.t('保存画布'),
         icon: Icons.save_outlined,
         onTap: () => _saveCanvas(context),
       ),
       _mItem(
         t,
-        '加载画布',
+        L.t('加载画布'),
         icon: Icons.folder_open_outlined,
         onTap: () => _loadCanvas(context),
       ),
@@ -254,14 +255,14 @@ class Toolbar extends StatelessWidget {
       for (final preset in kPresetsReady)
         _mItem(
           t,
-          '预设 · ${preset.name}',
+          '${L.t('预设')} · ${preset.name}',
           icon: Icons.dashboard_outlined,
           onTap: () => _loadPreset(context, preset),
         ),
       _mDivider(t),
       _mItem(
         t,
-        '清空画布',
+        L.t('清空画布'),
         icon: Icons.delete_outline,
         danger: true,
         onTap: () => _clearCanvas(context),
@@ -274,39 +275,49 @@ class Toolbar extends StatelessWidget {
     return [
       _mItem(
         t,
-        '撤销',
+        L.t('撤销'),
         icon: Icons.undo,
         shortcut: 'Ctrl+Z',
         onTap: () => GraphStore.instance.undo(),
       ),
       _mItem(
         t,
-        '重做',
+        L.t('重做'),
         icon: Icons.redo,
         shortcut: 'Ctrl+Y',
         onTap: () => GraphStore.instance.redo(),
       ),
       const PopupMenuDivider(height: 9),
-      _mCheck(t, '框选模式', boxSelect, () => onBoxSelectChanged(!boxSelect)),
+      _mCheck(t, L.t('框选模式'), boxSelect, () => onBoxSelectChanged(!boxSelect)),
     ];
   }
 
   /// 视图:适应视图 / 一键整理
   List<Widget> _viewMenu(SyphonTheme t) {
     return [
-      _mItem(t, '适应视图', icon: Icons.fit_screen_outlined, onTap: onFitView),
-      _mItem(t, '一键整理', icon: Icons.grid_view_outlined, onTap: onAutoLayout),
+      _mItem(t, L.t('适应视图'), icon: Icons.fit_screen_outlined, onTap: onFitView),
+      _mItem(
+        t,
+        L.t('一键整理'),
+        icon: Icons.grid_view_outlined,
+        onTap: onAutoLayout,
+      ),
     ];
   }
 
   /// 帮助:快捷键 / 关于
   List<Widget> _helpMenu(BuildContext context, SyphonTheme t) {
     return [
-      _mItem(t, '快捷键', icon: Icons.keyboard_outlined, onTap: onOpenShortcuts),
+      _mItem(
+        t,
+        L.t('快捷键'),
+        icon: Icons.keyboard_outlined,
+        onTap: onOpenShortcuts,
+      ),
       _mDivider(t),
       _mItem(
         t,
-        '关于 Syphon',
+        L.t('关于 Syphon'),
         icon: Icons.info_outline,
         onTap: () => _showAbout(context),
       ),
@@ -323,37 +334,43 @@ class Toolbar extends StatelessWidget {
     final store = GraphStore.instance;
     if (store.nodes.isEmpty) return;
     final json = store.saveGraph();
-    const group = XTypeGroup(label: 'Syphon 画布', extensions: ['json']);
+    final group = XTypeGroup(
+      label: L.t('Syphon 画布'),
+      extensions: const ['json'],
+    );
     final loc = await getSaveLocation(
       suggestedName: 'syphon-graph.json',
-      acceptedTypeGroups: const [group],
+      acceptedTypeGroups: [group],
     );
     if (loc == null) return;
     try {
       await File(loc.path).writeAsString(json);
-      store.addLog('ok', '已保存画布:${loc.path}');
+      store.addLog('ok', '${L.t('已保存画布')}:${loc.path}');
     } catch (e) {
       if (!context.mounted) return;
-      _toast(context, '保存画布失败:$e');
+      _toast(context, '${L.t('保存画布失败')}:$e');
     }
   }
 
   Future<void> _loadCanvas(BuildContext context) async {
     final store = GraphStore.instance;
-    const group = XTypeGroup(label: 'Syphon 画布', extensions: ['json']);
-    final file = await openFile(acceptedTypeGroups: const [group]);
+    final group = XTypeGroup(
+      label: L.t('Syphon 画布'),
+      extensions: const ['json'],
+    );
+    final file = await openFile(acceptedTypeGroups: [group]);
     if (file == null) return;
     String text;
     try {
       text = await File(file.path).readAsString();
     } catch (e) {
       if (!context.mounted) return;
-      _toast(context, '读取画布失败:$e');
+      _toast(context, '${L.t('读取画布失败')}:$e');
       return;
     }
     if (!store.loadGraph(text)) {
       if (!context.mounted) return;
-      _toast(context, '画布文件格式无效,无法加载');
+      _toast(context, L.t('画布文件格式无效,无法加载'));
     } else {
       onFitView();
     }
@@ -362,21 +379,24 @@ class Toolbar extends StatelessWidget {
   Future<void> _loadPreset(BuildContext context, Preset p) async {
     final store = GraphStore.instance;
     if (store.nodes.isNotEmpty) {
-      final ok = await _confirm(context, '加载预设「${p.name}」将替换当前画布,确定吗?');
+      final ok = await _confirm(
+        context,
+        '${L.t('加载预设')}「${p.name}」${L.t('将替换当前画布,确定吗')}',
+      );
       if (ok != true) return;
     }
     if (store.loadGraph(p.json)) {
       onFitView();
     } else {
       if (!context.mounted) return;
-      _toast(context, '预设加载失败');
+      _toast(context, L.t('预设加载失败'));
     }
   }
 
   Future<void> _clearCanvas(BuildContext context) async {
     final store = GraphStore.instance;
     if (store.nodes.isEmpty) return;
-    final ok = await _confirm(context, '确定清空画布上的所有节点吗?');
+    final ok = await _confirm(context, L.t('确定清空画布上的所有节点吗'));
     if (ok == true) store.clearAll();
   }
 
@@ -399,17 +419,17 @@ class Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            const Text('Syphon v0.3.2', style: TextStyle(fontSize: 15)),
+            Text('Syphon v0.3.3', style: const TextStyle(fontSize: 15)),
           ],
         ),
-        content: const Text(
-          '节点化数据处理工作台\n\n数据加载 → 变换 → 可视化,全部可视化连线完成。',
-          style: TextStyle(fontSize: 13),
+        content: Text(
+          '${L.t('节点化数据处理工作台')}\n\n${L.t('about_subtitle')}',
+          style: const TextStyle(fontSize: 13),
         ),
         actions: [
           fluent.FilledButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('确定'),
+            child: Text(L.t('确定')),
           ),
         ],
       ),
@@ -424,11 +444,11 @@ class Toolbar extends StatelessWidget {
         actions: [
           fluent.Button(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
+            child: Text(L.t('取消')),
           ),
           fluent.FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('确定'),
+            child: Text(L.t('确定')),
           ),
         ],
       ),

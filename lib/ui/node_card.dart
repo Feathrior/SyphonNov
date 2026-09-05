@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../models/color_utils.dart';
 import '../models/data.dart' hide Column;
 import '../models/exec_engine.dart';
@@ -218,7 +219,7 @@ class NodeCard extends StatelessWidget {
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              cfg.label,
+              L.t(cfg.label),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, color: Colors.white),
@@ -644,7 +645,7 @@ class NodeCard extends StatelessWidget {
     final cfg = getConfig(node.configId);
     if (cfg == null) return key;
     for (final p in cfg.params) {
-      if (p.key == key) return p.label;
+      if (p.key == key) return L.t(p.label);
     }
     return key;
   }

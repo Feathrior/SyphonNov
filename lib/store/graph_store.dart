@@ -706,6 +706,36 @@ class GraphStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 将已有节点加入指定分组(节点已在该组或组不存在时忽略)
+  void addNodeToGroup(String nodeId, String groupId) {
+    final target = groups.where((g) => g.id == groupId).toList();
+    if (target.isEmpty) return;
+    final g = target.first;
+    if (g.nodeIds.contains(nodeId)) return;
+    // 节点不允许同时属于多个分组:先从原分组移除
+    final oldGid = groupOf(nodeId);
+    snapshotNow();
+    if (oldGid != null && oldGid != groupId) {
+      groups = groups.map((og) {
+        if (og.id == oldGid) {
+          return og.copyWith(
+            nodeIds: og.nodeIds.where((id) => id != nodeId).toList(),
+          );
+        }
+        return og;
+      }).where((og) => og.nodeIds.isNotEmpty).toList();
+    }
+    groups = groups.map((og) {
+      if (og.id == groupId) {
+        return og.copyWith(nodeIds: [...og.nodeIds, nodeId]);
+      }
+      return og;
+    }).toList();
+    addLog('info', '节点已加入「${g.name}」');
+    structureVersion++;
+    notifyListeners();
+  }
+
   /// 解散分组(节点保留,仅移除分组容器)
   void dissolveGroup(String groupId) {
     final target = groups.where((g) => g.id == groupId).toList();

@@ -1,4 +1,4 @@
-// 属性面板:节点参数控件(选择/数值/布尔/颜色/文本/聚合点/渐变)、暴露开关、输出状态与节点操作
+// 属性面板:节点参数控件(选择/数值/布尔/颜色/文本/点输入/渐变)、暴露开关、输出状态与节点操作
 // (由 React 版 PropertiesPanel.tsx 移植)
 library;
 
@@ -9,6 +9,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../models/color_utils.dart';
 import '../models/csv.dart';
 import '../models/data.dart' as md;
@@ -261,7 +262,7 @@ class _ColorFieldState extends State<_ColorField> {
   }
 }
 
-// ==================== 聚合点编辑器 ====================
+// ==================== 点输入编辑器 ====================
 
 class _PointsEditor extends StatelessWidget {
   final List<dynamic> points;
@@ -1535,7 +1536,7 @@ class PropertiesPanel extends StatelessWidget {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  cfg.label,
+                  L.t(cfg.label),
                   style: TextStyle(fontSize: 14, color: t.text),
                 ),
               ),
@@ -1543,7 +1544,7 @@ class PropertiesPanel extends StatelessWidget {
           ),
           const SizedBox(height: 2), // .nf-props-cat margin-top 2
           Text(
-            catInfo?.label ?? '',
+            L.t(catInfo?.label ?? ''),
             style: TextStyle(fontSize: 11, color: catColor),
           ),
         ],
@@ -1562,7 +1563,7 @@ class PropertiesPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(SyphonDims.radiusM),
       ),
       child: Text(
-        cfg.description,
+        L.t(cfg.description),
         style: TextStyle(fontSize: 12, color: t.textDim, height: 1.6),
       ),
     );
@@ -1652,7 +1653,7 @@ class PropertiesPanel extends StatelessWidget {
           child: fluent.Tooltip(
             message: p.help ?? '',
             child: Text(
-              p.label,
+              L.t(p.label),
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 11, color: t.textDim),
             ),

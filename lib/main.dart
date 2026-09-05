@@ -18,6 +18,7 @@ import 'ui/shortcuts_panel.dart';
 import 'ui/status_bar.dart';
 import 'ui/theme.dart';
 import 'ui/toolbar.dart';
+import 'i18n.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -51,7 +52,7 @@ class SyphonApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = SettingsStore.instance;
     return AnimatedBuilder(
-      animation: settings,
+      animation: Listenable.merge([settings, L.rebuildNotifier]),
       builder: (context, _) {
         final dark = settings.theme == AppTheme.dark;
         final accent =
@@ -262,6 +263,7 @@ class _AppShellState extends State<_AppShell> {
             RepaintBoundary(
               child: Column(
                 children: [
+                  SizedBox(height: SyphonDims.toolbarH),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,

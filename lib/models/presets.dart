@@ -284,7 +284,7 @@ String _buildDemoGraph() {
       node('ax', 'axis_input', 30, 2500, {'name': '演示坐标系'}),
       node('lt', 'line_input', 330, 2500, {'name': '参数曲线', 'fy': 'sin(2*x)'}),
       node('ps', 'scatter_input', 330, 2660, {
-        'name': '聚合点',
+        'name': '点输入',
         'points': [
           {'x': 1, 'y': 2, 'size': 6, 'color': '#e63946'},
           {'x': 3, 'y': 5, 'size': 8, 'color': '#f4a261'},

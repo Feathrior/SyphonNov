@@ -4,6 +4,7 @@ library;
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
 import 'theme.dart';
@@ -102,12 +103,14 @@ class NodeMenu extends StatefulWidget {
   final Offset position;
   final void Function(String configId) onPick;
   final VoidCallback onClose;
+  final Widget? bottomSlot; // 可选底部扩展区(分组内右键时显示分组操作)
 
   const NodeMenu({
     super.key,
     required this.position,
     required this.onPick,
     required this.onClose,
+    this.bottomSlot,
   });
 
   @override
@@ -179,7 +182,7 @@ class _NodeMenuState extends State<NodeMenu> {
               child: fluent.TextBox(
                 controller: _searchCtrl,
                 autofocus: true,
-                placeholder: '搜索节点…',
+                placeholder: L.t('搜索节点…'),
                 style: TextStyle(fontSize: 12, color: t.text),
                 onChanged: (v) => setState(() => _query = v),
                 onSubmitted: (_) {
@@ -195,6 +198,13 @@ class _NodeMenuState extends State<NodeMenu> {
             else
               _buildCategoryColumns(t, cats, catItems),
             _buildFooter(t),
+            // 分组操作扩展区(分组内右键时显示)
+            if (widget.bottomSlot != null) ...[
+              const SizedBox(height: 6),
+              Divider(height: 1, thickness: 1, color: t.stroke),
+              const SizedBox(height: 2),
+              widget.bottomSlot!,
+            ],
           ],
         ),
       ),
@@ -206,7 +216,7 @@ class _NodeMenuState extends State<NodeMenu> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
       child: Text(
-        '新建节点',
+        '${L.t('新建节点')}',
         style: TextStyle(
           fontSize: 11,
           color: t.textFaint,
@@ -308,7 +318,7 @@ class _NodeMenuState extends State<NodeMenu> {
         border: Border(top: BorderSide(color: t.stroke)),
       ),
       child: Text(
-        '单击添加 · Enter 快捷添加',
+        '${L.t('单击添加')} · Enter ${L.t('快捷添加')}',
         textAlign: TextAlign.right,
         style: TextStyle(fontSize: 10, color: t.textFaint),
       ),
@@ -372,7 +382,7 @@ class _CatItemState extends State<_CatItem> {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  info?.label ?? '',
+                  L.t(info?.label ?? ''),
                   style: TextStyle(fontSize: 12, color: t.text),
                 ),
               ),
@@ -434,7 +444,7 @@ class _NodeItemState extends State<_NodeItem> {
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
-                  widget.cfg.label,
+                  L.t(widget.cfg.label),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 12, color: t.text),
@@ -442,7 +452,7 @@ class _NodeItemState extends State<_NodeItem> {
               ),
               if (widget.showCat && info != null)
                 Text(
-                  info.label,
+                  L.t(info.label),
                   style: TextStyle(fontSize: 10, color: t.textFaint),
                 ),
             ],
@@ -511,29 +521,29 @@ class NodeContextMenu extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _CtxMenuItem(
+            CtxMenuItem(
               icon: Icons.group_add_outlined,
-              label: '分组',
+              label: L.t('分组'),
               enabled: canGroup,
               onTap: onGroup,
             ),
-            _CtxMenuItem(
+            CtxMenuItem(
               icon: Icons.group_remove_outlined,
-              label: '取消分组',
+              label: L.t('取消分组'),
               enabled: canUngroup,
               onTap: onUngroup,
             ),
             const SizedBox(height: 4),
             Divider(height: 1, thickness: 1, color: t.stroke),
             const SizedBox(height: 4),
-            _CtxMenuItem(
+            CtxMenuItem(
               icon: Icons.copy_outlined,
-              label: '复制所选',
+              label: L.t('复制所选'),
               onTap: onDuplicate,
             ),
-            _CtxMenuItem(
+            CtxMenuItem(
               icon: Icons.delete_outline,
-              label: '删除所选',
+              label: L.t('删除所选'),
               danger: true,
               onTap: onDelete,
             ),
@@ -587,17 +597,17 @@ class GroupContextMenu extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _CtxMenuItem(
+            CtxMenuItem(
               icon: Icons.group_remove_outlined,
-              label: '取消分组',
+              label: L.t('取消分组'),
               onTap: onUngroup,
             ),
             const SizedBox(height: 4),
             Divider(height: 1, thickness: 1, color: t.stroke),
             const SizedBox(height: 4),
-            _CtxMenuItem(
+            CtxMenuItem(
               icon: Icons.copy_outlined,
-              label: '复制分组',
+              label: L.t('复制分组'),
               onTap: onDuplicate,
             ),
           ],
@@ -608,14 +618,15 @@ class GroupContextMenu extends StatelessWidget {
 }
 
 /// 右键菜单单项:图标 + 名称,悬停高亮,支持禁用态与危险色
-class _CtxMenuItem extends StatefulWidget {
+class CtxMenuItem extends StatefulWidget {
   final IconData icon;
   final String label;
   final bool enabled;
   final bool danger;
   final VoidCallback onTap;
 
-  const _CtxMenuItem({
+  const CtxMenuItem({
+    super.key,
     required this.icon,
     required this.label,
     required this.onTap,
@@ -624,10 +635,10 @@ class _CtxMenuItem extends StatefulWidget {
   });
 
   @override
-  State<_CtxMenuItem> createState() => _CtxMenuItemState();
+  State<CtxMenuItem> createState() => _CtxMenuItemState();
 }
 
-class _CtxMenuItemState extends State<_CtxMenuItem> {
+class _CtxMenuItemState extends State<CtxMenuItem> {
   bool _hover = false;
 
   @override

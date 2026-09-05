@@ -206,7 +206,7 @@ class ScatterData extends DataObject {
   final List<double>? sizes;
   final List<String>? colors;
 
-  /// 逐点形状(由"聚合点输入"等节点提供,与 points 一一对应)
+  /// 逐点形状(由"点输入输入"等节点提供,与 points 一一对应)
   final List<String>? shapes;
 
   ScatterData({
@@ -394,7 +394,7 @@ class AxesData extends DataObject {
 
 typedef DataMap = Map<String, DataObject>;
 
-/// "聚合点输入"中的单个点
+/// "点输入输入"中的单个点
 class PointInput {
   dynamic x; // number | string
   dynamic y;

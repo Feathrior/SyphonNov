@@ -3,6 +3,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../i18n.dart';
 import '../models/data.dart' as md;
 import '../models/registry.dart';
 import '../store/graph_store.dart';
@@ -65,7 +66,7 @@ class ObjectPreview extends StatelessWidget {
                 c.values[r] == null ? '—' : '${c.values[r]}',
             ],
         ],
-        footer: rows > shown ? '…共 $rows 行' : null,
+        footer: rows > shown ? L.fmt('…共 {n} 行', {'n': '$rows'}) : null,
       );
     }
     if (o is md.SeriesData) {
@@ -75,7 +76,7 @@ class ObjectPreview extends StatelessWidget {
         rows: [
           for (final p in pts) [p.x.toString(), p.y.toString()],
         ],
-        footer: '共 ${o.points.length} 个点',
+        footer: L.fmt('共 {n} 个点', {'n': '${o.points.length}'}),
       );
     }
     if (o is md.ScatterData) {
@@ -86,20 +87,20 @@ class ObjectPreview extends StatelessWidget {
           for (final p in pts)
             [p.x.toString(), p.y.toString(), p.z?.toString() ?? '—'],
         ],
-        footer: '共 ${o.points.length} 个点',
+        footer: L.fmt('共 {n} 个点', {'n': '${o.points.length}'}),
       );
     }
     if (o is md.MeshData) {
       return _Summary([
-        '顶点: ${o.vertices.length}',
-        '三角面: ${o.faces.length}',
-        '名称: ${o.name}',
+        '${L.t('顶点')}: ${o.vertices.length}',
+        '${L.t('三角面')}: ${o.faces.length}',
+        '${L.t('名称')}: ${o.name}',
       ]);
     }
     if (o is md.DistributionData) {
       final bins = o.bins.length < 12 ? o.bins : o.bins.sublist(0, 12);
       return MiniTable(
-        headers: const ['区间', '计数'],
+        headers: [L.t('区间'), L.t('计数')],
         rows: [
           for (final b in bins)
             [
@@ -107,35 +108,35 @@ class ObjectPreview extends StatelessWidget {
               '${b.count}',
             ],
         ],
-        footer: '共 ${o.bins.length} 组, ${o.sampleCount} 个样本',
+        footer: L.fmt('共 {a} 组, {b} 个样本', {'a': '${o.bins.length}', 'b': '${o.sampleCount}'}),
       );
     }
     if (o is md.AxesData) {
       return _Summary([
-        '维度: ${o.dim}D',
-        '像素: ${o.xLen} × ${o.yLen} × ${o.zLen}',
-        '范围: X ${o.xMin}~${o.xMax} / Y ${o.yMin}~${o.yMax}'
+        '${L.t('维度')}: ${o.dim}D',
+        '${L.t('像素')}: ${o.xLen} × ${o.yLen} × ${o.zLen}',
+        '${L.t('范围')}: X ${o.xMin}~${o.xMax} / Y ${o.yMin}~${o.yMax}'
             '${o.dim == 3 ? ' / Z ${o.zMin}~${o.zMax}' : ''}',
-        '定位: ${o.axisOrigin == 'origin' ? '以原点为中心' : '总贴左边沿'}'
-            '${o.grid ? ' · 网格开' : ' · 网格关'}'
-            '${o.showBorder ? ' · 边框开' : ' · 边框关'}',
-        '标签: ${o.labelX} / ${o.labelY} / ${o.labelZ}',
+        '${L.t('定位')}: ${o.axisOrigin == 'origin' ? L.t('以原点为中心') : L.t('总贴左边沿')}'
+            '${o.grid ? ' · ${L.t('网格开')}' : ' · ${L.t('网格关')}'}'
+            '${o.showBorder ? ' · ${L.t('边框开')}' : ' · ${L.t('边框关')}'}',
+        '${L.t('标签')}: ${o.labelX} / ${o.labelY} / ${o.labelZ}',
       ]);
     }
     if (o is md.TextData) {
       return _Summary([
-        '文本: "${o.text}"',
-        '大小: ${o.fontSize}cm · 对齐: ${o.halign}/${o.valign}',
+        '${L.t('文本')}: "${o.text}"',
+        '${L.t('大小')}: ${o.fontSize}cm · ${L.t('对齐')}: ${o.halign}/${o.valign}',
       ]);
     }
     if (o is md.ColorbarData) {
       return _Summary([
-        '渐变: ${o.stops.length} 段',
-        '范围: ${o.min ?? '—'} ~ ${o.max ?? '—'}'
-            '${o.horizontal == false ? ' · 垂直' : ' · 水平'}',
+        '${L.t('渐变')}: ${L.fmt('{n} 段', {'n': '${o.stops.length}'})}',
+        '${L.t('范围')}: ${o.min ?? '—'} ~ ${o.max ?? '—'}'
+            '${o.horizontal == false ? ' · ${L.t('垂直')}' : ' · ${L.t('水平')}'}',
       ]);
     }
-    return const _Summary(['未知数据对象']);
+    return _Summary([L.t('未知数据对象')]);
   }
 }
 
@@ -176,7 +177,7 @@ class _InspectorState extends State<Inspector> {
                 child: Row(
                   children: [
                     _TabBtn(
-                      text: '数据预览',
+                      text: L.t('数据预览'),
                       active: _tab == 'data',
                       errorCount: 0,
                       showBadge: false,
@@ -184,7 +185,7 @@ class _InspectorState extends State<Inspector> {
                     ),
                     const SizedBox(width: 4),
                     _TabBtn(
-                      text: '日志',
+                      text: L.t('日志'),
                       active: _tab == 'log',
                       errorCount: errors.length,
                       showBadge: true,
@@ -244,12 +245,12 @@ class _InspectorState extends State<Inspector> {
       }
     }
     if (node == null) {
-      return _hint('点击节点查看输出数据预览', t);
+      return _hint(L.t('点击节点查看输出数据预览'), t);
     }
     final cfg = getConfig(node.configId);
     final result = store.results[node.id];
     if (cfg == null || result == null) {
-      return _hint('点击节点查看输出数据预览', t);
+      return _hint(L.t('点击节点查看输出数据预览'), t);
     }
     return ListView(
       padding: EdgeInsets.zero,
@@ -258,15 +259,15 @@ class _InspectorState extends State<Inspector> {
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
           child: Text(
-            '${cfg.label} 的输出',
+            L.fmt('{name} 的输出', {'name': cfg.label}),
             style: TextStyle(fontSize: 12, color: t.textFaint),
           ),
         ),
         if (result.outputs.isEmpty)
           _hint(
             result.error != null
-                ? '执行出错:${result.error}'
-                : (cfg.isViewer ? '此节点为可视化节点,查看节点内图表' : '该节点无输出'),
+                ? '${L.t('执行出错')}: ${result.error}'
+                : (cfg.isViewer ? L.t('此节点为可视化节点,查看节点内图表') : L.t('该节点无输出')),
             t,
           )
         else
@@ -306,13 +307,13 @@ class _InspectorState extends State<Inspector> {
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: _DashedLine(t.strokeStrong),
           ),
-        if (store.hasCycle) _logLine(t, '⚠ 检测到连接回路,部分节点未按顺序执行', error: true),
+        if (store.hasCycle) _logLine(t, '⚠ ${L.t('检测到连接回路,部分节点未按顺序执行')}', error: true),
         if (store.lastError != null) _logLine(t, store.lastError!, error: true),
         if (errors.isEmpty && !store.hasCycle && store.logs.isEmpty)
-          _logLine(t, '执行正常,无错误。'),
+          _logLine(t, L.t('执行正常,无错误。')),
         for (final e in errors)
           _logLine(t, '[${e.label}] ${e.msg}', error: true),
-        if (okCount > 0) _logLine(t, '$okCount 个节点执行成功', ok: true),
+        if (okCount > 0) _logLine(t, L.fmt('{n} 个节点执行成功', {'n': '$okCount'}), ok: true),
       ],
     );
   }

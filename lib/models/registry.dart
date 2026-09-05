@@ -749,16 +749,16 @@ final List<NodeConfig> kNodeConfigs = [
   ),
   NodeConfig(
     id: 'scatter_input',
-    label: '聚合点输入',
+    label: '点输入输入',
     category: Category.input,
     description: '逐个添加数据点:每个点可独立设置 X/Y 坐标、大小、形状与颜色。初始只有一个加号,可不断添加。',
     inputs: [],
     outputs: [s('out0', '散点', SocketType.scatter)],
     params: [
-      param(key: 'name', label: '名称', type: 'text', defaultValue: '聚合点'),
+      param(key: 'name', label: '名称', type: 'text', defaultValue: '点输入'),
       param(
         key: 'points',
-        label: '聚合点列表',
+        label: '点输入列表',
         type: 'points',
         defaultValue: <PointInput>[],
         help: '点击"＋ 添加点"逐点添加;每个点有 x/y 坐标、大小、形状、颜色',

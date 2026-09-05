@@ -14,7 +14,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
-import '../models/data.dart';
+import '../i18n.dart';
+import '../models/data.dart' hide Column;
 import '../models/registry.dart';
 import '../store/graph_store.dart';
 import 'canvas_geometry.dart';
@@ -358,18 +359,24 @@ class _EdgesPainter extends CustomPainter {
     return Color(int.tryParse(h, radix: 16) ?? 0xFF000000);
   }
 
-  /// 分组外框(Blender 风格):包围所有成员的圆角矩形 + 名称标签。
-  /// 尺寸除以 zoom 保持屏幕恒定;底噪小,分组数量少,无需单独图层
+  /// 分组外框(Blender 风格):圆角矩形 + 顶部内嵌标签。
+  /// 完整画 rrect,再用 fill 色在标签位置盖掉顶边实现"断开",
+  /// 最后画深色小标签 + 白字。
   void _paintGroupFrames(Canvas canvas) {
     if (groups.isEmpty) return;
-    final pad = 14.0 / zoom;
+    final padX = 14.0 / zoom;
+    final padBottom = 14.0 / zoom;
+    final padTop = 22.0 / zoom; // 顶部更多空间容纳内嵌标签
+    final radius = 10.0 / zoom;
+    final strokeWidth = 1.2 / zoom;
     final stroke = Paint()
       ..color = accent.withValues(alpha: 0.55)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2 / zoom;
+      ..strokeWidth = strokeWidth;
     final fill = Paint()..color = accent.withValues(alpha: 0.05);
+    final labelBg = Color.lerp(accent, Colors.black, isDark ? 0.55 : 0.28)!;
+    final coverPaint = Paint()..color = accent.withValues(alpha: 0.05);
     for (final g in groups) {
-      // 成员包围盒
       Rect? box;
       for (final id in g.nodeIds) {
         final n = nodeMap[id];
@@ -377,59 +384,70 @@ class _EdgesPainter extends CustomPainter {
         final r = n.position & nodeSize(n, edges);
         box = box == null ? r : box.expandToInclude(r);
       }
-      // 分组默认包含组内节点之间所有连线的断点:包围盒扩展到断点,
-      // 保证凸出到成员包围盒之外的断点也落在分组框内(与 _groupRect 一致)
       final inGroup = g.nodeIds.toSet();
       for (final e in edges) {
         final mid = e.mid;
         if (mid == null) continue;
-        if (!inGroup.contains(e.source) || !inGroup.contains(e.target)) {
-          continue;
-        }
+        if (!inGroup.contains(e.source) || !inGroup.contains(e.target)) continue;
         box = box == null
             ? Rect.fromCircle(center: mid, radius: 0)
             : box.expandToInclude(Rect.fromCircle(center: mid, radius: 0));
       }
       if (box == null) continue;
       final rect = Rect.fromLTRB(
-        box.left - pad,
-        box.top - pad,
-        box.right + pad,
-        box.bottom + pad,
+        box.left - padX,
+        box.top - padTop,
+        box.right + padX,
+        box.bottom + padBottom,
       );
-      final rrect = RRect.fromRectAndRadius(rect, Radius.circular(10 / zoom));
+      final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
+      // 1) 完整圆角填充 + 完整圆角描边(天然正确,无方向问题)
       canvas.drawRRect(rrect, fill);
       canvas.drawRRect(rrect, stroke);
-      // 名称标签:框顶中央小圆角胶囊
+
+      // 2) 标签参数
       final tp = TextPainter(
         text: TextSpan(
           text: g.name,
           style: TextStyle(
             color: Colors.white,
-            fontSize: 10 / zoom,
+            fontSize: 12 / zoom,
             fontWeight: FontWeight.w600,
           ),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
       )..layout();
-      final chipW = tp.width + 14 / zoom;
-      final chipH = tp.height + 6 / zoom;
-      final chipRect = RRect.fromRectAndRadius(
-        Rect.fromCenter(
-          center: Offset(rect.center.dx, rect.top - chipH / 2),
-          width: chipW,
-          height: chipH,
-        ),
-        Radius.circular(chipH / 2),
+      const lblH = 16.0; // 屏幕恒定高度
+      const lblPad = 5.0; // 文字左右 padding
+      const lblMargin = 6.0; // 标签距左边框的边距
+      const lblTopOverlap = 1.0; // 标签向上嵌入边框 1px(屏幕恒定)
+      final lblHeight = lblH / zoom;
+      final lblWidth = tp.width + 2 * lblPad / zoom;
+      final lblL = rect.left + lblMargin / zoom;
+      final lblT = rect.top - lblTopOverlap / zoom;
+      final lblR = lblL + lblWidth;
+
+      // 3) 用 fill 色在标签位置覆盖顶边的 stroke,制造"断开"效果
+      // stroke 居中画在 rect 边缘,一半外侧一半内侧;
+      // coverRect 须从 stroke 外侧到 stroke 内侧完全盖净
+      final cover = Rect.fromLTRB(
+        lblL - 0.5 / zoom,
+        rect.top - strokeWidth / 2 - 0.2 / zoom,
+        lblR + 0.5 / zoom,
+        rect.top + strokeWidth / 2 + 0.2 / zoom,
       );
-      canvas.drawRRect(
-        chipRect,
-        Paint()..color = accent.withValues(alpha: 0.92),
+      canvas.drawRect(cover, coverPaint);
+
+      // 4) 画标签:深色小矩形 + 白字
+      final lblRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(lblL, lblT, lblWidth, lblHeight),
+        Radius.circular(4 / zoom),
       );
+      canvas.drawRRect(lblRect, Paint()..color = labelBg);
       tp.paint(
         canvas,
-        Offset(rect.center.dx - tp.width / 2, chipRect.top + 3 / zoom),
+        Offset(lblL + lblPad / zoom, lblT + (lblHeight - tp.height) / 2),
       );
     }
   }
@@ -899,12 +917,15 @@ class NodeCanvasState extends State<NodeCanvas>
           : box.expandToInclude(Rect.fromCircle(center: mid, radius: 0));
     }
     if (box == null) return null;
-    final pad = 14.0 / _zoom;
+    // 与 _paintGroupFrames 一致:顶部额外空间容纳内嵌标签(不对称 pad)
+    final padX = 14.0 / _zoom;
+    final padBottom = 14.0 / _zoom;
+    final padTop = 22.0 / _zoom;
     return Rect.fromLTRB(
-      box.left - pad,
-      box.top - pad,
-      box.right + pad,
-      box.bottom + pad,
+      box.left - padX,
+      box.top - padTop,
+      box.right + padX,
+      box.bottom + padBottom,
     );
   }
 
@@ -917,28 +938,56 @@ class NodeCanvasState extends State<NodeCanvas>
     return null;
   }
 
-  /// 命中分组顶部名称标签(蓝色胶囊,含屏幕 6px 边距)—— 拖拽标签整体移动分组
+  /// 将节点矩形夹到容器矩形内:超出哪一侧就向内侧平移贴边。
+  /// 若节点本身大于容器,则保持原位(已无处可夹)。
+  Offset _clampInside(Offset pos, Size nodeSize, Rect container) {
+    var dx = pos.dx;
+    var dy = pos.dy;
+    // 左边界越界 → 贴左
+    if (dx < container.left) dx = container.left;
+    // 右边界越界 → 贴右
+    if (dx + nodeSize.width > container.right) {
+      dx = container.right - nodeSize.width;
+    }
+    // 上边界越界 → 贴上
+    if (dy < container.top) dy = container.top;
+    // 下边界越界 → 贴下
+    if (dy + nodeSize.height > container.bottom) {
+      dy = container.bottom - nodeSize.height;
+    }
+    return Offset(dx, dy);
+  }
+
+  /// 命中分组顶部内嵌标签(深色小矩形 + 白字)—— 拖拽标签整体移动分组
   String? _groupLabelAt(Offset flow) {
+    const lblH = 16.0;
+    const lblPad = 5.0;
+    const lblMargin = 6.0;
+    const lblTopOverlap = 1.0;
+    const hitPad = 2.0; // 额外点击容错
     for (final g in store.groups) {
       final rect = _groupRect(g);
       if (rect == null) continue;
       final tp = TextPainter(
         text: TextSpan(
           text: g.name,
-          style: TextStyle(fontSize: 10 / _zoom, fontWeight: FontWeight.w600),
+          style: TextStyle(fontSize: 12 / _zoom, fontWeight: FontWeight.w600),
         ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
       )..layout();
-      final chipW = tp.width + 14 / _zoom;
-      final chipH = tp.height + 6 / _zoom;
-      final m = 6.0 / _zoom;
-      final chip = Rect.fromCenter(
-        center: Offset(rect.center.dx, rect.top - chipH / 2),
-        width: chipW + 2 * m,
-        height: chipH + 2 * m,
+      final lblHeight = lblH / _zoom;
+      final lblWidth = tp.width + 2 * lblPad / _zoom;
+      final lblL = rect.left + lblMargin / _zoom;
+      final lblT = rect.top - lblTopOverlap / _zoom;
+      // 命中区:标签矩形 + 周围 hitPad 容错
+      final hitRect = Rect.fromLTRB(
+        lblL - hitPad / _zoom,
+        lblT - hitPad / _zoom,
+        lblL + lblWidth + hitPad / _zoom,
+        lblT + lblHeight + hitPad / _zoom,
       );
-      if (chip.contains(flow)) return g.id;
+      if (hitRect.contains(flow)) return g.id;
     }
     return null;
   }
@@ -1806,11 +1855,43 @@ class NodeCanvasState extends State<NodeCanvas>
 
   void _pickNode(String configId) {
     final menuPos = _menuPos;
+    final targetGroup = _groupMenuFor;
     _menuPos = null;
+    _groupMenuFor = null;
     if (menuPos == null) return;
     final flowPos = _toFlow(menuPos);
-    store.addNode(configId, Offset(flowPos.dx - 30, flowPos.dy - 20));
+    final initPos = Offset(flowPos.dx - 30, flowPos.dy - 20);
+
+    store.addNode(configId, initPos);
     final newNodeId = store.selectedId;
+
+    // 分组内右键新建节点 → 自动并入分组 + 边界夹紧(贴边不越界)
+    if (targetGroup != null && newNodeId != null) {
+      NodeGroup? g;
+      for (final x in store.groups) {
+        if (x.id == targetGroup) {
+          g = x;
+          break;
+        }
+      }
+      if (g != null) {
+        // 在入组前先夹紧位置(此时 group rect 不含新节点,正好作为边界)
+        final gRect = _groupRect(g);
+        if (gRect != null) {
+          final newNode = store.nodes.firstWhere(
+            (n) => n.id == newNodeId,
+            orElse: () => store.nodes.first,
+          );
+          final size = nodeSize(newNode, store.edges);
+          final clamped = _clampInside(initPos, size, gRect);
+          if (clamped != initPos) {
+            store.moveNode(newNodeId, clamped);
+          }
+        }
+        store.addNodeToGroup(newNodeId, targetGroup);
+      }
+    }
+
     final pc = _pendingConn;
     if (pc != null && newNodeId != null) {
       final cfg = getConfig(configId);
@@ -2245,13 +2326,14 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   /// 菜单层:与画布层平级,独立指针链。
-  /// 分组右键 → GroupContextMenu(取消分组/复制分组);
-  /// 多选右键 → NodeContextMenu(分组/复制/删除);空白/连线拖拽 → NodeMenu(新建节点)
+  /// 分组内右键 → NodeMenu(新建节点 + 自动入组) + 底部"取消分组/复制分组";
+  /// 多选右键 → NodeContextMenu(分组/复制/删除);空白 → NodeMenu(新建节点)
   Widget _buildMenuLayer() {
     final nodeMenu = _nodeMenuFor;
     final groupMenuId = _groupMenuFor;
     Widget? menu;
     if (groupMenuId != null) {
+      // 分组内右键:合并菜单 = 新建节点 + 底部分组操作
       NodeGroup? g;
       for (final x in store.groups) {
         if (x.id == groupMenuId) {
@@ -2260,11 +2342,26 @@ class NodeCanvasState extends State<NodeCanvas>
         }
       }
       if (g != null) {
-        menu = GroupContextMenu(
+        menu = NodeMenu(
           position: _menuPos!,
-          groupName: g.name,
-          onUngroup: _ungroupFromGroupMenu,
-          onDuplicate: _duplicateGroupFromMenu,
+          onPick: _pickNode,
+          onClose: _closeMenu,
+          bottomSlot: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              CtxMenuItem(
+                icon: Icons.group_remove_outlined,
+                label: L.t('取消分组'),
+                onTap: _ungroupFromGroupMenu,
+              ),
+              CtxMenuItem(
+                icon: Icons.copy_outlined,
+                label: L.t('复制分组'),
+                onTap: _duplicateGroupFromMenu,
+              ),
+            ],
+          ),
         );
       }
     } else if (nodeMenu != null) {

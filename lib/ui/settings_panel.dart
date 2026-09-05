@@ -5,6 +5,7 @@ import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/material.dart';
 
 import '../store/graph_store.dart';
+import '../i18n.dart';
 import '../store/settings_store.dart';
 import 'theme.dart';
 
@@ -72,7 +73,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 14, 10, 14),
       child: Row(
         children: [
-          Text('设置',
+          Text(L.t('设置'),
               style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
@@ -100,11 +101,11 @@ class _SettingsPanelState extends State<SettingsPanel> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _sectionTitle('通用', t),
+                    _sectionTitle(L.t('通用'), t),
                     const SizedBox(height: 4),
                     _row(
-                      '自动执行',
-                      '图元或连线变更后自动重新执行整个数据流',
+                      L.t('自动执行'),
+                      L.t('图元或连线变更后自动重新执行整个数据流'),
                       fluent.ToggleSwitch(
                         checked: settings.autoRun,
                         onChanged: (v) {
@@ -115,15 +116,28 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       t,
                     ),
                     _row(
-                      '主题',
-                      '界面亮暗模式,切换后立即生效并持久化保存',
+                      L.t('主题'),
+                      L.t('界面亮暗模式,切换后立即生效并持久化保存'),
                       _Segmented<AppTheme>(
                         value: settings.theme,
-                        options: const [
-                          (AppTheme.light, '亮色'),
-                          (AppTheme.dark, '暗色'),
+                        options: [
+                          (AppTheme.light, L.t('亮色')),
+                          (AppTheme.dark, L.t('暗色')),
                         ],
                         onChanged: settings.setTheme,
+                      ),
+                      t,
+                    ),
+                    _row(
+                      L.t('语言'),
+                      L.t('界面显示语言'),
+                      _Segmented<String>(
+                        value: settings.locale,
+                        options: [
+                          ('zh', '中文'),
+                          ('en', 'English'),
+                        ],
+                        onChanged: settings.setLocale,
                       ),
                       t,
                     ),
@@ -154,7 +168,7 @@ class _SettingsPanelState extends State<SettingsPanel> {
               color: t.accent.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(SyphonDims.radiusS),
             ),
-            child: Text('常用设置',
+            child: Text(L.t('常用设置'),
                 style: TextStyle(fontSize: 12, color: t.text)),
           ),
         ],
@@ -168,11 +182,11 @@ class _SettingsPanelState extends State<SettingsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
       child: Row(
         children: [
-          Text('修改自动保存至 settings.json',
+          Text(L.t('修改自动保存至 settings.json'),
               style: TextStyle(fontSize: 11, color: t.textFaint)),
           const Spacer(),
           _PrimaryButton(
-            label: '完成',
+            label: L.t('完成'),
             onPressed: widget.onClose,
           ),
         ],
