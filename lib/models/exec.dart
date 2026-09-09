@@ -79,6 +79,9 @@ class AxisPreset {
   final String colorX, colorY, colorZ;
   final double widthX, widthY, widthZ;
   final bool gridX, gridY, gridZ, border;
+
+  /// 隐藏坐标系:完全不绘制坐标轴/网格/刻度/标签
+  final bool hidden;
   const AxisPreset(
     this.colorX,
     this.colorY,
@@ -89,8 +92,9 @@ class AxisPreset {
     this.gridX,
     this.gridY,
     this.gridZ,
-    this.border,
-  );
+    this.border, {
+    this.hidden = false,
+  });
 }
 
 const Map<String, AxisPreset> kAxisPresets = {
@@ -153,6 +157,19 @@ const Map<String, AxisPreset> kAxisPresets = {
     true,
     true,
     false,
+  ),
+  'hidden': AxisPreset(
+    '#00000000',
+    '#00000000',
+    '#00000000',
+    0.01,
+    0.01,
+    0.01,
+    false,
+    false,
+    false,
+    false,
+    hidden: true,
   ),
 };
 
@@ -234,6 +251,36 @@ Map<String, ExecFn> _buildExec() {
       final fontFamily = str(p['fontFamily'], 'sans-serif');
       final arrowX = p['arrowX'] != false;
       final arrowY = p['arrowY'] != false;
+      // 隐藏坐标系预设:完全不绘制坐标轴/网格/刻度/标签
+      final hidden = str(p['axisPreset'], 'default') == 'hidden';
+
+      // 收集输入口的图元(点/线/面/分布/文本,均可多连):
+      // 端口未接时 inputs 为空,multiInputs 也为空 → 空列表。
+      List<T> collect<T>(String key) {
+        final out = <T>[];
+        final m = ctx.multiInputs[key];
+        if (m != null) {
+          for (final o in m) {
+            if (o is T) out.add(o as T);
+          }
+        } else {
+          final s = ctx.inputs[key];
+          if (s is T) out.add(s as T);
+        }
+        return out;
+      }
+
+      final points = collect<ScatterData>('in0');
+      final lines = collect<SeriesData>('in1');
+      final meshes = collect<MeshData>('in2');
+      final texts = collect<TextData>('in4');
+      final distI = ctx.inputs['in3'];
+      final dist = distI is DistributionData ? distI : null;
+
+      final colorPreset = str(p['colorPreset'], 'paper');
+      final bgColor = '${p['bgColor'] ?? '#ffffff'}';
+      final canvasPxW = (num_(p['canvasPxW'], 1920)).round().clamp(100, 8000);
+      final canvasPxH = (num_(p['canvasPxH'], 1200)).round().clamp(100, 8000);
 
       return {
         'out0': AxesData(
@@ -266,6 +313,16 @@ Map<String, ExecFn> _buildExec() {
           rotX: num_(p['rotX'], -20),
           rotY: num_(p['rotY'], 25),
           rotZ: num_(p['rotZ'], 0),
+          points: points,
+          lines: lines,
+          meshes: meshes,
+          dist: dist,
+          texts: texts,
+          hidden: hidden,
+          colorPreset: colorPreset,
+          bgColor: bgColor,
+          canvasPxW: canvasPxW.toDouble(),
+          canvasPxH: canvasPxH.toDouble(),
         ),
       };
     },
@@ -284,55 +341,6 @@ Map<String, ExecFn> _buildExec() {
           fontFamily: str(p['fontFamily'], 'sans-serif'),
         ),
       };
-    },
-
-    'colorbar_input': (ctx) {
-      final p = ctx.params;
-      return {
-        'out0': ColorbarData(
-          stops: parseGradient(p['gradient']),
-          min: num_(p['min'], 0),
-          max: num_(p['max'], 1),
-          label: str(p['label'], ''),
-          horizontal: str(p['orientation'], 'horizontal') != 'vertical',
-        ),
-      };
-    },
-
-    'line_input': (ctx) {
-      final p = ctx.params;
-      final name = str(p['name'], '线');
-      final mode = str(p['mode'], 'parametric');
-      if (mode == 'points') {
-        final raw = str(p['pointsText'], '');
-        final pts = <Pt>[];
-        for (final l in raw.split('\n')) {
-          final r = l
-              .split(RegExp(r'[,，\t;；\s]+'))
-              .where((s) => s.isNotEmpty)
-              .toList();
-          if (r.length >= 2) {
-            final x = double.tryParse(r[0]);
-            final y = double.tryParse(r[1]);
-            if (x != null && y != null) pts.add(Pt(x, y));
-          }
-        }
-        if (pts.isEmpty) throw Exception('未解析到有效点(格式:每行 x,y)');
-        return {'out0': styledSeries(ctx, name, pts)};
-      }
-      final start = num_(p['start'], 0);
-      final end = num_(p['end'], 10);
-      final count = math.max(2, num_(p['count'], 200).round());
-      final xs = linspace(start, end, count);
-      final fx = compileFormula(str(p['fx'], 'x'));
-      final fy = compileFormula(str(p['fy'], 'sin(x)'));
-      final points = <Pt>[];
-      for (final x in xs) {
-        final px = fx != null ? fx(x, 0) : x;
-        final py = fy != null ? fy(x, 0) : 0.0;
-        if (px.isFinite && py.isFinite) points.add(Pt(px, py));
-      }
-      return {'out0': styledSeries(ctx, name, points)};
     },
 
     'plane_input': (ctx) => {'out0': genPlane(ctx.params)},
@@ -387,36 +395,61 @@ Map<String, ExecFn> _buildExec() {
       };
     },
 
+    /// 曲线输入:三种方式采样输出曲线(Desmos 级覆盖)。
+    /// - function:函数 y=f(x) 直接采样;
+    /// - implicit:隐式方程 F(x,y)=0,marching squares 轮廓追踪
+    ///   (圆/椭圆/双曲线等全部隐式曲线,多分支以 NaN 断点分隔);
+    /// - parametric:参数方程 x(t)/y(t) 均匀采样。
     'func_curve': (ctx) {
       final p = ctx.params;
-      final name = str(p['name'], '函数曲线');
-      final expr = str(p['expression'], 'sin(x)');
-      final f = compileFormula(expr);
-      if (f == null) throw Exception('表达式无效:$expr');
-      final xMin = num_(p['xMin'], 0);
-      final xMax = num_(p['xMax'], 10);
-      if (xMax <= xMin) throw Exception('X 结束需大于 X 起始');
+      final name = str(p['name'], '曲线');
+      final mode = str(p['mode'], 'function');
       final samples = math.max(2, num_(p['samples'], 200).round());
-      final points = <Pt>[];
-      for (final x in linspace(xMin, xMax, samples)) {
-        final y = f(x, 0);
-        if (y.isFinite) {
-          points.add(
-            Pt(
-              double.parse(x.toStringAsFixed(6)),
-              double.parse(y.toStringAsFixed(6)),
-            ),
-          );
-        }
-      }
-      if (points.isEmpty) throw Exception('函数在此范围内无有效值');
-      return {'out0': styledSeries(ctx, name, points)};
-    },
 
-    'series_input': (ctx) {
-      final s =
-          presetSeries(str(ctx.params['preset'], 'quadratic')) as SeriesData;
-      return {'out0': styledSeries(ctx, s.name, s.points)};
+      List<Pt> points;
+      if (mode == 'implicit') {
+        final expr = str(p['expression'], 'x^2+y^2-25');
+        final f = compileFormula(expr);
+        if (f == null) throw Exception('表达式无效:$expr');
+        final xMin = num_(p['xMin'], -5), xMax = num_(p['xMax'], 5);
+        final yMin = num_(p['yMin'], -5), yMax = num_(p['yMax'], 5);
+        if (xMax <= xMin) throw Exception('X 结束需大于 X 起始');
+        if (yMax <= yMin) throw Exception('Y 结束需大于 Y 起始');
+        points = _implicitCurve(f, xMin, xMax, yMin, yMax, samples);
+        if (points.isEmpty) throw Exception('此范围内曲线无有效值');
+      } else if (mode == 'parametric') {
+        final fx = compileFormula(str(p['exprX'], '3*cos(t)'));
+        final fy = compileFormula(str(p['exprY'], '2*sin(t)'));
+        if (fx == null || fy == null) throw Exception('参数表达式无效');
+        final tMin = num_(p['xMin'], 0), tMax = num_(p['xMax'], 2 * math.pi);
+        if (tMax <= tMin) throw Exception('t 结束需大于 t 起始');
+        points = [
+          for (final t in linspace(tMin, tMax, samples))
+            if (fx(t, 0).isFinite && fy(t, 0).isFinite)
+              Pt(
+                double.parse(fx(t, 0).toStringAsFixed(6)),
+                double.parse(fy(t, 0).toStringAsFixed(6)),
+              ),
+        ];
+        if (points.isEmpty) throw Exception('函数在此范围内无有效值');
+      } else {
+        final expr = str(p['expression'], 'sin(x)');
+        final f = compileFormula(expr);
+        if (f == null) throw Exception('表达式无效:$expr');
+        final xMin = num_(p['xMin'], 0);
+        final xMax = num_(p['xMax'], 10);
+        if (xMax <= xMin) throw Exception('X 结束需大于 X 起始');
+        points = [
+          for (final x in linspace(xMin, xMax, samples))
+            if (f(x, 0).isFinite)
+              Pt(
+                double.parse(x.toStringAsFixed(6)),
+                double.parse(f(x, 0).toStringAsFixed(6)),
+              ),
+        ];
+        if (points.isEmpty) throw Exception('函数在此范围内无有效值');
+      }
+      return {'out0': styledSeries(ctx, name, points)};
     },
 
     // ---------- 数据初步 ----------
@@ -800,8 +833,11 @@ Map<String, ExecFn> _buildExec() {
     },
 
     /// 两条曲线的折线段相交检测,输出交点散点(点组)。
-    /// 平行/共线段忽略;交点按距离去重(共点相交不重复输出);
-    /// 同一条曲线内自交不检测(逐对线段,效率可控)。
+    /// 精度策略(有理化几何):先浮点粗筛(相对阈值,与坐标量级成比例),
+    /// 命中/临界/近平行的线段对用 BigInt 有理数精确求解——
+    /// 小数量值(如 1e-9 量级坐标)下浮点叉积误差会淹没平行/区间判定,
+    /// 有理化后 t/u ∈ [0,1] 与交点坐标均为精确值,无精度损失。
+    /// 平行/共线段忽略;交点按距离去重(相对坐标尺度);容量上限 10000 点。
     'curve_intersect': (ctx) {
       final a = ctx.inputs['in0'];
       final b = ctx.inputs['in1'];
@@ -812,28 +848,89 @@ Map<String, ExecFn> _buildExec() {
       // 限制采样规模,避免 O(n×m) 爆炸
       final pa = a.points.length > 3000 ? a.points.sublist(0, 3000) : a.points;
       final pb = b.points.length > 3000 ? b.points.sublist(0, 3000) : b.points;
-      const eps = 1e-12;
-      const dedup = 1e-6;
+      // 坐标尺度:全部点最大绝对值(尺度自适应阈值,小数量值不被绝对 eps 吞掉);
+      // 跳过 NaN 断点(隐式曲线多分支分隔),防 max 污染成 NaN
+      var scale = 0.0;
+      for (final p in pa) {
+        if (!p.x.isFinite || !p.y.isFinite) continue;
+        scale = math.max(scale, p.x.abs());
+        scale = math.max(scale, p.y.abs());
+      }
+      for (final p in pb) {
+        if (!p.x.isFinite || !p.y.isFinite) continue;
+        scale = math.max(scale, p.x.abs());
+        scale = math.max(scale, p.y.abs());
+      }
+      if (scale == 0) scale = 1;
+      // 叉积量纲为坐标²:相对平行阈值与 scale² 成比例
+      final eps = 1e-12 * scale * scale;
+      final dedup = 1e-6 * scale;
       for (var i = 0; i < pa.length - 1; i++) {
         final p1 = pa[i];
         final p2 = pa[i + 1];
+        // NaN 断点:该处不是真实线段,跳过
+        if (!p1.x.isFinite || !p1.y.isFinite) continue;
+        if (!p2.x.isFinite || !p2.y.isFinite) continue;
         final rdx = p2.x - p1.x;
         final rdy = p2.y - p1.y;
         for (var j = 0; j < pb.length - 1; j++) {
           final q1 = pb[j];
           final q2 = pb[j + 1];
+          if (!q1.x.isFinite || !q1.y.isFinite) continue;
+          if (!q2.x.isFinite || !q2.y.isFinite) continue;
           final sdx = q2.x - q1.x;
           final sdy = q2.y - q1.y;
           final d = rdx * sdy - rdy * sdx;
-          if (d.abs() < eps) continue; // 平行/共线
           final qpx = q1.x - p1.x;
           final qpy = q1.y - p1.y;
-          final t = (qpx * sdy - qpy * sdx) / d;
-          final u = (qpx * rdy - qpy * rdx) / d;
-          if (t < 0 || t > 1 || u < 0 || u > 1) continue;
-          final x = p1.x + t * rdx;
-          final y = p1.y + t * rdy;
-          // 按距离去重;容量上限 10000 点
+          double x, y;
+          if (d.abs() <= eps) {
+            // 近平行(浮点不可分辨):交给有理化精确判定——
+            // 精确平行跳过;否则精确求交(此时浮点结果已不可信)
+            final ex = exactSegIntersect(
+              p1.x,
+              p1.y,
+              p2.x,
+              p2.y,
+              q1.x,
+              q1.y,
+              q2.x,
+              q2.y,
+            );
+            if (ex == null) continue;
+            x = ex.x;
+            y = ex.y;
+          } else {
+            final t = (qpx * sdy - qpy * sdx) / d;
+            final u = (qpx * rdy - qpy * rdx) / d;
+            // 临界(贴边)判定浮点易误判:贴边时同样走精确路径
+            final nearEdge =
+                t > -1e-9 && t < 1e-9 ||
+                t > 1 - 1e-9 && t < 1 + 1e-9 ||
+                u > -1e-9 && u < 1e-9 ||
+                u > 1 - 1e-9 && u < 1 + 1e-9;
+            if (nearEdge) {
+              final ex = exactSegIntersect(
+                p1.x,
+                p1.y,
+                p2.x,
+                p2.y,
+                q1.x,
+                q1.y,
+                q2.x,
+                q2.y,
+              );
+              if (ex == null) continue;
+              x = ex.x;
+              y = ex.y;
+            } else if (t < 0 || t > 1 || u < 0 || u > 1) {
+              continue;
+            } else {
+              x = p1.x + t * rdx;
+              y = p1.y + t * rdy;
+            }
+          }
+          // 按距离去重(相对坐标尺度);容量上限 10000 点
           if (list.length >= 10000) break;
           var dup = false;
           for (final e in list) {
@@ -1173,6 +1270,166 @@ ScatterData styledScatter(ExecContext ctx, String name, List<Pt3> points) {
     sizes: s.sizes,
     colors: s.colors,
   );
+}
+
+// ==================== 隐式曲线提取(marching squares) ====================
+
+/// 端点键:相邻单元共享棱边时,两侧对同一棱边的插值点由相同角值/相同公式
+/// 计算而来,是位级相同的 double → 精确相等可作链接口点。
+/// (hashCode 冲突概率在数万点量级下可忽略,且匹配时仍会校验精确相等。)
+String _ptKey(double x, double y) => '${x.hashCode}:${y.hashCode}';
+
+/// 隐式方程 F(x,y)=0 的轮廓提取(marching squares):
+/// 规则网格采样 F → 逐单元按四角符号查案例表 → 棱边线性插值得等值点 →
+/// 把共端点的单元线段链接为连续折线(闭合圈自动首尾相接)。
+/// 多条分支轮廓(如双曲线两支)之间以 NaN 断点分隔,渲染层按非有限值断线。
+///
+/// [samples] 为每轴网格数(2..400);返回空列表表示该范围无零等值线。
+List<Pt> _implicitCurve(
+  double Function(double x, double y) f,
+  double xMin,
+  double xMax,
+  double yMin,
+  double yMax,
+  int samples,
+) {
+  final n = samples.clamp(2, 400);
+  final dx = (xMax - xMin) / n;
+  final dy = (yMax - yMin) / n;
+  // 网格线坐标:预计算成数组,保证相邻单元共享棱边引用位级相同的坐标值,
+  // 从而两侧插值点完全相等,轮廓链才能正确接续(浮点逐次累加会有 ulp 误差)
+  final xs = [for (var i = 0; i <= n; i++) xMin + i * dx];
+  final ys = [for (var j = 0; j <= n; j++) yMin + j * dy];
+  // 网格值 g[j][i]:角点 (xs[i], ys[j]),j=0 为底边;NaN 角点所在单元直接跳过
+  final g = List.generate(
+    n + 1,
+    (j) => List.generate(n + 1, (i) => f(xs[i], ys[j])),
+  );
+
+  // 生成全部等值线段(每段两个端点)
+  final segs = <List<Pt>>[];
+  // 四角:bl=(i,j) br=(i+1,j) tr=(i+1,j+1) tl=(i,j+1);棱边交点线性插值
+  Pt edgePt(double v0, double v1, Pt p0, Pt p1) {
+    final t = v0 / (v0 - v1); // v0、v1 异号(或一侧为 0),分母不为 0
+    return Pt(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t);
+  }
+
+  for (var j = 0; j < n; j++) {
+    for (var i = 0; i < n; i++) {
+      final bl = g[j][i], br = g[j][i + 1];
+      final tr = g[j + 1][i + 1], tl = g[j + 1][i];
+      if (!bl.isFinite || !br.isFinite || !tr.isFinite || !tl.isFinite) {
+        continue;
+      }
+      final x0 = xs[i], x1 = xs[i + 1];
+      final y0 = ys[j], y1 = ys[j + 1];
+      var idx = 0;
+      if (bl > 0) idx |= 1;
+      if (br > 0) idx |= 2;
+      if (tr > 0) idx |= 4;
+      if (tl > 0) idx |= 8;
+      if (idx == 0 || idx == 15) continue;
+      // 惰性计算四条棱边的等值点(仅在案例表需要时插值)
+      Pt? bottom, right, top, left;
+      Pt bot() => bottom ??= edgePt(bl, br, Pt(x0, y0), Pt(x1, y0));
+      Pt rgt() => right ??= edgePt(br, tr, Pt(x1, y0), Pt(x1, y1));
+      Pt top_() => top ??= edgePt(tl, tr, Pt(x0, y1), Pt(x1, y1));
+      Pt lft() => left ??= edgePt(bl, tl, Pt(x0, y0), Pt(x0, y1));
+      void seg(Pt a, Pt b) {
+        // 等值线恰好穿过网格角点时会产生 a==b 的退化段(零长度),
+        // 它们自成伪链污染输出 → 直接丢弃;真实链路不受影响
+        if (a.x == b.x && a.y == b.y) return;
+        segs.add([a, b]);
+      }
+
+      switch (idx) {
+        case 1:
+        case 14:
+          seg(lft(), bot());
+        case 2:
+        case 13:
+          seg(bot(), rgt());
+        case 3:
+        case 12:
+          seg(lft(), rgt());
+        case 4:
+        case 11:
+          seg(rgt(), top_());
+        case 6:
+        case 9:
+          seg(bot(), top_());
+        case 7:
+          seg(lft(), top_());
+        case 8:
+          seg(top_(), lft());
+        case 5: // 马鞍点 1:正角 bl/tr —— 中心值决定连通方式
+          if ((bl + br + tr + tl) / 4 > 0) {
+            seg(bot(), rgt());
+            seg(lft(), top_()); // 正区域连通,负角被隔离
+          } else {
+            seg(lft(), bot());
+            seg(rgt(), top_()); // 正角被隔离
+          }
+        case 10: // 马鞍点 2:正角 br/tl
+          if ((bl + br + tr + tl) / 4 > 0) {
+            seg(lft(), bot());
+            seg(rgt(), top_()); // 正区域连通,负角被隔离
+          } else {
+            seg(bot(), rgt());
+            seg(lft(), top_()); // 正角被隔离
+          }
+      }
+    }
+  }
+  if (segs.isEmpty) return const [];
+
+  // 链接:端点 → 所在线段索引
+  final byPoint = <String, List<int>>{};
+  for (var i = 0; i < segs.length; i++) {
+    for (final p in segs[i]) {
+      final k = _ptKey(p.x, p.y);
+      (byPoint[k] ??= []).add(i);
+    }
+  }
+  final used = List<bool>.filled(segs.length, false);
+  // 从链尾(或链头)延伸一段;返回 false 表示闭合或到端点
+  // (Pt 未重载 ==,此处按坐标精确相等比较;共享棱边的插值点为位级相同 double)
+  bool samePt(Pt a, Pt b) => a.x == b.x && a.y == b.y;
+  bool extend(List<Pt> chain, bool fromEnd) {
+    final tail = fromEnd ? chain.last : chain.first;
+    for (final j in byPoint[_ptKey(tail.x, tail.y)] ?? const <int>[]) {
+      if (used[j]) continue;
+      final s = segs[j];
+      Pt next;
+      if (samePt(s[0], tail)) {
+        next = s[1];
+      } else if (samePt(s[1], tail)) {
+        next = s[0];
+      } else {
+        continue; // 哈希碰撞:并非同一点,跳过
+      }
+      used[j] = true;
+      if (fromEnd) {
+        chain.add(next);
+      } else {
+        chain.insert(0, next);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  final out = <Pt>[];
+  for (var i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    final chain = <Pt>[segs[i][0], segs[i][1]];
+    while (extend(chain, true)) {}
+    while (extend(chain, false)) {}
+    if (out.isNotEmpty) out.add(const Pt(double.nan, double.nan)); // 分支断点
+    out.addAll(chain);
+  }
+  return out;
 }
 
 /// 平面生成:仅构建 x-y 平面(z=0)上的多边形面,适配 2D 坐标系

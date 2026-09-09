@@ -1,8 +1,8 @@
-// 新建节点右键菜单(按分类分组;可选 pendingConn 以自动连线)
+﻿// 新建节点右键菜单(按分类分组;可选 pendingConn 以自动连线)
 library;
 
-import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 
 import '../i18n.dart';
 import '../models/data.dart' hide Column;
@@ -118,156 +118,230 @@ class NodeMenu extends StatefulWidget {
 }
 
 class _NodeMenuState extends State<NodeMenu> {
-  final TextEditingController _searchCtrl = TextEditingController();
   Category _hovered = Category.input;
+
+  // 搜索框状态:过滤支持中文(label 键名/当前语言显示名)与英文(id)
+  final TextEditingController _searchCtrl = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
   String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _searchFocus.addListener(() {
+      // 聚焦态变化时重绘底部强调线(Fluent TextBox 焦点样式)
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
+
+  /// 全量配置一次构建,供分类视图复用
+  late final List<NodeConfig> _allConfigs = List.unmodifiable(kNodeConfigs);
+
+  /// 按分类分组
+  late final Map<Category, List<NodeConfig>> _byCat = () {
+    final m = <Category, List<NodeConfig>>{};
+    for (final cfg in _allConfigs) {
+      m.putIfAbsent(cfg.category, () => []).add(cfg);
+    }
+    return m;
+  }();
+  late final List<Category> _cats = Category.values
+      .where((c) => _byCat.containsKey(c))
+      .toList();
 
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
 
-    // 按分类分组节点
-    final byCat = <Category, List<NodeConfig>>{};
-    for (final cfg in kNodeConfigs) {
-      byCat.putIfAbsent(cfg.category, () => []).add(cfg);
-    }
-    final cats = Category.values.where((c) => byCat.containsKey(c)).toList();
-
-    // 搜索过滤:有搜索词时全局搜索(扁平列表),否则按当前分类展示(双栏)
-    final q = _query.trim().toLowerCase();
-    final isSearching = q.isNotEmpty;
-    final flatItems = isSearching
-        ? kNodeConfigs.where((c) {
-            return c.label.toLowerCase().contains(q) ||
-                c.description.toLowerCase().contains(q);
-          }).toList()
+    final q = _query.trim();
+    final searching = q.isNotEmpty;
+    final results = searching
+        ? _allConfigs.where((c) => _matches(c, q)).toList(growable: false)
         : const <NodeConfig>[];
-    final catItems = byCat[_hovered] ?? const <NodeConfig>[];
 
-    // 位置适配交给 ViewportAwareMenu:下方/右侧空间不足时向鼠标左上方翻转
+    final catItems = _byCat[_hovered] ?? const <NodeConfig>[];
+
     final mq = MediaQuery.of(context);
     const menuW = 340.0;
 
     return ViewportAwareMenu(
       mouse: widget.position,
       width: menuW,
-      child: Container(
-        constraints: BoxConstraints(maxHeight: mq.size.height - 80),
-        decoration: BoxDecoration(
-          color: t.bgSurface,
-          border: Border.all(color: t.strokeStrong),
-          borderRadius: BorderRadius.circular(SyphonDims.radiusM),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 24,
-            ),
-          ],
+      // 透明 Material:为搜索框 TextField 提供 Material 祖先(菜单本身自绘背景)
+      child: Material(
+        type: MaterialType.transparency,
+        child: Container(
+          constraints: BoxConstraints(maxHeight: mq.size.height - 80),
+          decoration: BoxDecoration(
+            color: t.bgSurface,
+            border: Border.all(color: t.strokeStrong),
+            borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 24,
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildSearchBox(t),
+              const SizedBox(height: 6),
+              if (!searching) ...[
+                _buildTitle(t),
+                _buildCategoryColumns(t, catItems),
+              ] else ...[
+                _buildSearchResults(t, results),
+              ],
+              _buildFooter(t),
+              if (widget.bottomSlot != null) ...[
+                const SizedBox(height: 6),
+                Divider(height: 1, thickness: 1, color: t.stroke),
+                const SizedBox(height: 2),
+                widget.bottomSlot!,
+              ],
+            ],
+          ),
         ),
-        padding: const EdgeInsets.all(8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildTitle(t),
-            // 搜索框
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: fluent.TextBox(
-                controller: _searchCtrl,
-                autofocus: true,
-                placeholder: L.t('搜索节点…'),
-                style: TextStyle(fontSize: 12, color: t.text),
-                onChanged: (v) => setState(() => _query = v),
-                onSubmitted: (_) {
-                  if (flatItems.isNotEmpty) {
-                    widget.onPick(flatItems.first.id);
-                  }
-                },
+      ),
+    );
+  }
+
+  /// 中英文匹配:中文搜 label 键名/当前语言显示名,英文搜 id(下划线按空格处理)
+  static bool _matches(NodeConfig cfg, String q) {
+    final lower = q.toLowerCase();
+    return cfg.label.toLowerCase().contains(lower) ||
+        L.t(cfg.label).toLowerCase().contains(lower) ||
+        cfg.id.replaceAll('_', ' ').toLowerCase().contains(lower);
+  }
+
+  /// Fluent 风格搜索框(AutoSuggestBox):圆角 4、聚焦时底部 2px 强调线;
+  /// Esc 清空/关闭,Enter 选中首个结果
+  Widget _buildSearchBox(SyphonTheme t) {
+    final focused = _searchFocus.hasFocus;
+    return CallbackShortcuts(
+      bindings: {
+        SingleActivator(LogicalKeyboardKey.escape): () {
+          if (_query.isNotEmpty) {
+            _searchCtrl.clear();
+            setState(() => _query = '');
+          } else {
+            widget.onClose();
+          }
+        },
+      },
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            height: 32,
+            decoration: BoxDecoration(
+              color: t.bgInput,
+              borderRadius: BorderRadius.circular(SyphonDims.radiusS),
+              border: Border.all(
+                color: focused ? t.accent.withValues(alpha: 0.5) : t.strokeStrong,
               ),
             ),
-            // 主体:搜索时扁平列表,否则双栏(分类 + 节点)
-            if (isSearching)
-              _buildSearchResults(t, flatItems)
-            else
-              _buildCategoryColumns(t, cats, catItems),
-            _buildFooter(t),
-            // 分组操作扩展区(分组内右键时显示)
-            if (widget.bottomSlot != null) ...[
-              const SizedBox(height: 6),
-              Divider(height: 1, thickness: 1, color: t.stroke),
-              const SizedBox(height: 2),
-              widget.bottomSlot!,
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 标题栏
-  Widget _buildTitle(SyphonTheme t) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
-      child: Text(
-        '${L.t('新建节点')}',
-        style: TextStyle(
-          fontSize: 11,
-          color: t.textFaint,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.8,
-        ),
-      ),
-    );
-  }
-
-  /// 搜索模式:扁平节点列表(或"无匹配"占位)
-  Widget _buildSearchResults(SyphonTheme t, List<NodeConfig> flatItems) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: 300),
-      child: SingleChildScrollView(
-        child: flatItems.isEmpty
-            ? Padding(
-                padding: const EdgeInsets.all(12),
-                child: Text(
-                  '无匹配节点',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12, color: t.textFaint),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                Icon(Icons.search, size: 14, color: t.textFaint),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: TextField(
+                    controller: _searchCtrl,
+                    focusNode: _searchFocus,
+                    autofocus: true,
+                    style: TextStyle(fontSize: 12, color: t.text),
+                    cursorColor: t.accent,
+                    onChanged: (v) => setState(() => _query = v),
+                    onSubmitted: (_) => _pickFirst(),
+                    decoration: InputDecoration(
+                      hintText: L.t('搜索节点…'),
+                      hintStyle: TextStyle(fontSize: 12, color: t.textFaint),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 9),
+                    ),
+                  ),
                 ),
-              )
-            : Column(
+                if (_query.isNotEmpty)
+                  _ClearButton(
+                    onTap: () {
+                      _searchCtrl.clear();
+                      setState(() => _query = '');
+                    },
+                  ),
+              ],
+            ),
+          ),
+          // Fluent TextBox 焦点样式:底部 2px 强调线
+          if (focused)
+            Positioned(
+              left: 4,
+              right: 4,
+              bottom: 0,
+              child: Container(
+                height: 2,
+                decoration: BoxDecoration(
+                  color: t.accent,
+                  borderRadius: BorderRadius.circular(1),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Enter 选中首个搜索结果
+  void _pickFirst() {
+    final q = _query.trim();
+    if (q.isEmpty) return;
+    final results =
+        _allConfigs.where((c) => _matches(c, q)).toList(growable: false);
+    if (results.isNotEmpty) widget.onPick(results.first.id);
+  }
+
+  /// 搜索结果视图:跨分类扁平列表,与分类双栏同高保持菜单尺寸稳定
+  Widget _buildSearchResults(SyphonTheme t, List<NodeConfig> results) {
+    return SizedBox(
+      height: 300,
+      child: results.isEmpty
+          ? Center(
+              child: Text(
+                L.t('无匹配节点'),
+                style: TextStyle(fontSize: 11, color: t.textFaint),
+              ),
+            )
+          : SingleChildScrollView(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  for (final cfg in flatItems)
-                    _NodeItem(
-                      cfg: cfg,
-                      showCat: true,
-                      onTap: () => widget.onPick(cfg.id),
-                    ),
+                  for (final cfg in results)
+                    _NodeItem(cfg: cfg, onTap: () => widget.onPick(cfg.id)),
                 ],
               ),
-      ),
+            ),
     );
   }
 
-  /// 双栏模式:左侧分类列 + 右侧节点列表
-  Widget _buildCategoryColumns(
-    SyphonTheme t,
-    List<Category> cats,
-    List<NodeConfig> catItems,
-  ) {
+  Widget _buildCategoryColumns(SyphonTheme t, List<NodeConfig> catItems) {
     return SizedBox(
       height: 300,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 分类列(左侧 132px)
           Container(
             width: 132,
             padding: const EdgeInsets.only(right: 4),
@@ -278,7 +352,7 @@ class _NodeMenuState extends State<NodeMenu> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  for (final cat in cats)
+                  for (final cat in _cats)
                     _CatItem(
                       cat: cat,
                       active: cat == _hovered,
@@ -289,7 +363,6 @@ class _NodeMenuState extends State<NodeMenu> {
               ),
             ),
           ),
-          // 节点列表(右侧)
           Expanded(
             child: Padding(
               padding: const EdgeInsets.only(left: 4),
@@ -309,7 +382,21 @@ class _NodeMenuState extends State<NodeMenu> {
     );
   }
 
-  /// 底部提示
+  Widget _buildTitle(SyphonTheme t) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
+      child: Text(
+        L.t('新建节点'),
+        style: TextStyle(
+          fontSize: 11,
+          color: t.textFaint,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.8,
+        ),
+      ),
+    );
+  }
+
   Widget _buildFooter(SyphonTheme t) {
     return Container(
       margin: const EdgeInsets.only(top: 6),
@@ -318,7 +405,7 @@ class _NodeMenuState extends State<NodeMenu> {
         border: Border(top: BorderSide(color: t.stroke)),
       ),
       child: Text(
-        '${L.t('单击添加')} · Enter ${L.t('快捷添加')}',
+        L.t('单击添加'),
         textAlign: TextAlign.right,
         style: TextStyle(fontSize: 10, color: t.textFaint),
       ),
@@ -394,17 +481,12 @@ class _CatItemState extends State<_CatItem> {
   }
 }
 
-/// 节点条目(圆点 + 名称,搜索时附带分类标签)
+/// 节点条目(圆点 + 名称)
 class _NodeItem extends StatefulWidget {
   final NodeConfig cfg;
-  final bool showCat;
   final VoidCallback onTap;
 
-  const _NodeItem({
-    required this.cfg,
-    required this.onTap,
-    this.showCat = false,
-  });
+  const _NodeItem({required this.cfg, required this.onTap});
 
   @override
   State<_NodeItem> createState() => _NodeItemState();
@@ -417,17 +499,14 @@ class _NodeItemState extends State<_NodeItem> {
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
     final color = _catColor(widget.cfg.category);
-    final info = kCategoryInfo[widget.cfg.category];
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         onTap: widget.onTap,
-        child: AnimatedContainer(
+        child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-          duration: const Duration(milliseconds: 120),
           decoration: BoxDecoration(
-            // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
             color: _hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0),
             borderRadius: BorderRadius.circular(SyphonDims.radiusS),
           ),
@@ -450,13 +529,44 @@ class _NodeItemState extends State<_NodeItem> {
                   style: TextStyle(fontSize: 12, color: t.text),
                 ),
               ),
-              if (widget.showCat && info != null)
-                Text(
-                  L.t(info.label),
-                  style: TextStyle(fontSize: 10, color: t.textFaint),
-                ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 搜索框清除按钮:小号关闭图标,悬停高亮
+class _ClearButton extends StatefulWidget {
+  final VoidCallback onTap;
+
+  const _ClearButton({required this.onTap});
+
+  @override
+  State<_ClearButton> createState() => _ClearButtonState();
+}
+
+class _ClearButtonState extends State<_ClearButton> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          width: 22,
+          height: 22,
+          decoration: BoxDecoration(
+            // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
+            color: _hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0),
+            borderRadius: BorderRadius.circular(SyphonDims.radiusS),
+          ),
+          child: Icon(Icons.close, size: 13, color: t.textDim),
         ),
       ),
     );
@@ -470,212 +580,4 @@ Color _catColor(Category c) {
   return Color(
     int.tryParse(info.color.replaceFirst('#', '0xFF')) ?? 0xFF7C8DB5,
   );
-}
-
-// ==================== 节点右键菜单(多选后) ====================
-// 由画布层在 Shift 多选后右键弹出:分组 / 取消分组 / 复制所选 / 删除所选
-// (Blender 风格:多个节点组成一个分组,成员整体拖动)
-
-class NodeContextMenu extends StatelessWidget {
-  final Offset position;
-  final bool canGroup; // 所选 >= 2 节点时才可分组
-  final bool canUngroup; // 所选节点中有成员处于分组内才可取消分组
-  final VoidCallback onGroup;
-  final VoidCallback onUngroup;
-  final VoidCallback onDuplicate;
-  final VoidCallback onDelete;
-
-  const NodeContextMenu({
-    super.key,
-    required this.position,
-    required this.canGroup,
-    required this.canUngroup,
-    required this.onGroup,
-    required this.onUngroup,
-    required this.onDuplicate,
-    required this.onDelete,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    const menuW = 168.0;
-    // 位置适配交给 ViewportAwareMenu:下方/右侧空间不足时向鼠标左上方翻转
-    return ViewportAwareMenu(
-      mouse: position,
-      width: menuW,
-      child: Container(
-        decoration: BoxDecoration(
-          color: t.bgSurface,
-          border: Border.all(color: t.strokeStrong),
-          borderRadius: BorderRadius.circular(SyphonDims.radiusM),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 24,
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            CtxMenuItem(
-              icon: Icons.group_add_outlined,
-              label: L.t('分组'),
-              enabled: canGroup,
-              onTap: onGroup,
-            ),
-            CtxMenuItem(
-              icon: Icons.group_remove_outlined,
-              label: L.t('取消分组'),
-              enabled: canUngroup,
-              onTap: onUngroup,
-            ),
-            const SizedBox(height: 4),
-            Divider(height: 1, thickness: 1, color: t.stroke),
-            const SizedBox(height: 4),
-            CtxMenuItem(
-              icon: Icons.copy_outlined,
-              label: L.t('复制所选'),
-              onTap: onDuplicate,
-            ),
-            CtxMenuItem(
-              icon: Icons.delete_outline,
-              label: L.t('删除所选'),
-              danger: true,
-              onTap: onDelete,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ==================== 分组右键菜单 ====================
-// 在分组框内部空白处右键弹出:取消分组 / 复制分组
-// (重命名分组由"双击分组标签"触发,见 node_canvas.dart)
-
-class GroupContextMenu extends StatelessWidget {
-  final Offset position;
-  final String groupName;
-  final VoidCallback onUngroup; // 取消分组
-  final VoidCallback onDuplicate; // 复制分组
-
-  const GroupContextMenu({
-    super.key,
-    required this.position,
-    required this.groupName,
-    required this.onUngroup,
-    required this.onDuplicate,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    const menuW = 168.0;
-    // 位置适配交给 ViewportAwareMenu:下方/右侧空间不足时向鼠标左上方翻转
-    return ViewportAwareMenu(
-      mouse: position,
-      width: menuW,
-      child: Container(
-        decoration: BoxDecoration(
-          color: t.bgSurface,
-          border: Border.all(color: t.strokeStrong),
-          borderRadius: BorderRadius.circular(SyphonDims.radiusM),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 24,
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            CtxMenuItem(
-              icon: Icons.group_remove_outlined,
-              label: L.t('取消分组'),
-              onTap: onUngroup,
-            ),
-            const SizedBox(height: 4),
-            Divider(height: 1, thickness: 1, color: t.stroke),
-            const SizedBox(height: 4),
-            CtxMenuItem(
-              icon: Icons.copy_outlined,
-              label: L.t('复制分组'),
-              onTap: onDuplicate,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 右键菜单单项:图标 + 名称,悬停高亮,支持禁用态与危险色
-class CtxMenuItem extends StatefulWidget {
-  final IconData icon;
-  final String label;
-  final bool enabled;
-  final bool danger;
-  final VoidCallback onTap;
-
-  const CtxMenuItem({
-    super.key,
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.enabled = true,
-    this.danger = false,
-  });
-
-  @override
-  State<CtxMenuItem> createState() => _CtxMenuItemState();
-}
-
-class _CtxMenuItemState extends State<CtxMenuItem> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    final fg = widget.enabled
-        ? (widget.danger ? t.danger : t.text)
-        : t.textFaint.withValues(alpha: 0.4);
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.enabled ? widget.onTap : null,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-          decoration: BoxDecoration(
-            // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
-            color: widget.enabled && _hover
-                ? t.bgFloat
-                : t.bgFloat.withValues(alpha: 0),
-            borderRadius: BorderRadius.circular(SyphonDims.radiusS),
-          ),
-          child: Row(
-            children: [
-              Icon(widget.icon, size: 15, color: fg),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  widget.label,
-                  style: TextStyle(fontSize: 12, color: fg),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }

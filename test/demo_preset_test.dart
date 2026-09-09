@@ -7,11 +7,13 @@ import 'package:syphon_nov/models/presets.dart';
 import 'package:syphon_nov/store/graph_store.dart';
 
 void main() {
-  test('功能全景演示:画布可加载且流水线执行无错误', () {
+  test('功能全景演示:画布可加载且流水线执行无错误', () async {
     final store = GraphStore.instance;
     expect(store.loadGraph(kDemoGraphJson, silent: true), isTrue);
     // loadGraph 在 autoRun 下已执行;这里强制再跑一轮并检查错误
+    // (执行引擎在 Isolate 中异步运行,settled 等待落定)
     store.runPipeline();
+    await store.settled;
     final errors = store.results.values.where((r) => r.error != null).toList();
     expect(errors, isEmpty, reason: '执行错误: ${errors.map((e) => e.error)}');
     expect(store.nodes.length, greaterThanOrEqualTo(35));

@@ -1,6 +1,8 @@
 // 视口自适应菜单定位回归测试:下方/右侧空间不足时应向鼠标左上方翻转,
 // 避免菜单被窗口边缘截断(修复"右键菜单在底部被遮挡"问题)。
+// 另含 NodeMenu 顶部搜索框(中英文过滤)的行为测试。
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:syphon_nov/ui/context_menu.dart';
@@ -66,5 +68,104 @@ void main() {
     // 菜单整体仍在视口内(不被窗口边缘截断)
     expect(pos.dx + 100, lessThanOrEqualTo(800));
     expect(pos.dy + 80, lessThanOrEqualTo(600));
+  });
+
+  // ==================== NodeMenu 搜索框测试 ====================
+  // 测试环境未加载语言表,L.t(key) 返回 key 本身:
+  // 中文搜索走 label 键名,英文搜索走 id(下划线按空格处理)
+  group('NodeMenu 搜索框', () {
+    final picked = <String>[];
+    var closed = 0;
+
+    Future<void> pumpNodeMenu(WidgetTester tester) async {
+      picked.clear();
+      closed = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox.expand(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: Stack(
+                    children: [
+                      NodeMenu(
+                        position: const Offset(50, 50),
+                        onPick: picked.add,
+                        onClose: () => closed++,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      // 首帧屏幕外测量落位 + autofocus 焦点线重绘
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('搜索框位于菜单最上方并显示占位文本', (tester) async {
+      await pumpNodeMenu(tester);
+      final box = find.byType(TextField);
+      expect(box, findsOneWidget);
+      expect(find.text('搜索节点…'), findsOneWidget);
+      // 搜索框应位于"新建节点"标题之上
+      final searchTop = tester.getTopLeft(box).dy;
+      final titleTop =
+          tester.getTopLeft(find.text('新建节点')).dy;
+      expect(searchTop, lessThan(titleTop));
+    });
+
+    testWidgets('中文搜索按节点名过滤', (tester) async {
+      await pumpNodeMenu(tester);
+      await tester.enterText(find.byType(TextField), '拟合');
+      await tester.pump();
+      expect(find.text('曲线拟合'), findsOneWidget);
+      expect(find.text('表格输入'), findsNothing);
+    });
+
+    testWidgets('英文搜索按节点 id 过滤', (tester) async {
+      await pumpNodeMenu(tester);
+      await tester.enterText(find.byType(TextField), 'scatter');
+      await tester.pump();
+      // scatter_to_table(散点转表格)应命中;table_input 不含 scatter 应排除
+      expect(find.text('散点转表格'), findsOneWidget);
+      expect(find.text('表格输入'), findsNothing);
+    });
+
+    testWidgets('无匹配时显示空状态', (tester) async {
+      await pumpNodeMenu(tester);
+      await tester.enterText(find.byType(TextField), 'zzz不存在的节点');
+      await tester.pump();
+      expect(find.text('无匹配节点'), findsOneWidget);
+    });
+
+    testWidgets('Enter 选中首个匹配结果', (tester) async {
+      await pumpNodeMenu(tester);
+      await tester.enterText(find.byType(TextField), 'table');
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      // kNodeConfigs 中首个 id 含 table 的节点为 table_input(表格输入)
+      expect(picked, contains('table_input'));
+    });
+
+    testWidgets('Esc 先清空查询,再次 Esc 关闭菜单', (tester) async {
+      await pumpNodeMenu(tester);
+      await tester.enterText(find.byType(TextField), '拟合');
+      await tester.pump();
+      // 第一次 Esc:清空查询,回到分类视图
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.text('曲线拟合'), findsNothing);
+      expect(find.text('新建节点'), findsOneWidget);
+      expect(closed, 0);
+      // 第二次 Esc:关闭菜单
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(closed, 1);
+    });
   });
 }

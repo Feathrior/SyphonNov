@@ -70,13 +70,17 @@ class ObjectPreview extends StatelessWidget {
       );
     }
     if (o is md.SeriesData) {
-      final pts = o.points.length < 12 ? o.points : o.points.sublist(0, 12);
+      // 过滤 NaN 断点(隐式曲线多分支分隔),只展示真实数据点
+      final valid = o.points
+          .where((p) => p.x.isFinite && p.y.isFinite)
+          .toList();
+      final pts = valid.length < 12 ? valid : valid.sublist(0, 12);
       return MiniTable(
         headers: const ['x', 'y'],
         rows: [
           for (final p in pts) [p.x.toString(), p.y.toString()],
         ],
-        footer: L.fmt('共 {n} 个点', {'n': '${o.points.length}'}),
+        footer: L.fmt('共 {n} 个点', {'n': '${valid.length}'}),
       );
     }
     if (o is md.ScatterData) {
@@ -314,6 +318,27 @@ class _InspectorState extends State<Inspector> {
         for (final e in errors)
           _logLine(t, '[${e.label}] ${e.msg}', error: true),
         if (okCount > 0) _logLine(t, L.fmt('{n} 个节点执行成功', {'n': '$okCount'}), ok: true),
+        // 热点:top3 慢节点
+        ...() {
+          final entries = store.results.entries.toList()
+            ..sort(
+              (a, b) => (b.value.execMs ?? 0).compareTo(a.value.execMs ?? 0),
+            );
+          final top3 = entries
+              .where((e) => e.value.execMs != null)
+              .take(3)
+              .toList();
+          if (top3.isEmpty) return <Widget>[];
+          final sb = StringBuffer('${L.t('热点')}: ');
+          for (int i = 0; i < top3.length; i++) {
+            final n = store.nodeOf(top3[i].key);
+            final cfg = n != null ? getConfig(n.configId) : null;
+            final label = cfg?.label ?? top3[i].key;
+            sb.write('$label ${top3[i].value.execMs!.toStringAsFixed(1)}ms');
+            if (i < top3.length - 1) sb.write(' · ');
+          }
+          return <Widget>[_logLine(t, sb.toString())];
+        }(),
       ],
     );
   }

@@ -9,6 +9,14 @@ import 'package:xml/xml.dart';
 
 import 'data.dart';
 
+/// 取文件路径的基础名:去掉目录与扩展名(兼容 / 与 \ 分隔符)。
+/// 如 `C:/data/销量报表.csv` → `销量报表`。
+String fileBaseName(String path) {
+  final base = path.split(RegExp(r'[\\/]')).last;
+  final dot = base.lastIndexOf('.');
+  return dot > 0 ? base.substring(0, dot) : base;
+}
+
 /// 简易 CSV/TSV 解析(支持引号包裹)
 List<Column> parseDelimitedText(String text, [String delimiter = ',']) {
   final lines = text

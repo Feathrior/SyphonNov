@@ -2,6 +2,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -79,10 +80,23 @@ class GraphNode {
   }
 
   static GraphNode deepCopy(GraphNode n) {
+    // params 里的值都是不可变的 int/double/String/List/map,浅拷贝足够;
+    // 避免 jsonDecode(jsonEncode) 全量序列化,性能提升显著
+    final copiedParams = <String, dynamic>{};
+    for (final e in n.params.entries) {
+      final v = e.value;
+      if (v is List) {
+        copiedParams[e.key] = List.of(v);
+      } else if (v is Map) {
+        copiedParams[e.key] = Map<String, dynamic>.from(v);
+      } else {
+        copiedParams[e.key] = v;
+      }
+    }
     return GraphNode(
       id: n.id,
       configId: n.configId,
-      params: jsonDecode(jsonEncode(n.params)) as Map<String, dynamic>,
+      params: copiedParams,
       exposed: List.of(n.exposed),
       collapsed: n.collapsed,
       position: n.position,
@@ -267,7 +281,8 @@ class GraphStore extends ChangeNotifier {
   List<NodeGroup> groups = []; // 节点分组(Blender 风格,成员整体拖动)
   String? selectedId;
   Set<String> multiSelected = {}; // 多选节点集(Shift 点击/框选/分组)
-  String? selectedSplitEdgeId;
+  String? selectedSplitEdgeId; // 选中断点(Alt 创建 / 点击 mid)
+  String? selectedEdgeId;      // 选中整条连线(点击连线本体)
   bool autoRun = true;
   int runVersion = 0;
   int structureVersion = 0;
@@ -280,6 +295,16 @@ class GraphStore extends ChangeNotifier {
 
   static final GraphStore instance = GraphStore._();
   GraphStore._();
+
+  /// 节点 O(1) 查找表(每次访问重建,因 nodes 经常被整体替换为新 List)
+  Map<String, GraphNode> get nodeMap => {for (final n in nodes) n.id: n};
+
+  GraphNode? nodeOf(String id) {
+    for (final n in nodes) {
+      if (n.id == id) return n;
+    }
+    return null;
+  }
 
   // ---------- 撤销快照(节点/连线/分组) ----------
   void snapshotNow() {
@@ -346,7 +371,7 @@ class GraphStore extends ChangeNotifier {
     selectedId = node.id;
     structureVersion++;
     notifyListeners();
-    if (autoRun) runPipeline();
+    if (autoRun) runAfterGraphChange(changedIds: {node.id});
     return node.id;
   }
 
@@ -361,6 +386,13 @@ class GraphStore extends ChangeNotifier {
     if (ids.isEmpty) return;
     snapshotNow();
     final setIds = ids.toSet();
+    // 先记下被删节点的直接下游:边过滤后无法再从 edges 找到,
+    // 不记则下游节点不会标脏、会残留旧输入(下游自身也在删除集时无妨,
+    // propagateDirty 会跳过不存在的节点)
+    final downstream = <String>{
+      for (final e in edges)
+        if (setIds.contains(e.source)) e.target,
+    };
     nodes = nodes.where((n) => !setIds.contains(n.id)).toList();
     edges = edges
         .where((e) => !setIds.contains(e.source) && !setIds.contains(e.target))
@@ -379,7 +411,9 @@ class GraphStore extends ChangeNotifier {
     structureVersion++;
     notifyListeners();
     // 删除节点改变数据流:自动执行下重算(否则下游残留旧结果不刷新)
-    if (autoRun) runPipeline();
+    if (autoRun) {
+      runAfterGraphChange(changedIds: {...setIds, ...downstream}, edgeChanged: true);
+    }
   }
 
   void duplicateNodes(List<String> ids) {
@@ -396,7 +430,7 @@ class GraphStore extends ChangeNotifier {
         GraphNode(
           id: newId,
           configId: n.configId,
-          params: jsonDecode(jsonEncode(n.params)) as Map<String, dynamic>,
+          params: GraphNode.deepCopy(n).params,
           exposed: List.of(n.exposed),
           position: n.position + const Offset(40, 40),
         ),
@@ -423,7 +457,9 @@ class GraphStore extends ChangeNotifier {
     structureVersion++;
     notifyListeners();
     // 复制节点后自动执行,新节点输出立即可见
-    if (autoRun) runPipeline();
+    if (autoRun) {
+      runAfterGraphChange(changedIds: clones.map((c) => c.id).toSet());
+    }
   }
 
   /// 复制分组:克隆组内全部节点(含内部连线与断点),并对克隆重建分组,
@@ -444,7 +480,7 @@ class GraphStore extends ChangeNotifier {
         GraphNode(
           id: newId,
           configId: n.configId,
-          params: jsonDecode(jsonEncode(n.params)) as Map<String, dynamic>,
+          params: GraphNode.deepCopy(n).params,
           exposed: List.of(n.exposed),
           collapsed: n.collapsed,
           position: n.position + const Offset(40, 40),
@@ -552,7 +588,7 @@ class GraphStore extends ChangeNotifier {
         GraphNode(
           id: newId,
           configId: n.configId,
-          params: jsonDecode(jsonEncode(n.params)) as Map<String, dynamic>,
+          params: GraphNode.deepCopy(n).params,
           exposed: List.of(n.exposed),
           collapsed: n.collapsed,
           position: n.position + shift,
@@ -716,14 +752,17 @@ class GraphStore extends ChangeNotifier {
     final oldGid = groupOf(nodeId);
     snapshotNow();
     if (oldGid != null && oldGid != groupId) {
-      groups = groups.map((og) {
-        if (og.id == oldGid) {
-          return og.copyWith(
-            nodeIds: og.nodeIds.where((id) => id != nodeId).toList(),
-          );
-        }
-        return og;
-      }).where((og) => og.nodeIds.isNotEmpty).toList();
+      groups = groups
+          .map((og) {
+            if (og.id == oldGid) {
+              return og.copyWith(
+                nodeIds: og.nodeIds.where((id) => id != nodeId).toList(),
+              );
+            }
+            return og;
+          })
+          .where((og) => og.nodeIds.isNotEmpty)
+          .toList();
     }
     groups = groups.map((og) {
       if (og.id == groupId) {
@@ -786,6 +825,14 @@ class GraphStore extends ChangeNotifier {
 
   void selectSplitEdge(String? id) {
     selectedSplitEdgeId = id;
+    if (id != null) selectedEdgeId = null; // 互斥
+    notifyListeners();
+  }
+
+  /// 选中整条连线
+  void selectEdge(String? id) {
+    selectedEdgeId = id;
+    if (id != null) selectedSplitEdgeId = null; // 互斥
     notifyListeners();
   }
 
@@ -818,7 +865,7 @@ class GraphStore extends ChangeNotifier {
     structureVersion++;
     notifyListeners();
     // 参数变化影响数据流:自动执行下立即重算(原理化输出等图据此实时刷新)
-    if (autoRun) runPipeline();
+    if (autoRun) runAfterGraphChange(changedIds: {nodes[idx].id});
   }
 
   String _jsonStr(dynamic v) {
@@ -842,7 +889,7 @@ class GraphStore extends ChangeNotifier {
     structureVersion++;
     notifyListeners();
     // 暴露参数开关改变输入口,影响连线数据流:自动执行下重新计算
-    if (autoRun) runPipeline();
+    if (autoRun) runAfterGraphChange(changedIds: {id});
   }
 
   void toggleCollapse(String id) {
@@ -883,7 +930,7 @@ class GraphStore extends ChangeNotifier {
       '已连接 ${srcNode?.configId ?? ''} → ${tnNode?.configId ?? ''}(${targetHandle ?? 'in0'})',
     );
     // 连线变化改变数据流:自动执行下重算
-    if (autoRun) runPipeline();
+    if (autoRun) runAfterGraphChange(edgeChanged: true);
   }
 
   /// 更新连线 data(mid 分割点;不入撤销历史)。
@@ -905,10 +952,11 @@ class GraphStore extends ChangeNotifier {
     snapshotNow();
     edges = edges.where((e) => e.id != id).toList();
     if (selectedSplitEdgeId == id) selectedSplitEdgeId = null;
+    if (selectedEdgeId == id) selectedEdgeId = null;
     structureVersion++;
     notifyListeners();
     // 切断连线后自动执行,下游不再残留旧结果
-    if (autoRun) runPipeline();
+    if (autoRun) runAfterGraphChange(edgeChanged: true);
   }
 
   // ---------- 撤销/重做 ----------
@@ -954,7 +1002,7 @@ class GraphStore extends ChangeNotifier {
     lastError = null;
     structureVersion++;
     notifyListeners();
-    // 撤销/重做改变图结构:自动执行下重算,恢复后的图立即可见
+    // 撤销/重做改变图结构:快照可能包含任意变化 → 保守全量
     if (autoRun) runPipeline();
   }
 
@@ -1202,7 +1250,89 @@ class GraphStore extends ChangeNotifier {
   }
 
   // ---------- 执行 ----------
+
+  /// 全量执行(清除所有结果,重算整张图)。
   void runPipeline() {
+    results = {};
+    hasCycle = false;
+    lastError = null;
+    _runDirty(null);
+  }
+
+  /// 增量执行:只重算 [dirtySeeds] 及其下游节点,未脏节点复用旧结果。
+  void runPipelineDirty(Set<String> dirtySeeds) {
+    _runDirty(dirtySeeds);
+  }
+
+  /// 从 [changedIds](节点增删/修改) + 连线变化(所有边视为 dirty) → 全图脏标记 → 执行。
+  /// 节点删除时 changedIds 包含被删节点,但其下游节点仍标记为 dirty(因为连线变了)。
+  void runAfterGraphChange({
+    Set<String>? changedIds,
+    bool edgeChanged = false,
+  }) {
+    if (results.isEmpty) {
+      // 首次执行无旧结果可复用 → 全量
+      runPipeline();
+      return;
+    }
+    if (nodes.isEmpty) {
+      results = {};
+      hasCycle = false;
+      lastError = null;
+      return;
+    }
+    final seeds = <String>{};
+    if (changedIds != null) {
+      seeds.addAll(changedIds);
+      // 节点被删或增后,其邻居也脏(边连接关系变了)
+      for (final id in changedIds) {
+        for (final e in edges) {
+          if (e.source == id) seeds.add(e.target);
+          if (e.target == id) seeds.add(e.source);
+        }
+      }
+    }
+    if (edgeChanged) {
+      // 连线变更:所有边的 target 及其下游都脏
+      for (final e in edges) seeds.add(e.target);
+    }
+    if (seeds.isEmpty) {
+      // 没有明确的脏节点,保守全量
+      runPipeline();
+      return;
+    }
+    _runDirty(seeds);
+  }
+
+  // 执行任务链:多次触发串行排队,结果按触发顺序落定;
+  // 测试可通过 settled 等待异步执行完成
+  Future<void> _runChain = Future<void>.value();
+
+  /// 测试开关:false 时在主 Isolate 同步执行。
+  /// (testWidgets 假异步事件循环不会派发 Isolate 消息,真实 Isolate 会挂起)
+  static bool useIsolate = true;
+
+  /// 等待所有已排队的执行任务完成
+  Future<void> get settled => _runChain;
+
+  /// 落定一次执行结果并广播
+  void _applyOutcome(RunOutcome outcome) {
+    results = outcome.results;
+    hasCycle = outcome.hasCycle;
+    lastError = null;
+    for (final r in outcome.results.entries) {
+      if (r.value.error != null) {
+        lastError = r.value.error;
+        break;
+      }
+    }
+    runVersion++;
+    notifyListeners();
+  }
+
+  Future<void> _runDirty(Set<String>? dirtySeeds) {
+    // 触发时即固化输入(节点/边/旧结果快照):
+    // 任务在 Isolate 中异步执行,排队期间图可能被继续修改
     final liteNodes = nodes
         .map(
           (n) =>
@@ -1219,18 +1349,47 @@ class GraphStore extends ChangeNotifier {
           ),
         )
         .toList();
-    final outcome = runGraph(liteNodes, liteEdges);
-    results = outcome.results;
-    hasCycle = outcome.hasCycle;
-    lastError = null;
-    for (final r in outcome.results.entries) {
-      if (r.value.error != null) {
-        lastError = r.value.error;
-        break;
-      }
+    final prev = results;
+    RunOutcome runSync() => runGraph(
+          liteNodes,
+          liteEdges,
+          dirtyIds: dirtySeeds,
+          prevResults: prev,
+        );
+
+    // 同步模式(测试):主 Isolate 直接执行,保持旧的同步语义
+    if (!useIsolate) {
+      _applyOutcome(runSync());
+      return Future<void>.value();
     }
-    runVersion++;
-    notifyListeners();
+
+    Future<void> task() async {
+      RunOutcome outcome;
+      try {
+        // 执行引擎移入 Isolate:大数据流计算不再阻塞 UI 线程。
+        // runGraph 为纯函数(仅依赖 lite 数据与全局注册表),可安全跨 Isolate
+        outcome = await Isolate.run(runSync);
+      } catch (_) {
+        // 兜底:Isolate 拷贝失败(参数含不可发送对象)等场景回退主 Isolate 同步执行
+        outcome = runSync();
+      }
+      _applyOutcome(outcome);
+    }
+
+    _runChain = _runChain.then((_) => task()).catchError((Object e) {
+      addLog('error', '执行失败:$e');
+    });
+    return _runChain;
+  }
+
+  /// 运行单个节点及其全部下游(右键菜单"运行此节点")
+  void runNodeAndDownstream(String nodeId) {
+    if (nodes.every((n) => n.id != nodeId)) return;
+    if (results.isEmpty) {
+      runPipeline();
+      return;
+    }
+    _runDirty({nodeId});
   }
 
   // ---------- 日志 ----------

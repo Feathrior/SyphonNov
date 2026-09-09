@@ -438,6 +438,66 @@ void _drawTitle(Canvas canvas, Size size, String title, double fs) {
   );
 }
 
+// ==================== 坐标系覆盖 ====================
+
+/// 接入坐标系输入时,图表按其轴范围/颜色/网格/标签渲染(与原理化输出同源)。
+class _AxesTheme {
+  final bool on; // 是否接入坐标系
+  final double xMin, xMax, yMin, yMax; // 有效数值范围
+  final bool grid, border, hidden;
+  final Color axisColor;
+  final Color textColor;
+  final Color gridColor;
+  final double labelScale; // 坐标系 fontSize(px) → 图表文字缩放
+  final String labelX, labelY;
+
+  const _AxesTheme({
+    this.on = false,
+    this.xMin = 0,
+    this.xMax = 10,
+    this.yMin = 0,
+    this.yMax = 10,
+    this.grid = true,
+    this.border = true,
+    this.hidden = false,
+    this.axisColor = const Color(0xFF333333),
+    this.textColor = const Color(0xFF475569),
+    this.gridColor = const Color(0xFFD9DEE4),
+    this.labelScale = 1,
+    this.labelX = 'X',
+    this.labelY = 'Y',
+  });
+}
+
+_AxesTheme _axesThemeFrom(md.DataObject? input) {
+  if (input is! md.AxesData) return const _AxesTheme();
+  final xMin = input.xMin.isFinite ? input.xMin : 0.0;
+  final xMax = input.xMax.isFinite && input.xMax > xMin
+      ? input.xMax
+      : xMin + 10;
+  final yMin = input.yMin.isFinite ? input.yMin : 0.0;
+  final yMax = input.yMax.isFinite && input.yMax > yMin
+      ? input.yMax
+      : yMin + 10;
+  final cX = parseColor(input.axisColors?.x ?? '#333333');
+  return _AxesTheme(
+    on: true,
+    xMin: xMin,
+    xMax: xMax,
+    yMin: yMin,
+    yMax: yMax,
+    grid: input.grid && (input.gridX || input.gridY),
+    border: input.showBorder,
+    hidden: input.hidden == true,
+    axisColor: cX,
+    textColor: cX,
+    gridColor: cX.withValues(alpha: 0.22),
+    labelScale: (input.fontSize / 10.0).clamp(0.7, 1.6).toDouble(),
+    labelX: input.labelX.isEmpty ? 'X' : input.labelX,
+    labelY: input.labelY.isEmpty ? 'Y' : input.labelY,
+  );
+}
+
 // ==================== 图表 Painter ====================
 
 class ChartData {
@@ -506,6 +566,11 @@ class ChartPainter extends CustomPainter {
     final labelSize = (compact ? 10.0 : 11.0) * _fs;
     final textColor = const Color(0xFF475569);
     final axisColor = const Color(0xFF94A3B8);
+    // 坐标系覆盖:接入坐标系输入(in1)时按坐标系轴风格/范围/网格渲染
+    final th = _axesThemeFrom(inputs['in1']);
+    final effLabelSize = th.on ? labelSize * th.labelScale : labelSize;
+    final effTextColor = th.on ? th.textColor : textColor;
+    final effAxisColor = th.on ? th.axisColor : axisColor;
 
     switch (data.chartType) {
       case 'scatter':
@@ -541,9 +606,10 @@ class ChartPainter extends CustomPainter {
           size,
           params,
           table,
-          labelSize,
-          textColor,
-          axisColor,
+          effLabelSize,
+          effTextColor,
+          effAxisColor,
+          th,
         );
         break;
       case 'heatmap':
@@ -553,13 +619,23 @@ class ChartPainter extends CustomPainter {
           params,
           table,
           inputs,
-          labelSize,
-          textColor,
-          axisColor,
+          effLabelSize,
+          effTextColor,
+          effAxisColor,
+          th,
         );
         break;
       case 'box':
-        _paintBox(canvas, size, params, table, labelSize, textColor, axisColor);
+        _paintBox(
+          canvas,
+          size,
+          params,
+          table,
+          effLabelSize,
+          effTextColor,
+          effAxisColor,
+          th,
+        );
         break;
       case 'violin':
         _paintViolin(
@@ -567,16 +643,17 @@ class ChartPainter extends CustomPainter {
           size,
           params,
           table,
-          labelSize,
-          textColor,
-          axisColor,
+          effLabelSize,
+          effTextColor,
+          effAxisColor,
+          th,
         );
         break;
       case 'sankey':
-        _paintSankey(canvas, size, params, table, inputs, textColor);
+        _paintSankey(canvas, size, params, table, inputs, effTextColor, th);
         break;
       case 'graph':
-        _paintGraph(canvas, size, params, table, textColor);
+        _paintGraph(canvas, size, params, table, effTextColor, th);
         break;
       default:
         _paintEmpty(canvas, size);
@@ -786,7 +863,8 @@ class ChartPainter extends CustomPainter {
     final coords = <Offset>[];
     for (final l in seriesList) {
       for (final p in l.points) {
-        coords.add(Offset(p.x, p.y));
+        // 跳过 NaN 断点(隐式曲线多分支分隔),防 min/max 污染成 NaN
+        if (p.x.isFinite && p.y.isFinite) coords.add(Offset(p.x, p.y));
       }
     }
     if (coords.isEmpty) {
@@ -1022,6 +1100,7 @@ class ChartPainter extends CustomPainter {
     double labelSize,
     Color textColor,
     Color axisColor,
+    _AxesTheme th,
   ) {
     if (table is! md.TableData) {
       _paintEmpty(canvas, size);
@@ -1055,41 +1134,44 @@ class ChartPainter extends CustomPainter {
     }
     final xs = pts.map((p) => p.dx).toList();
     final ys = pts.map((p) => p.dy).toList();
-    final xmin = xs.reduce(math.min);
-    final xmax = xs.reduce(math.max);
-    final ymin = ys.reduce(math.min);
-    final ymax = ys.reduce(math.max);
+    // 接入坐标系时按坐标系范围映射与标注,否则按数据范围
+    final xmin = th.on ? th.xMin : xs.reduce(math.min);
+    final xmax = th.on ? th.xMax : xs.reduce(math.max);
+    final ymin = th.on ? th.yMin : ys.reduce(math.min);
+    final ymax = th.on ? th.yMax : ys.reduce(math.max);
     final plot = _plot(size, 50, 30, 20, 40);
-    final xa = _ValueAxis(xmin, xmax, 6);
-    final ya = _ValueAxis(ymin, ymax, 6);
-    _drawPlotFrame(
-      canvas,
-      plot,
-      xa: xa,
-      ya: ya,
-      gridColor: const Color(0xFFE5E7EB),
-      borderColor: axisColor,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: false,
-      axis: xa,
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-      name: fcCol.name,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: true,
-      axis: ya,
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-      name: '-log10(${pCol.name})',
-    );
+    if (!th.hidden) {
+      final xa = _ValueAxis(xmin, xmax, 6);
+      final ya = _ValueAxis(ymin, ymax, 6);
+      _drawPlotFrame(
+        canvas,
+        plot,
+        xa: xa,
+        ya: ya,
+        gridColor: th.on ? th.gridColor : const Color(0xFFE5E7EB),
+        borderColor: th.on && !th.border ? Colors.transparent : axisColor,
+      );
+      _drawValueAxis(
+        canvas,
+        plot,
+        vertical: false,
+        axis: xa,
+        axisColors: [axisColor],
+        labelSize: labelSize,
+        textColor: textColor,
+        name: th.on ? th.labelX : fcCol.name,
+      );
+      _drawValueAxis(
+        canvas,
+        plot,
+        vertical: true,
+        axis: ya,
+        axisColors: [axisColor],
+        labelSize: labelSize,
+        textColor: textColor,
+        name: th.on ? th.labelY : '-log10(${pCol.name})',
+      );
+    }
     final mark = Paint()
       ..color = const Color(0xFF475569)
       ..strokeWidth = 1
@@ -1159,6 +1241,7 @@ class ChartPainter extends CustomPainter {
     double labelSize,
     Color textColor,
     Color axisColor,
+    _AxesTheme th,
   ) {
     if (table is! md.TableData) {
       _paintEmpty(canvas, size);
@@ -1233,7 +1316,7 @@ class ChartPainter extends CustomPainter {
     canvas.drawRect(
       plot,
       Paint()
-        ..color = axisColor
+        ..color = th.hidden ? Colors.transparent : axisColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1,
     );
@@ -1308,6 +1391,7 @@ class ChartPainter extends CustomPainter {
     double labelSize,
     Color textColor,
     Color axisColor,
+    _AxesTheme th,
   ) {
     if (table is! md.TableData) {
       _paintEmpty(canvas, size);
@@ -1332,30 +1416,37 @@ class ChartPainter extends CustomPainter {
       _paintEmpty(canvas, size);
       return;
     }
+    // 接入坐标系时按坐标系 Y 范围映射与标注
+    if (th.on) {
+      yMin = th.yMin;
+      yMax = th.yMax;
+    }
     final plot = _plot(size, 45, 30, 20, 60);
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: true,
-      axis: _ValueAxis(yMin, yMax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-    );
-    final names = cols
-        .where((c) => c.values.map(md.toNum).whereType<double>().isNotEmpty)
-        .map((c) => c.name)
-        .toList();
-    _drawCatAxis(
-      canvas,
-      plot,
-      vertical: false,
-      cats: names,
-      color: axisColor,
-      labelSize: labelSize,
-      textColor: textColor,
-      rotateDeg: 30,
-    );
+    if (!th.hidden) {
+      _drawValueAxis(
+        canvas,
+        plot,
+        vertical: true,
+        axis: _ValueAxis(yMin, yMax, 6),
+        axisColors: [axisColor],
+        labelSize: labelSize,
+        textColor: textColor,
+      );
+      final names = cols
+          .where((c) => c.values.map(md.toNum).whereType<double>().isNotEmpty)
+          .map((c) => c.name)
+          .toList();
+      _drawCatAxis(
+        canvas,
+        plot,
+        vertical: false,
+        cats: names,
+        color: axisColor,
+        labelSize: labelSize,
+        textColor: textColor,
+        rotateDeg: 30,
+      );
+    }
     final n = boxData.length;
     final bw = plot.width / n * 0.5;
     for (var i = 0; i < n; i++) {
@@ -1407,6 +1498,7 @@ class ChartPainter extends CustomPainter {
     double labelSize,
     Color textColor,
     Color axisColor,
+    _AxesTheme th,
   ) {
     if (table is! md.TableData) {
       _paintEmpty(canvas, size);
@@ -1432,28 +1524,35 @@ class ChartPainter extends CustomPainter {
     }
     if (!yMin.isFinite) yMin = 0;
     if (!yMax.isFinite) yMax = 1;
+    // 接入坐标系时按坐标系 Y 范围映射与标注
+    if (th.on) {
+      yMin = th.yMin;
+      yMax = th.yMax;
+    }
     final span = yMax - yMin;
     final yPad = span == 0 ? 0.5 : span * 0.05;
     final plot = _plot(size, 45, 30, 20, 60);
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: true,
-      axis: _ValueAxis(yMin - yPad, yMax + yPad, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-    );
-    _drawCatAxis(
-      canvas,
-      plot,
-      vertical: false,
-      cats: groups.map((g) => g.name).toList(),
-      color: axisColor,
-      labelSize: labelSize,
-      textColor: textColor,
-      rotateDeg: 30,
-    );
+    if (!th.hidden) {
+      _drawValueAxis(
+        canvas,
+        plot,
+        vertical: true,
+        axis: _ValueAxis(yMin - yPad, yMax + yPad, 6),
+        axisColors: [axisColor],
+        labelSize: labelSize,
+        textColor: textColor,
+      );
+      _drawCatAxis(
+        canvas,
+        plot,
+        vertical: false,
+        cats: groups.map((g) => g.name).toList(),
+        color: axisColor,
+        labelSize: labelSize,
+        textColor: textColor,
+        rotateDeg: 30,
+      );
+    }
     final n = groups.length;
     final bandW = plot.width / n * 0.3;
     for (var gi = 0; gi < n; gi++) {
@@ -1527,6 +1626,7 @@ class ChartPainter extends CustomPainter {
     md.DataObject? table,
     Map<String, md.DataObject?> inputs,
     Color textColor,
+    _AxesTheme th,
   ) {
     if (table is! md.TableData) {
       _paintEmpty(canvas, size);
@@ -1542,9 +1642,18 @@ class ChartPainter extends CustomPainter {
       _paintEmpty(canvas, size);
       return;
     }
-    // 两条色带:in1 = 输入轴(左侧条带),in2 = 输出轴(右侧条带)。
-    // 着色方式:各侧在对应色带上均匀取 N 个采样点(第 i 条条带 ← 第 i 个采样点),
-    // 未接色带时用默认渐变。
+    // 接入坐标系时:叠加坐标系主题边框(隐藏坐标系则不叠加)
+    if (th.on && !th.hidden) {
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()
+          ..color = th.axisColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2,
+      );
+    }
+    // 旧版色带输入(in1/in2 曾是色带):类型守卫使其自动回落默认渐变;
+    // 新版 in1 为坐标系,此处仅当对象确是色带时才使用。
     final cbIn = inputs['in1'];
     final cbOut = inputs['in2'];
     final stopsIn = (cbIn is md.ColorbarData && cbIn.stops.isNotEmpty)
@@ -2137,6 +2246,7 @@ class ChartPainter extends CustomPainter {
     Map<String, dynamic> params,
     md.DataObject? table,
     Color textColor,
+    _AxesTheme th,
   ) {
     if (table is! md.TableData) {
       _paintEmpty(canvas, size);
@@ -2151,6 +2261,16 @@ class ChartPainter extends CustomPainter {
     if (bl.links.isEmpty || bl.names.isEmpty) {
       _paintEmpty(canvas, size);
       return;
+    }
+    // 接入坐标系时:叠加坐标系主题边框(隐藏坐标系则不叠加)
+    if (th.on && !th.hidden) {
+      canvas.drawRect(
+        Offset.zero & size,
+        Paint()
+          ..color = th.axisColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2,
+      );
     }
     final plot = Rect.fromLTRB(20, 30, size.width - 20, size.height - 20);
     final centers = <String, Offset>{};
@@ -2288,7 +2408,8 @@ class ChartPainter extends CustomPainter {
     }
     for (final l in seriesList) {
       for (final p in l.points) {
-        coords.add(Offset(p.x, p.y));
+        // 跳过 NaN 断点(隐式曲线多分支分隔),防 min/max 污染成 NaN
+        if (p.x.isFinite && p.y.isFinite) coords.add(Offset(p.x, p.y));
       }
     }
     for (final m in meshes) {
@@ -2477,6 +2598,13 @@ class ChartPainter extends CustomPainter {
       final baseWidth = l.lineWidth ?? 2.0;
       final dash = l.lineStyle == 'dashed' ? const <double>[5, 4] : null;
       for (var i = 0; i < l.points.length - 1; i++) {
+        // NaN 断点(隐式曲线多分支分隔)或非有限坐标:断线跳过该段
+        if (!l.points[i].x.isFinite ||
+            !l.points[i].y.isFinite ||
+            !l.points[i + 1].x.isFinite ||
+            !l.points[i + 1].y.isFinite) {
+          continue;
+        }
         final a = Offset(px(l.points[i].x), py(l.points[i].y));
         final b = Offset(px(l.points[i + 1].x), py(l.points[i + 1].y));
         final color = l.colors != null && i < l.colors!.length

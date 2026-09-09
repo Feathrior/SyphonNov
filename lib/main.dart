@@ -1,8 +1,13 @@
 // Syphon Flutter 桌面版:节点化科研数据处理工作台(由 React 版 App.tsx 移植)
 library;
 
+import 'dart:io';
+import 'dart:ui' show ImageByteFormat;
+
+import 'package:file_selector/file_selector.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -69,6 +74,11 @@ class SyphonApp extends StatelessWidget {
         final bgSurface = dark
             ? SyphonTheme.darkTheme.bgSurface
             : SyphonTheme.lightTheme.bgSurface;
+        // fluent 菜单弹层(MenuBar/MenuFlyout 等)背景色:与 SyphonTheme
+        // 浮层色统一,避免原生默认灰白/深灰与应用配色割裂
+        final bgFloat = dark
+            ? SyphonTheme.darkTheme.bgFloat
+            : SyphonTheme.lightTheme.bgFloat;
         return fluent.FluentApp(
           title: 'Syphon',
           debugShowCheckedModeBanner: false,
@@ -80,6 +90,7 @@ class SyphonApp extends StatelessWidget {
             fontFamily: 'Microsoft YaHei',
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
+            menuColor: bgFloat,
             // 细腻过渡动画:菜单/弹窗/ComboBox/InfoBar 等 fluent 控件的动画时长。
             // 层级 faster < fast < medium < slow;fast 90ms——MenuBar 点击到
             // 弹出次级菜单的主要延迟就是它(叠加 easeIn 淡入起始慢),提速后接近原生
@@ -95,6 +106,7 @@ class SyphonApp extends StatelessWidget {
             fontFamily: 'Microsoft YaHei',
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
+            menuColor: bgFloat,
             fasterAnimationDuration: const Duration(milliseconds: 60),
             fastAnimationDuration: const Duration(milliseconds: 90),
             mediumAnimationDuration: const Duration(milliseconds: 180),
@@ -121,6 +133,8 @@ class _AppShell extends StatefulWidget {
 
 class _AppShellState extends State<_AppShell> {
   final GlobalKey<NodeCanvasState> _canvasKey = GlobalKey();
+  // 画布 RepaintBoundary:导出画布图片时捕获其渲染层
+  final GlobalKey _canvasBoundaryKey = GlobalKey();
   // 最外层 Focus:让快捷键在应用任意位置(画布失焦时)都能被捕获
   final FocusNode _shellFocus = FocusNode();
   bool _boxSelect = false;
@@ -129,6 +143,30 @@ class _AppShellState extends State<_AppShell> {
   static const _fileDropChannel = MethodChannel('syphon/file_drop');
 
   void _fitView() => _canvasKey.currentState?.fitView();
+
+  /// 导出画布图片:捕获画布 RepaintBoundary(当前视口)→ PNG(2x)→ 另存为
+  Future<void> _exportCanvasImage() async {
+    final store = GraphStore.instance;
+    if (store.nodes.isEmpty) return;
+    final ctx = _canvasBoundaryKey.currentContext;
+    final ro = ctx?.findRenderObject();
+    if (ro is! RenderRepaintBoundary) return;
+    try {
+      final image = await ro.toImage(pixelRatio: 2.0);
+      final data = await image.toByteData(format: ImageByteFormat.png);
+      if (data == null) return;
+      final group = XTypeGroup(label: L.t('PNG 图片'), extensions: const ['png']);
+      final loc = await getSaveLocation(
+        suggestedName: 'syphon-canvas.png',
+        acceptedTypeGroups: [group],
+      );
+      if (loc == null) return;
+      await File(loc.path).writeAsBytes(data.buffer.asUint8List());
+      store.addLog('ok', '${L.t('已导出画布图片')}:${loc.path}');
+    } catch (e) {
+      store.addLog('error', '${L.t('导出画布图片失败')}:$e');
+    }
+  }
 
   @override
   void initState() {
@@ -171,7 +209,11 @@ class _AppShellState extends State<_AppShell> {
     );
     try {
       final text = await dataFileToCsvText(path);
-      _canvasKey.currentState?.dropFileText(pos, text);
+      _canvasKey.currentState?.dropFileText(
+        pos,
+        text,
+        fileName: fileBaseName(path),
+      );
     } catch (e) {
       GraphStore.instance.addLog('error', '导入文件失败:$e');
     }
@@ -191,7 +233,9 @@ class _AppShellState extends State<_AppShell> {
         HardwareKeyboard.instance.isMetaPressed;
     if (!ctrl) return false;
     final k = event.logicalKey;
-    return k == LogicalKeyboardKey.keyZ || k == LogicalKeyboardKey.keyY;
+    return k == LogicalKeyboardKey.keyZ ||
+        k == LogicalKeyboardKey.keyY ||
+        k == LogicalKeyboardKey.keyG;
   }
 
   /// 全局键盘快捷键(对应 React 版 App.tsx 的 keydown 监听):
@@ -218,6 +262,51 @@ class _AppShellState extends State<_AppShell> {
         GraphStore.instance.redo();
       } else {
         GraphStore.instance.undo();
+      }
+      return KeyEventResult.handled;
+    }
+    // Ctrl+C:复制所选(多选优先,退化单选)
+    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyC) {
+      final s = GraphStore.instance;
+      final ids = <String>{};
+      ids.addAll(s.multiSelected);
+      if (s.selectedId != null) ids.add(s.selectedId!);
+      s.copySelection(ids);
+      return KeyEventResult.handled;
+    }
+    // Ctrl+V:在鼠标 world 位置粘贴剪贴板内容
+    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyV) {
+      final world = NodeCanvas.lastMouseWorldPos;
+      GraphStore.instance.pasteAt(world);
+      return KeyEventResult.handled;
+    }
+    // Ctrl+G:将多选节点创建为分组
+    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+      final s = GraphStore.instance;
+      final ids = s.multiSelected.isNotEmpty
+          ? s.multiSelected.toList()
+          : (s.selectedId != null ? <String>[s.selectedId!] : const <String>[]);
+      if (ids.length >= 2) {
+        s.createGroup(ids);
+      }
+      return KeyEventResult.handled;
+    }
+    // Ctrl+Shift+G:解散所选节点所在的分组
+    if (ctrl && shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+      final s = GraphStore.instance;
+      if (s.selectedId != null) {
+        final gid = s.groupOf(s.selectedId!);
+        if (gid != null) s.dissolveGroup(gid);
+      } else if (s.multiSelected.isNotEmpty) {
+        // 多选:收集所有不同的分组 id 逐一解散
+        final gids = <String>{};
+        for (final id in s.multiSelected) {
+          final gid = s.groupOf(id);
+          if (gid != null) gids.add(gid);
+        }
+        for (final gid in gids) {
+          s.dissolveGroup(gid);
+        }
       }
       return KeyEventResult.handled;
     }
@@ -270,6 +359,7 @@ class _AppShellState extends State<_AppShell> {
                       children: [
                         Expanded(
                           child: RepaintBoundary(
+                            key: _canvasBoundaryKey,
                             child: NodeCanvas(
                               key: _canvasKey,
                               boxSelect: _boxSelect,
@@ -313,6 +403,7 @@ class _AppShellState extends State<_AppShell> {
               onRun: () {
                 GraphStore.instance.runPipeline();
               },
+              onExportImage: _exportCanvasImage,
             ),
           ],
         ),

@@ -20,6 +20,8 @@ ParamSpec param({
   String? help,
   bool? expose,
   String? action,
+  String? dependsOn,
+  List<String>? visibleWhenValues,
 }) => ParamSpec(
   key: key,
   label: label,
@@ -33,6 +35,8 @@ ParamSpec param({
   help: help,
   expose: expose,
   action: action,
+  dependsOn: dependsOn,
+  visibleWhenValues: visibleWhenValues,
 );
 
 const List<Map<String, String>> kFontOptions = [
@@ -140,9 +144,11 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'table_input',
     label: '表格输入',
     category: Category.input,
-    description: '输入表格数据:支持内置预设(火山图/销售/鸢尾花/物理曲线),或粘贴 CSV/TSV,或从文件导入。',
+    description:
+        '输入表格数据:支持内置预设(火山图/销售/鸢尾花/物理曲线),或从 CSV/Excel 文件导入;导入后节点标题显示文件名。',
     inputs: [],
     outputs: [s('out0', '表格', SocketType.table)],
+    titleParam: 'name',
     params: [
       param(
         key: 'preset',
@@ -163,26 +169,10 @@ final List<NodeConfig> kNodeConfigs = [
         defaultValue: 'preset',
         options: [
           {'value': 'preset', 'label': '使用预设'},
-          {'value': 'manual', 'label': '手动数据'},
+          {'value': 'manual', 'label': '文件数据'},
         ],
       ),
-      param(
-        key: 'delimiter',
-        label: '分隔符',
-        type: 'select',
-        defaultValue: 'csv',
-        options: [
-          {'value': 'csv', 'label': '逗号 ,'},
-          {'value': 'tsv', 'label': '制表符 Tab'},
-        ],
-      ),
-      param(
-        key: 'dataText',
-        label: '数据文本',
-        type: 'textarea',
-        defaultValue: '',
-        placeholder: '每行一条记录,首行可为列名\nx,y\n1,2.5\n2,3.1\n...',
-      ),
+      param(key: 'name', label: '名称', type: 'text', defaultValue: ''),
       param(
         key: 'import',
         label: '从 CSV/Excel 文件导入',
@@ -198,8 +188,14 @@ final List<NodeConfig> kNodeConfigs = [
     label: '坐标系输入',
     category: Category.input,
     description:
-        '定义一个坐标系:维度(2D/3D)、各轴厘米长度、X/Y 起止数字、坐标轴定位方式(以原点为中心/总贴左边沿)。支持预设类型、各轴独立颜色/粗细(厘米)/网格开关、文字样式与导出像素大小。刻度数量按像素密度自动确定并标注数字。',
-    inputs: [],
+        '定义一个坐标系及其场景内容:维度(2D/3D)、各轴厘米长度、X/Y 起止数字、坐标轴定位方式(以原点为中心/总贴左边沿)、预设类型、各轴独立颜色/粗细(厘米)/网格开关、文字样式、3D 视角旋转与导出像素大小。点/线/面/分布/文本接入后直接实例化到坐标系内,由"原理化输出"仅负责渲染。',
+    inputs: [
+      s('in0', '点(散点·可多连)', SocketType.scatter, multi: true),
+      s('in1', '线(曲线·可多连)', SocketType.series, multi: true),
+      s('in2', '面(网格·可多连)', SocketType.mesh, multi: true),
+      s('in3', '分布', SocketType.distribution),
+      s('in4', '文本(可多连)', SocketType.text, multi: true),
+    ],
     outputs: [s('out0', '坐标系', SocketType.axes)],
     params: [
       param(key: 'name', label: '坐标系名称', type: 'text', defaultValue: '坐标系'),
@@ -224,8 +220,10 @@ final List<NodeConfig> kNodeConfigs = [
           {'value': 'engineering', 'label': '工程(彩色三轴)'},
           {'value': 'minimal', 'label': '极简(无网格)'},
           {'value': 'borderless', 'label': '无边框'},
+          {'value': 'hidden', 'label': '隐藏坐标系'},
         ],
-        help: '预设提供基础轴样式;下方单独调整的颜色/粗细/网格,只要与"默认"预设不同即会覆盖预设值',
+        help:
+            '预设提供基础轴样式;下方单独调整的颜色/粗细/网格,只要与"默认"预设不同即会覆盖预设值。"隐藏坐标系"将完全不绘制坐标轴/网格/刻度/标签。',
       ),
       param(
         key: 'xLen',
@@ -441,6 +439,51 @@ final List<NodeConfig> kNodeConfigs = [
         step: 1,
         help: '原理化输出中的 3D 视角旋转(绕 Z 轴,度)',
       ),
+      param(
+        key: 'colorPreset',
+        label: '场景颜色预设',
+        type: 'select',
+        defaultValue: 'paper',
+        options: [
+          {'value': 'paper', 'label': '论文白(亮色)'},
+          {'value': 'custom', 'label': '自定义(使用下方背景色)'},
+          {'value': 'tech', 'label': '暗色科技'},
+          {'value': 'ocean', 'label': '海洋蓝'},
+          {'value': 'sunset', 'label': '落日橙'},
+          {'value': 'forest', 'label': '森林绿'},
+          {'value': 'neon', 'label': '霓虹紫'},
+          {'value': 'gray', 'label': '灰度'},
+        ],
+        help: '控制原理化渲染时的背景与图元默认配色',
+      ),
+      param(
+        key: 'bgColor',
+        label: '背景色',
+        type: 'color',
+        defaultValue: '#ffffff',
+        dependsOn: 'colorPreset',
+        visibleWhenValues: ['custom'],
+      ),
+      param(
+        key: 'canvasPxW',
+        label: '导出宽度(像素)',
+        type: 'number',
+        defaultValue: 1920,
+        step: 10,
+        min: 100,
+        max: 8000,
+        help: '仅影响导出 PNG(含预览 PNG)的像素数量,不影响预览显示效果与图表视觉(线条粗细/文字大小等)',
+      ),
+      param(
+        key: 'canvasPxH',
+        label: '导出高度(像素)',
+        type: 'number',
+        defaultValue: 1200,
+        step: 10,
+        min: 100,
+        max: 8000,
+        help: '仅影响导出 PNG(含预览 PNG)的像素数量,不影响预览显示效果与图表视觉(线条粗细/文字大小等)',
+      ),
     ],
     exec: kExec['axis_input'],
   ),
@@ -506,108 +549,6 @@ final List<NodeConfig> kNodeConfigs = [
       ),
     ],
     exec: kExec['text_input'],
-  ),
-  NodeConfig(
-    id: 'colorbar_input',
-    label: '色带输入',
-    category: Category.input,
-    description: '定义一个可调节的渐变色带:增删渐变停止点、调整颜色与位置。输出"色带",接入热力图等图表后控制其颜色映射。',
-    inputs: [],
-    outputs: [s('out0', '色带', SocketType.colorbar)],
-    params: [
-      param(
-        key: 'gradient',
-        label: '渐变色带',
-        type: 'gradient',
-        defaultValue: kDefaultGradient.map((s) => s.copy()).toList(),
-        help: '点击可选中停止点,拖动调整位置;下方可改颜色,支持增删停止点',
-      ),
-      param(
-        key: 'min',
-        label: '最小值',
-        type: 'number',
-        defaultValue: 0,
-        step: 0.1,
-      ),
-      param(
-        key: 'max',
-        label: '最大值',
-        type: 'number',
-        defaultValue: 1,
-        step: 0.1,
-      ),
-      param(
-        key: 'label',
-        label: '色带标签',
-        type: 'text',
-        defaultValue: '',
-        placeholder: '如:表达量',
-      ),
-      param(
-        key: 'orientation',
-        label: '方向',
-        type: 'select',
-        defaultValue: 'horizontal',
-        options: [
-          {'value': 'horizontal', 'label': '水平'},
-          {'value': 'vertical', 'label': '垂直'},
-        ],
-      ),
-    ],
-    exec: kExec['colorbar_input'],
-  ),
-  NodeConfig(
-    id: 'line_input',
-    label: '线输入',
-    category: Category.input,
-    description: '输入一条曲线/折线:参数方程生成或手动输入点列。',
-    inputs: [],
-    outputs: [s('out0', '曲线', SocketType.series)],
-    params: [
-      param(key: 'name', label: '线名称', type: 'text', defaultValue: '线'),
-      param(
-        key: 'mode',
-        label: '模式',
-        type: 'select',
-        defaultValue: 'parametric',
-        options: [
-          {'value': 'parametric', 'label': '参数方程'},
-          {'value': 'points', 'label': '手动点列'},
-        ],
-      ),
-      param(key: 'fx', label: 'x = f(t)', type: 'text', defaultValue: 'x'),
-      param(key: 'fy', label: 'y = f(t)', type: 'text', defaultValue: 'sin(x)'),
-      param(
-        key: 'start',
-        label: '起始',
-        type: 'number',
-        defaultValue: 0,
-        step: 0.1,
-      ),
-      param(
-        key: 'end',
-        label: '结束',
-        type: 'number',
-        defaultValue: 10,
-        step: 0.1,
-      ),
-      param(
-        key: 'count',
-        label: '采样数',
-        type: 'number',
-        defaultValue: 200,
-        step: 1,
-        min: 2,
-      ),
-      param(
-        key: 'pointsText',
-        label: '点列(每行 x,y)',
-        type: 'textarea',
-        defaultValue: '0,0\n1,2\n2,1\n3,5',
-      ),
-      ...lineStyleParams(),
-    ],
-    exec: kExec['line_input'],
   ),
   NodeConfig(
     id: 'plane_input',
@@ -768,44 +709,52 @@ final List<NodeConfig> kNodeConfigs = [
     exec: kExec['scatter_input'],
   ),
   NodeConfig(
-    id: 'series_input',
+    id: 'func_curve',
     label: '曲线输入',
     category: Category.input,
-    description: '输入一条曲线:二次曲线、正弦+噪声或随机游走。',
+    description:
+        '输入曲线并采样输出:函数 y=f(x)、隐式方程 F(x,y)=0(圆/椭圆等全部 Desmos 曲线)、参数方程 x(t)/y(t)。支持 x/y/t、sin/cos/tan/exp/log/sqrt/abs、^、pi、e。',
     inputs: [],
     outputs: [s('out0', '曲线', SocketType.series)],
     params: [
+      param(key: 'name', label: '曲线名称', type: 'text', defaultValue: '曲线'),
       param(
-        key: 'preset',
-        label: '数据预设',
+        key: 'mode',
+        label: '输入方式',
         type: 'select',
-        defaultValue: 'quadratic',
+        defaultValue: 'function',
         options: [
-          {'value': 'quadratic', 'label': '二次曲线(带噪声)'},
-          {'value': 'sin-noise', 'label': '正弦+噪声'},
-          {'value': 'random-walk', 'label': '随机游走'},
+          {'value': 'function', 'label': '函数 y=f(x)'},
+          {'value': 'implicit', 'label': '隐式方程 F(x,y)=0'},
+          {'value': 'parametric', 'label': '参数方程'},
         ],
       ),
-      ...lineStyleParams(),
-    ],
-    exec: kExec['series_input'],
-  ),
-  NodeConfig(
-    id: 'func_curve',
-    label: '函数曲线',
-    category: Category.input,
-    description:
-        '输入函数表达式 y=f(x),输出按区间采样生成的曲线。支持 x、sin/cos/tan/exp/log/sqrt/abs、^、pi、e。',
-    inputs: [],
-    outputs: [s('out0', '曲线', SocketType.series)],
-    params: [
-      param(key: 'name', label: '曲线名称', type: 'text', defaultValue: '函数曲线'),
       param(
         key: 'expression',
-        label: 'y = f(x)',
+        label: '表达式',
         type: 'text',
         defaultValue: 'sin(x)',
-        help: '支持 x、sin/cos/tan/exp/log/sqrt/abs、^、pi、e',
+        help: '函数:y=f(x),如 sin(x);隐式:F(x,y)=0,如 x^2+y^2-25',
+        dependsOn: 'mode',
+        visibleWhenValues: ['function', 'implicit'],
+      ),
+      param(
+        key: 'exprX',
+        label: 'x(t) 参数式',
+        type: 'text',
+        defaultValue: '3*cos(t)',
+        help: '参数方程模式的 x(t),如 3*cos(t)',
+        dependsOn: 'mode',
+        visibleWhenValues: ['parametric'],
+      ),
+      param(
+        key: 'exprY',
+        label: 'y(t) 参数式',
+        type: 'text',
+        defaultValue: '2*sin(t)',
+        help: '参数方程模式的 y(t),如 2*sin(t)',
+        dependsOn: 'mode',
+        visibleWhenValues: ['parametric'],
       ),
       param(
         key: 'xMin',
@@ -820,6 +769,26 @@ final List<NodeConfig> kNodeConfigs = [
         type: 'number',
         defaultValue: 10,
         step: 0.1,
+      ),
+      param(
+        key: 'yMin',
+        label: 'Y 起始',
+        type: 'number',
+        defaultValue: -5,
+        step: 0.1,
+        help: '隐式方程模式的 Y 范围起始',
+        dependsOn: 'mode',
+        visibleWhenValues: ['implicit'],
+      ),
+      param(
+        key: 'yMax',
+        label: 'Y 结束',
+        type: 'number',
+        defaultValue: 5,
+        step: 0.1,
+        help: '隐式方程模式的 Y 范围结束',
+        dependsOn: 'mode',
+        visibleWhenValues: ['implicit'],
       ),
       param(
         key: 'samples',
@@ -1397,8 +1366,11 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'viz_volcano',
     label: '火山图',
     category: Category.visualize,
-    description: '差异分析火山图:以 log2FC 与 p 值两列绘制,自动标注显著点。',
-    inputs: [s('in0', '表格', SocketType.table), ...kOverlaySockets],
+    description: '差异分析火山图:以 log2FC 与 p 值两列绘制,自动标注显著点。可接入坐标系输入,按坐标系轴风格/范围/网格渲染。',
+    inputs: [
+      s('in0', '表格', SocketType.table),
+      s('in1', '坐标系', SocketType.axes),
+    ],
     outputs: [],
     params: [
       param(
@@ -1437,11 +1409,10 @@ final List<NodeConfig> kNodeConfigs = [
     label: '热力图',
     category: Category.visualize,
     description:
-        '数值矩阵热力图:取表格前 10 个数值列,行数自动降采样以保证流畅。可接入"色带输入"自定义颜色渐变,或在属性面板直接编辑渐变。',
+        '数值矩阵热力图:取表格前 10 个数值列,行数自动降采样以保证流畅。可接入坐标系输入,按坐标系轴风格/范围/网格渲染。颜色渐变可在属性面板直接编辑。',
     inputs: [
       s('in0', '表格', SocketType.table),
-      s('in1', '色带(颜色渐变)', SocketType.colorbar),
-      ...kOverlaySockets,
+      s('in1', '坐标系', SocketType.axes),
     ],
     outputs: [],
     params: [
@@ -1451,7 +1422,7 @@ final List<NodeConfig> kNodeConfigs = [
         label: '颜色渐变',
         type: 'gradient',
         defaultValue: kDefaultGradient.map((s) => s.copy()).toList(),
-        help: '热力图颜色映射渐变;接入色带输入时优先使用输入色带',
+        help: '热力图颜色映射渐变',
       ),
       param(
         key: 'fontSizeCm',
@@ -1480,8 +1451,11 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'viz_box',
     label: '箱线图',
     category: Category.visualize,
-    description: '多组数值分布箱线图:每个数值列一个箱体。',
-    inputs: [s('in0', '表格', SocketType.table), ...kOverlaySockets],
+    description: '多组数值分布箱线图:每个数值列一个箱体。可接入坐标系输入,按坐标系轴风格/范围/网格渲染。',
+    inputs: [
+      s('in0', '表格', SocketType.table),
+      s('in1', '坐标系', SocketType.axes),
+    ],
     outputs: [],
     params: [
       param(key: 'title', label: '图表标题', type: 'text', defaultValue: ''),
@@ -1512,8 +1486,11 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'viz_violin',
     label: '小提琴图',
     category: Category.visualize,
-    description: '多组数值分布小提琴图(核密度估计):每个数值列一个小提琴。',
-    inputs: [s('in0', '表格', SocketType.table), ...kOverlaySockets],
+    description: '多组数值分布小提琴图(核密度估计):每个数值列一个小提琴。可接入坐标系输入,按坐标系轴风格/范围/网格渲染。',
+    inputs: [
+      s('in0', '表格', SocketType.table),
+      s('in1', '坐标系', SocketType.axes),
+    ],
     outputs: [],
     params: [
       param(key: 'title', label: '图表标题', type: 'text', defaultValue: ''),
@@ -1544,13 +1521,10 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'viz_sankey',
     label: '桑基图',
     category: Category.visualize,
-    description:
-        '流程/流量桑基图:按源列→目标列聚合权重。两条色带分别映射输入轴(左侧条带)与输出轴(右侧条带),中间连线由源色自然渐变到目标色。',
+    description: '流程/流量桑基图:按源列→目标列聚合权重。可接入坐标系输入,按坐标系轴风格/范围渲染;颜色渐变在属性面板编辑。',
     inputs: [
       s('in0', '表格', SocketType.table),
-      s('in1', '输入轴色带(渐变)', SocketType.colorbar),
-      s('in2', '输出轴色带(渐变)', SocketType.colorbar),
-      ...kOverlaySockets,
+      s('in1', '坐标系', SocketType.axes),
     ],
     outputs: [],
     params: [
@@ -1635,8 +1609,11 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'viz_graph',
     label: '网络示意图',
     category: Category.visualize,
-    description: '关系网络图(力导向布局):按源列→目标列构建边。',
-    inputs: [s('in0', '表格', SocketType.table), ...kOverlaySockets],
+    description: '关系网络图(力导向布局):按源列→目标列构建边。可接入坐标系输入,按坐标系轴风格/范围渲染。',
+    inputs: [
+      s('in0', '表格', SocketType.table),
+      s('in1', '坐标系', SocketType.axes),
+    ],
     outputs: [],
     params: [
       param(
@@ -1689,66 +1666,10 @@ final List<NodeConfig> kNodeConfigs = [
     label: '原理化输出',
     category: Category.visualize,
     description:
-        '原理化模式:接收点/线/面(均可多路连接)、分布、文本与坐标系,所有图元缩放至互相垂直的坐标轴盒内部,预览窗与坐标系尺寸等比例。',
-    inputs: [
-      s('in0', '点(散点·可多连)', SocketType.scatter, multi: true),
-      s('in1', '线(曲线·可多连)', SocketType.series, multi: true),
-      s('in2', '面(网格·可多连)', SocketType.mesh, multi: true),
-      s('in3', '分布', SocketType.distribution),
-      s('in4', '坐标系', SocketType.axes),
-      s('in5', '文本(可多连)', SocketType.text, multi: true),
-    ],
+        '只接受一个坐标系输入(坐标系本身携带轴属性、点/线/面/分布/文本图元与场景外观),本节点仅负责把坐标系的内容实例化渲染出来。',
+    inputs: [s('in0', '坐标系', SocketType.axes)],
     outputs: [],
-    params: [
-      param(
-        key: 'colorPreset',
-        label: '颜色预设',
-        type: 'select',
-        defaultValue: 'paper',
-        options: [
-          {'value': 'paper', 'label': '论文白(亮色)'},
-          {'value': 'custom', 'label': '自定义(使用下方颜色)'},
-          {'value': 'tech', 'label': '暗色科技'},
-          {'value': 'ocean', 'label': '海洋蓝'},
-          {'value': 'sunset', 'label': '落日橙'},
-          {'value': 'forest', 'label': '森林绿'},
-          {'value': 'neon', 'label': '霓虹紫'},
-          {'value': 'gray', 'label': '灰度'},
-        ],
-      ),
-      param(
-        key: 'axisColor',
-        label: '坐标轴颜色(统一单色)',
-        type: 'color',
-        defaultValue: '#333333',
-      ),
-      param(
-        key: 'bgColor',
-        label: '背景色',
-        type: 'color',
-        defaultValue: '#ffffff',
-      ),
-      param(
-        key: 'canvasPxW',
-        label: '导出宽度(像素)',
-        type: 'number',
-        defaultValue: 1920,
-        step: 10,
-        min: 100,
-        max: 8000,
-        help: '仅影响导出 PNG(含预览 PNG)的像素数量,不影响预览显示效果与图表视觉(线条粗细/文字大小等)',
-      ),
-      param(
-        key: 'canvasPxH',
-        label: '导出高度(像素)',
-        type: 'number',
-        defaultValue: 1200,
-        step: 10,
-        min: 100,
-        max: 8000,
-        help: '仅影响导出 PNG(含预览 PNG)的像素数量,不影响预览显示效果与图表视觉(线条粗细/文字大小等)',
-      ),
-    ],
+    params: [],
     isViewer: true,
   ),
   NodeConfig(
@@ -1781,3 +1702,60 @@ NodeConfig? getConfig(String id) => _configMap[id];
 
 List<NodeConfig> nodesByCategory(Category cat) =>
     kNodeConfigs.where((c) => c.category == cat).toList();
+
+/// 数据类型自动转换表:(源类型, 目标类型) → 转换节点 configId。
+/// Alt 拖拽连线到不可直接相连但可转换的端口时,自动在路径中点插入转换节点;
+/// 一条转换可多步串联(如 曲线→表格 = 曲线转散点→散点转表格)。
+const Map<({SocketType from, SocketType to}), String> kTypeConversions = {
+  (from: SocketType.table, to: SocketType.scatter): 'table_to_scatter',
+  (from: SocketType.table, to: SocketType.series): 'table_to_series',
+  (from: SocketType.series, to: SocketType.scatter): 'series_to_scatter',
+  (from: SocketType.scatter, to: SocketType.table): 'scatter_to_table',
+};
+
+/// 转换邻接表:类型 → 一步转换可达的 (目标类型, 转换节点 configId)
+final Map<SocketType, List<({SocketType to, String configId})>> _conversionAdj =
+    () {
+      final m = <SocketType, List<({SocketType to, String configId})>>{};
+      for (final e in kTypeConversions.entries) {
+        m.putIfAbsent(e.key.from, () => []).add((
+          to: e.key.to,
+          configId: e.value,
+        ));
+      }
+      return m;
+    }();
+
+/// 查询 from→to 的最短转换链(BFS,允许多步,如 曲线→表格):
+/// 返回依次执行的转换节点 configId 列表;from==to 或不可转换时返回 null。
+List<String>? conversionPath(SocketType from, SocketType to) {
+  if (from == to) return null;
+  if (_conversionAdj[from] == null) return null;
+  // prev[t] = (上一步类型, 这一步用的转换节点);visied 去重防环
+  final prev = <SocketType, ({SocketType from, String configId})>{};
+  final visited = <SocketType>{from};
+  final queue = <SocketType>[from];
+  while (queue.isNotEmpty) {
+    final cur = queue.removeAt(0);
+    for (final e
+        in _conversionAdj[cur] ??
+            const <({SocketType to, String configId})>[]) {
+      if (visited.contains(e.to)) continue;
+      visited.add(e.to);
+      prev[e.to] = (from: cur, configId: e.configId);
+      if (e.to == to) {
+        // 回溯最短路径
+        final path = <String>[e.configId];
+        var p = cur;
+        while (p != from) {
+          final back = prev[p]!;
+          path.insert(0, back.configId);
+          p = back.from;
+        }
+        return path;
+      }
+      queue.add(e.to);
+    }
+  }
+  return null;
+}

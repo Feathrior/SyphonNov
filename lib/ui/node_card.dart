@@ -37,13 +37,7 @@ class NodeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final store = GraphStore.instance;
-    GraphNode? node;
-    for (final n in store.nodes) {
-      if (n.id == nodeId) {
-        node = n;
-        break;
-      }
-    }
+    final node = store.nodeOf(nodeId);
     if (node == null) return const SizedBox.shrink();
     final cfg = getConfig(node.configId);
     if (cfg == null) return const SizedBox.shrink();
@@ -89,7 +83,16 @@ class NodeCard extends StatelessWidget {
           children: [
             // 标题栏:分类色背景,图标/标题/折叠指示一律白字(React .nf-node-header)
             // 节点拖动由画布层 Listener 统一管理,此处不挂手势(见 NodeCardCallbacks 注释)
-            _buildHeader(cfg, category, node, result, t, headerBg),
+            _buildHeader(
+              cfg,
+              category,
+              node,
+              result,
+              t,
+              headerBg,
+              dark: dark,
+              zoom: zoom,
+            ),
             // 主体(React .nf-node-body: padding 8px 12px 10px)
             // 折叠/缩放切换时渐隐渐显;切换器子级强制 topLeft 对齐,
             // 避免 AnimatedSwitcher 默认居中布局把端口挪到中间
@@ -188,6 +191,17 @@ class NodeCard extends StatelessWidget {
     );
   }
 
+  /// 标题栏文字:配置声明了 [NodeConfig.titleParam] 且该参数值非空时,
+  /// 用参数值(如导入文件的表格输入显示文件名),否则用配置标签。
+  String _headerTitle(NodeConfig cfg, GraphNode node) {
+    final key = cfg.titleParam;
+    if (key != null) {
+      final v = node.params[key];
+      if (v is String && v.trim().isNotEmpty) return v;
+    }
+    return L.t(cfg.label);
+  }
+
   /// 标题栏(React .nf-header):分类图标 + 标题 + 折叠指示 + 错误徽章
   Widget _buildHeader(
     NodeConfig cfg,
@@ -195,8 +209,10 @@ class NodeCard extends StatelessWidget {
     GraphNode node,
     ExecResult? result,
     SyphonTheme t,
-    Color headerBg,
-  ) {
+    Color headerBg, {
+    required bool dark,
+    required double zoom,
+  }) {
     return Container(
       height: NodeGeom.headerH,
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -219,7 +235,7 @@ class NodeCard extends StatelessWidget {
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              L.t(cfg.label),
+              _headerTitle(cfg, node),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, color: Colors.white),
@@ -714,6 +730,15 @@ class _SocketHandleState extends State<_SocketHandle>
     final hovered =
         s.hover?.match(widget.nodeId, widget.socketId, widget.isSource) ??
         false;
+    // Alt 拖拽经转换节点连接的候选端口:琥珀色强调(与普通悬停区分)
+    final hoverConv =
+        s.hover?.match(
+          widget.nodeId,
+          widget.socketId,
+          widget.isSource,
+          conversion: true,
+        ) ??
+        false;
     final active =
         s.active?.match(widget.nodeId, widget.socketId, widget.isSource) ??
         false;
@@ -728,9 +753,10 @@ class _SocketHandleState extends State<_SocketHandle>
     }
 
     final c = widget.color;
+    final glow = hoverConv ? widget.t.warn : c; // 转换落点用琥珀色发光
     final radius = BorderRadius.circular(widget.isExposed ? 5.5 : 2);
     return AnimatedScale(
-      scale: active ? 1.5 : (hovered ? 1.28 : 1.0),
+      scale: active ? 1.5 : ((hovered || hoverConv) ? 1.28 : 1.0),
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOutBack,
       child: Stack(
@@ -768,10 +794,10 @@ class _SocketHandleState extends State<_SocketHandle>
                 color: widget.t.bgSurface,
                 width: 1.5 / widget.zoom,
               ),
-              boxShadow: (hovered || active)
+              boxShadow: (hovered || hoverConv || active)
                   ? [
                       BoxShadow(
-                        color: c.withValues(alpha: active ? 0.8 : 0.45),
+                        color: glow.withValues(alpha: active ? 0.8 : 0.45),
                         blurRadius: active ? 12 : 8,
                         spreadRadius: active ? 2 : 1,
                       ),

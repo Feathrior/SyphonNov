@@ -13,6 +13,23 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
+namespace {
+
+/// Windows 11 = build 22000+. RtlGetVersion is not subject to the
+/// compatibility-manifest lying that affects GetVersion()/VerifyVersionInfo.
+bool IsWindows11OrGreater() {
+  using RtlGetVersionPtr =
+      LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+  RTL_OSVERSIONINFOW info{};
+  info.dwOSVersionInfoSize = sizeof(info);
+  auto fn = reinterpret_cast<RtlGetVersionPtr>(GetProcAddress(
+      GetModuleHandle(L"ntdll.dll"), "RtlGetVersion"));
+  if (fn == nullptr || fn(&info) != 0) return false;
+  return info.dwBuildNumber >= 22000;
+}
+
+}  // namespace
+
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
@@ -23,22 +40,18 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
-  // Frameless window: hide the native title bar (the in-app SyphonTitleBar
-  // takes over window controls). window_manager 0.4.x TitleBarStyle.hidden
-  // only extends the DWM frame on Windows and does NOT remove WS_CAPTION, so
-  // we remove the caption style at the native layer.
+  // NOTE: do NOT strip WS_CAPTION here. DWM uses the caption-style bits
+  // (WS_CAPTION | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) to trigger the native
+  // minimize / maximize / restore / close animations and to draw the drop
+  // shadow -- removing WS_CAPTION silently disables all of them. The title
+  // bar is instead hidden in MessageHandler (WM_NCCALCSIZE): the caption
+  // band is reclaimed as client area while the native frame stays intact
+  // (the in-app SyphonTitleBar takes over window controls).
   // Keep WS_THICKFRAME (resizable), WS_MINIMIZEBOX, WS_MAXIMIZEBOX and
   // WS_SYSMENU (Alt+Space system menu).
-  HWND hwnd = GetHandle();
-  LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-  style &= ~(WS_CAPTION);
-  SetWindowLongPtr(hwnd, GWL_STYLE, style);
-  SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
-                   SWP_FRAMECHANGED);
 
   // Accept files dragged in from Explorer (WM_DROPFILES -> HandleFileDrop)
-  DragAcceptFiles(hwnd, TRUE);
+  DragAcceptFiles(GetHandle(), TRUE);
 
   RECT frame = GetClientArea();
 
@@ -77,6 +90,74 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // -- Pre-plugin window management ----------------------------------------
+  // window_manager's window-proc delegate handles WM_GETMINMAXINFO and
+  // WM_NCCALCSIZE and returns "handled" unconditionally, which would prevent
+  // the adjustments below from ever running -- apply them first.
+
+  if (message == WM_GETMINMAXINFO) {
+    // Pin the maximized rect to the work area of the monitor the window is
+    // on, so maximizing never covers the Windows taskbar. The system
+    // pre-fill only accounts for the primary monitor and assumes a captioned
+    // window; window_manager returns "handled" without fixing it up.
+    // Applied in place; window_manager still gets the message afterwards to
+    // apply the configured min/max track sizes.
+    MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi;
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfo(mon, &mi)) {
+      mmi->ptMaxPosition = {mi.rcWork.left, mi.rcWork.top};
+      mmi->ptMaxSize = {mi.rcWork.right - mi.rcWork.left,
+                        mi.rcWork.bottom - mi.rcWork.top};
+    }
+  }
+
+  if (message == WM_NCCALCSIZE && wparam) {
+    // Hide the native title bar without stripping WS_CAPTION (see OnCreate):
+    // reclaim the caption band as client area, keeping the resize borders.
+    // Mirrors window_manager's TitleBarStyle.hidden handling, but active from
+    // window creation on -- no dependency on the Dart-side setup racing the
+    // first presented frame.
+    NCCALCSIZE_PARAMS* sz = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi;
+    mi.cbSize = sizeof(mi);
+    if (IsZoomed(hwnd)) {
+      // Maximized: align the client area to the work area (the maximized
+      // window rect overhangs the work area by the frame size).
+      if (GetMonitorInfo(mon, &mi)) {
+        LONG l = sz->rgrc[0].left - mi.rcWork.left;
+        LONG t = sz->rgrc[0].top - mi.rcWork.top;
+        sz->rgrc[0].left -= l;
+        sz->rgrc[0].top -= t;
+        sz->rgrc[0].right += l;
+        sz->rgrc[0].bottom += t;
+      }
+    } else {
+      // Normal: caption band becomes client area (no drawn title bar).
+      // Windows 10 leaves a 1px white line at the top when fully reclaimed.
+      sz->rgrc[0].top += IsWindows11OrGreater() ? 0 : 1;
+      // Reserve the resize borders on left/right/bottom (required for edge
+      // resizing; same values window_manager uses).
+      sz->rgrc[0].right -= 8;
+      sz->rgrc[0].bottom -= 8;
+      sz->rgrc[0].left -= -8;
+    }
+    return 0;
+  }
+
+  if (message == WM_NCHITTEST) {
+    // With WS_CAPTION kept, DefWindowProc may still report HTCAPTION inside
+    // the (now client) caption band -- that would swallow clicks on the
+    // in-app toolbar. Remap it to the client area; the toolbar implements
+    // dragging itself via window_manager.startDragging(). Resize-edge hit
+    // results (HTLEFT etc.) fall through to normal handling.
+    if (DefWindowProc(hwnd, message, wparam, lparam) == HTCAPTION) {
+      return HTCLIENT;
+    }
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
@@ -90,25 +171,6 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   switch (message) {
     case WM_DROPFILES:
       HandleFileDrop(reinterpret_cast<HDROP>(wparam));
-      return 0;
-    case WM_GETMINMAXINFO:
-      // Frameless window: when maximized, snap to the working area (exclude
-      // the Windows taskbar). After WS_CAPTION is removed the system may
-      // report full-screen max size, so clamp position/size to the work
-      // area of the current monitor (also fixes Win+Up / snap-to-top).
-      {
-        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
-        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi;
-        mi.cbSize = sizeof(mi);
-        if (GetMonitorInfo(mon, &mi)) {
-          LONG w = mi.rcWork.right - mi.rcWork.left;
-          LONG h = mi.rcWork.bottom - mi.rcWork.top;
-          mmi->ptMaxPosition = {mi.rcWork.left, mi.rcWork.top};
-          mmi->ptMaxSize = {w, h};
-          mmi->ptMaxTrackSize = {w, h};
-        }
-      }
       return 0;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();

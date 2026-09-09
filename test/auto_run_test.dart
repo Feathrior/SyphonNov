@@ -22,10 +22,12 @@ void main() {
     return store;
   }
 
-  test('updateNodeParams 在自动执行开启时重新计算 results', () {
+  // 执行引擎运行在 Isolate 中(异步):触发后用 settled 等待执行落定再断言
+  test('updateNodeParams 在自动执行开启时重新计算 results', () async {
     final store = buildStore({'mode': 'preset', 'preset': 'volcano'});
     expect(store.results.containsKey('n1'), isFalse);
     store.updateNodeParams('n1', {'preset': 'sales'});
+    await store.settled;
     expect(store.results.containsKey('n1'), isTrue);
     final table = store.results['n1']!.outputs['out0'];
     expect(table, isNotNull);
@@ -72,32 +74,39 @@ void main() {
     return store;
   }
 
-  test('删除节点后下游图自动重算(不再残留旧输入)', () {
+  test('删除节点后下游图自动重算(不再残留旧输入)', () async {
     final store = buildPipeline();
     store.runPipeline();
+    await store.settled;
     expect(store.results['v1']!.inputs['in0'], isNotNull);
     store.removeNodes(['n0']);
+    await store.settled;
     // 自动执行后:v1 无输入边 → inputs 清空(图不再显示旧数据)
     expect(store.results.containsKey('v1'), isTrue);
     expect(store.results['v1']!.inputs, isEmpty);
   });
 
-  test('切断连线后下游图自动重算', () {
+  test('切断连线后下游图自动重算', () async {
     final store = buildPipeline();
     store.runPipeline();
+    await store.settled;
     expect(store.results['v1']!.inputs['in0'], isNotNull);
     store.removeEdge('e1');
+    await store.settled;
     expect(store.results['v1']!.inputs, isEmpty);
   });
 
-  test('撤销后图自动重算并恢复显示', () {
+  test('撤销后图自动重算并恢复显示', () async {
     final store = buildPipeline();
     store.runPipeline();
+    await store.settled;
     expect(store.results['v1']!.inputs['in0'], isNotNull);
     // 制造一次可撤销的结构变更:删除连线
     store.removeEdge('e1');
+    await store.settled;
     expect(store.results['v1']!.inputs, isEmpty);
     store.undo();
+    await store.settled;
     // 撤销恢复连线,自动执行后 v1 重新收到表格输入
     expect(store.results['v1']!.inputs['in0'], isNotNull);
   });

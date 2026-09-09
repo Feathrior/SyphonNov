@@ -89,6 +89,15 @@ class _AxesInfo {
   final double rotY;
   final double rotZ;
 
+  /// 隐藏坐标系:完全不绘制坐标轴/网格/刻度/标签
+  final bool hidden;
+
+  /// 场景外观与导出(坐标系输入承担)
+  final String colorPreset;
+  final String bgColor;
+  final double canvasPxW;
+  final double canvasPxH;
+
   const _AxesInfo({
     required this.dim,
     required this.xLen,
@@ -122,6 +131,11 @@ class _AxesInfo {
     this.rotX = -20,
     this.rotY = 25,
     this.rotZ = 0,
+    this.hidden = false,
+    this.colorPreset = 'paper',
+    this.bgColor = '#ffffff',
+    this.canvasPxW = 1920,
+    this.canvasPxH = 1200,
   });
 }
 
@@ -173,6 +187,12 @@ _AxesInfo _resolveAxes(DataObject? input) {
       rotX: input.rotX.isFinite ? input.rotX : -20,
       rotY: input.rotY.isFinite ? input.rotY : 25,
       rotZ: input.rotZ.isFinite ? input.rotZ : 0,
+      // 场景外观与导出(坐标系输入承担)
+      colorPreset: input.colorPreset.isEmpty ? 'paper' : input.colorPreset,
+      bgColor: input.bgColor.isEmpty ? '#ffffff' : input.bgColor,
+      canvasPxW: _mx(100, input.canvasPxW.isFinite ? input.canvasPxW : 1920),
+      canvasPxH: _mx(100, input.canvasPxH.isFinite ? input.canvasPxH : 1200),
+      hidden: input.hidden == true,
     );
   }
   return const _AxesInfo(
@@ -365,35 +385,29 @@ class PrincipledPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (size.width <= 0 || size.height <= 0) return;
     final inputs = result?.inputs ?? const <String, DataObject?>{};
-    final multi = result?.multiInputs ?? const <String, List<DataObject>>{};
-    final C = presetColors(params);
-    final axes = _resolveAxes(inputs['in4']);
-    // 视角旋转随坐标系输入(2D 时忽略);保留旧画布参数兜底
+    // 新架构坐标系在 in0;兼容旧图(坐标系接在 in4)
+    final axInput = inputs['in0'] ?? inputs['in4'];
+    final axes = _resolveAxes(axInput);
+    // 视角旋转随坐标系输入(原理化 3D 旋转);保留旧画布参数兜底
     final rotX = toNum(params['rotX']) ?? axes.rotX;
     final rotY = toNum(params['rotY']) ?? axes.rotY;
     final rotZ = toNum(params['rotZ']) ?? axes.rotZ;
+    // 场景外观随坐标系输入(原原理化输出承担)
+    final C = presetColors({
+      'colorPreset': axes.colorPreset,
+      'bgColor': axes.bgColor,
+    });
 
-    final scatterList = _collect(
-      inputs,
-      multi,
-      'in0',
-    ).whereType<ScatterData>().toList();
-    final seriesList = _collect(
-      inputs,
-      multi,
-      'in1',
-    ).whereType<SeriesData>().toList();
-    final meshList = _collect(
-      inputs,
-      multi,
-      'in2',
-    ).whereType<MeshData>().toList();
-    final textList = _collect(
-      inputs,
-      multi,
-      'in5',
-    ).whereType<TextData>().toList();
-    final dist = inputs['in3'];
+    // 点/线/面/分布/文本图元由坐标系输入携带
+    final scatterList = axInput is AxesData
+        ? axInput.points
+        : const <ScatterData>[];
+    final seriesList = axInput is AxesData
+        ? axInput.lines
+        : const <SeriesData>[];
+    final meshList = axInput is AxesData ? axInput.meshes : const <MeshData>[];
+    final textList = axInput is AxesData ? axInput.texts : const <TextData>[];
+    final dist = axInput is AxesData ? axInput.dist : inputs['in3'];
     final hasData =
         scatterList.isNotEmpty ||
         seriesList.isNotEmpty ||
@@ -411,8 +425,8 @@ class PrincipledPainter extends CustomPainter {
       canvas.save();
       canvas.clipRect(Rect.fromLTWH(0, 0, canvasW, canvasH));
     } else {
-      final exportW = (toNum(params['canvasPxW']) ?? 1920).toDouble();
-      final exportH = (toNum(params['canvasPxH']) ?? 1200).toDouble();
+      final exportW = axes.canvasPxW;
+      final exportH = axes.canvasPxH;
       final ratio = exportH / exportW;
       var cw = size.width;
       var ch = cw * ratio;
@@ -454,13 +468,14 @@ class PrincipledPainter extends CustomPainter {
       Paint()..color = parseColor(C.bg),
     );
 
-    // 网格
-    if (axes.grid) _drawGrid(canvas, d, axes, mapP, C);
-    // 边界边框
-    if (axes.showBorder) _drawBoxBorder(canvas, d, axes, mapP, fz, C);
+    // 网格 / 边界边框 / 坐标轴(隐藏坐标系时全部跳过,仅保留场景图元)
+    if (!axes.hidden) {
+      if (axes.grid) _drawGrid(canvas, d, axes, mapP, C);
+      if (axes.showBorder) _drawBoxBorder(canvas, d, axes, mapP, fz, C);
+    }
 
     if (!hasData) {
-      _drawAxes(canvas, d, axes, mapP, C);
+      if (!axes.hidden) _drawAxes(canvas, d, axes, mapP, C);
       _pText(
         canvas,
         '无输入数据',
@@ -506,21 +521,9 @@ class PrincipledPainter extends CustomPainter {
       _drawTexts(canvas, d, textList, mapP, axes, fz, b, scale, C);
     }
 
-    // 坐标轴与刻度(最后绘制)
-    _drawAxes(canvas, d, axes, mapP, C);
+    // 坐标轴与刻度(最后绘制;隐藏坐标系时不绘制)
+    if (!axes.hidden) _drawAxes(canvas, d, axes, mapP, C);
     canvas.restore();
-  }
-
-  /// 收集某个输入端口的全部数据(多路输入合并,单路包装为单元素列表)
-  List<DataObject> _collect(
-    Map<String, DataObject?> inputs,
-    Map<String, List<DataObject>> multi,
-    String key,
-  ) {
-    final m = multi[key];
-    if (m != null && m.isNotEmpty) return m;
-    final s = inputs[key];
-    return s == null ? [] : [s];
   }
 
   /// 世界坐标 → 以原点为中心的场景坐标映射
@@ -780,6 +783,13 @@ class PrincipledPainter extends CustomPainter {
       }
       final dash = style == 'dashed' ? [7.0, 5.0] : <double>[];
       for (var i = 0; i < pts.length - 1; i++) {
+        // NaN 断点(隐式曲线多分支分隔):断线跳过该段
+        if (!pts[i].x.isFinite ||
+            !pts[i].y.isFinite ||
+            !pts[i + 1].x.isFinite ||
+            !pts[i + 1].y.isFinite) {
+          continue;
+        }
         final w = _mx(
           0.4,
           ((sr.sizes ?? const []).isNotEmpty && i < (sr.sizes?.length ?? 0)
@@ -1318,8 +1328,16 @@ class _PrincipledCanvasState extends State<PrincipledCanvas> {
     final result = GraphStore.instance.results[widget.nodeId];
     if (node.isEmpty) return;
     final params = node.first.params;
-    final w = (toNum(params['canvasPxW']) ?? 1920).round().clamp(100, 12000);
-    final h = (toNum(params['canvasPxH']) ?? 1200).round().clamp(100, 12000);
+    // 导出像素尺寸由坐标系输入携带(原原理化输出参数)
+    final ax = result?.inputs['in0'] ?? result?.inputs['in4'];
+    var w = (toNum(params['canvasPxW']) ?? 1920).round();
+    var h = (toNum(params['canvasPxH']) ?? 1200).round();
+    if (ax is AxesData) {
+      w = ax.canvasPxW.round();
+      h = ax.canvasPxH.round();
+    }
+    w = w.clamp(100, 12000);
+    h = h.clamp(100, 12000);
     final painter = PrincipledPainter(
       params: params,
       result: result,

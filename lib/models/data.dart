@@ -359,6 +359,22 @@ class AxesData extends DataObject {
   final double rotY;
   final double rotZ;
 
+  /// 坐标系场景内实例化的图元(由新增的点/线/面/分布/文本输入口收集)
+  final List<ScatterData> points;
+  final List<SeriesData> lines;
+  final List<MeshData> meshes;
+  final DistributionData? dist;
+  final List<TextData> texts;
+
+  /// 隐藏坐标系:完全不绘制坐标轴/网格/刻度/标签(仅保留场景图元)
+  final bool hidden;
+
+  /// 场景外观与导出(原原理化输出承担):背景预设/自定义背景/导出像素
+  final String colorPreset;
+  final String bgColor;
+  final double canvasPxW;
+  final double canvasPxH;
+
   AxesData({
     required this.name,
     required this.dim,
@@ -389,6 +405,16 @@ class AxesData extends DataObject {
     this.rotX = -20,
     this.rotY = 25,
     this.rotZ = 0,
+    this.points = const [],
+    this.lines = const [],
+    this.meshes = const [],
+    this.dist,
+    this.texts = const [],
+    this.hidden = false,
+    this.colorPreset = 'paper',
+    this.bgColor = '#ffffff',
+    this.canvasPxW = 1920,
+    this.canvasPxH = 1200,
   });
 }
 
@@ -456,6 +482,11 @@ class ParamSpec {
   final bool? expose;
   final String? action;
 
+  /// 依赖的另一个参数 key(如 'mode');非空时仅当该参数值落在
+  /// [visibleWhenValues] 中才显示(用于按模式切换参数组)。
+  final String? dependsOn;
+  final List<String>? visibleWhenValues;
+
   const ParamSpec({
     required this.key,
     required this.label,
@@ -469,6 +500,8 @@ class ParamSpec {
     this.help,
     this.expose,
     this.action,
+    this.dependsOn,
+    this.visibleWhenValues,
   });
 }
 
@@ -477,10 +510,14 @@ class ExecContext {
   final Map<String, dynamic> params;
   final Map<String, DataObject?> inputs;
 
+  /// 多连接端口收到的全部上游对象(仅 multi 端口)
+  final Map<String, List<DataObject>> multiInputs;
+
   ExecContext({
     required this.nodeId,
     required this.params,
     required this.inputs,
+    this.multiInputs = const {},
   });
 }
 
@@ -498,6 +535,10 @@ class NodeConfig {
   final double? width;
   final bool isViewer;
 
+  /// 参数键:其值非空时作为节点标题栏文字显示(优先于 [label])。
+  /// 如“表格输入”导入文件后标题显示文件名。
+  final String? titleParam;
+
   const NodeConfig({
     required this.id,
     required this.label,
@@ -509,6 +550,7 @@ class NodeConfig {
     this.exec,
     this.width,
     this.isViewer = false,
+    this.titleParam,
   });
 }
 

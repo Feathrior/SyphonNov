@@ -22,6 +22,7 @@ import 'canvas_geometry.dart';
 import 'context_menu.dart';
 import 'mini_map.dart';
 import 'node_card.dart';
+import 'node_context_menus.dart';
 import 'theme.dart';
 
 // ==================== 背景网格 ====================
@@ -135,10 +136,13 @@ class _EdgesPainter extends CustomPainter {
   final List<({_ParticleBurst burst, double progress})> liveBursts;
   final _Conn? connecting;
   final Offset? connectPos;
+  final bool connectConversion; // Alt 拖拽悬停到“需经转换节点”的端口:预览线琥珀色
   final String? selectedSplitEdgeId;
+  final String? selectedEdgeId;
   final int revision;
   final Color flowEdge;
   final Color accent;
+  final Color warn;
   final bool isDark; // 亮色模式下连线颜色压暗一档(避免鲜艳色刺眼)
   final double zoom; // 当前缩放:Transform 内绘制,所有标记尺寸除以 zoom 保持屏幕恒定
   // 切水果刀光:划过轨迹点(flow 坐标)与整体淡出进度 0~1
@@ -162,10 +166,13 @@ class _EdgesPainter extends CustomPainter {
     this.liveBursts = const [],
     this.connecting,
     this.connectPos,
+    this.connectConversion = false,
     this.selectedSplitEdgeId,
+    this.selectedEdgeId,
     required this.revision,
     required this.flowEdge,
     required this.accent,
+    required this.warn,
     required this.isDark,
     required this.zoom,
     this.slashTrail = const [],
@@ -231,17 +238,19 @@ class _EdgesPainter extends CustomPainter {
       if (src == null || tgt == null) continue;
       _paintEdge(canvas, e, src, tgt);
     }
-    // 连线拖拽中:三次贝塞尔曲线预览(与正式连线同曲率,虚线区分)
+    // 连线拖拽中:三次贝塞尔曲线预览(与正式连线同曲率,虚线区分);
+    // 悬停在“需转换”端口上时用琥珀色提示即将自动插入转换节点
     if (connecting != null && connectPos != null) {
       final samples = bezierSamples(connecting!.anchor, connectPos!);
       if (samples.length >= 2) {
-        _drawDashedPath(canvas, samples, flowEdge, 2, dash: [6, 4]);
+        final lineColor = connectConversion ? warn : flowEdge;
+        _drawDashedPath(canvas, samples, lineColor, 2, dash: [6, 4]);
         _drawArrow(
           canvas,
           samples[samples.length - 2],
           samples.last,
           8,
-          flowEdge,
+          lineColor,
         );
       }
     }
@@ -294,8 +303,8 @@ class _EdgesPainter extends CustomPainter {
       color = const Color(0xFFF59E0B);
       width = 5.0;
     }
-    if (e.id == selectedSplitEdgeId) {
-      // 选中分割点的连线:accent 色
+    if (e.id == selectedSplitEdgeId || e.id == selectedEdgeId) {
+      // 选中的连线(分割点选中或整条选中):accent 色高亮
       color = accent;
       width = 3.6;
     }
@@ -388,7 +397,8 @@ class _EdgesPainter extends CustomPainter {
       for (final e in edges) {
         final mid = e.mid;
         if (mid == null) continue;
-        if (!inGroup.contains(e.source) || !inGroup.contains(e.target)) continue;
+        if (!inGroup.contains(e.source) || !inGroup.contains(e.target))
+          continue;
         box = box == null
             ? Rect.fromCircle(center: mid, radius: 0)
             : box.expandToInclude(Rect.fromCircle(center: mid, radius: 0));
@@ -669,6 +679,11 @@ class _EdgesPainter extends CustomPainter {
 class NodeCanvas extends StatefulWidget {
   final bool boxSelect;
   final void Function()? onRequestAddNode;
+
+  /// 最后记录的鼠标世界坐标(flow 坐标);由 NodeCanvasState 在悬停/移动时更新,
+  /// 供 main.dart 全局 Ctrl+V 粘贴定位使用
+  static Offset lastMouseWorldPos = Offset.zero;
+
   const NodeCanvas({super.key, this.boxSelect = false, this.onRequestAddNode});
 
   @override
@@ -705,6 +720,20 @@ class NodeCanvasState extends State<NodeCanvas>
     return rect.inflate(4).contains(globalPos);
   }
 
+  // 缩放控制(+/-)按钮组:同样位于画布 Listener 子树内,指针事件会冒泡,
+  // down/up/hover 需按矩形跳过画布逻辑(与预览窗同模式)
+  final GlobalKey _zoomControlKey = GlobalKey();
+
+  /// 指针全局坐标是否落在缩放控制按钮组内(4px 容差)
+  bool _inZoomControl(Offset globalPos) {
+    final ctx = _zoomControlKey.currentContext;
+    if (ctx == null) return false;
+    final ro = ctx.findRenderObject();
+    if (ro is! RenderBox || !ro.hasSize) return false;
+    final rect = ro.localToGlobal(Offset.zero) & ro.size;
+    return rect.inflate(4).contains(globalPos);
+  }
+
   // 交互状态
   String? _draggingId; // 主拖动节点(Shift 插入连线预览仅单节点拖动时启用)
   Set<String> _dragIds = {}; // 本次手势实际移动的节点集(单节点/多选/分组)
@@ -733,6 +762,7 @@ class NodeCanvasState extends State<NodeCanvas>
   bool _altJustSplit = false; // 本次手势创建过断点(松开时不取消选中)
   _Conn? _connecting;
   Offset? _connectFlowPos;
+  bool _connectConversion = false; // 当前连线预览悬停在“需转换”端口上
   Offset? _connectDownScreen; // 连线按下时的屏幕坐标(区分"点击"与"拖拽连线")
   // 端口悬停/连线激活广播(handle 溢出节点边缘,命中在画布层完成后广播给卡片动画)
   final ValueNotifier<SocketHovers> _sockHover = ValueNotifier<SocketHovers>((
@@ -820,6 +850,8 @@ class NodeCanvasState extends State<NodeCanvas>
       store.setMultiSelected({id});
     }
     if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
+    store.selectEdge(null);
+    if (store.selectedEdgeId != null) store.selectEdge(null);
   }
 
   bool _pointInAnyNode(Offset flow) {
@@ -1051,6 +1083,7 @@ class NodeCanvasState extends State<NodeCanvas>
   ) {
     _connecting = _Conn(id, socketId, type, isSource, anchor);
     _connectFlowPos = anchor;
+    _connectConversion = false;
     _connectDownScreen = null; // 首次 move 时记录
     // 广播激活状态:起点端口播放脉冲强调动画
     _sockHover.value = (
@@ -1061,11 +1094,18 @@ class NodeCanvasState extends State<NodeCanvas>
     _bump();
   }
 
-  /// 连线松开:命中兼容端口 → 建边;空白处 → 弹出新建节点菜单并携带待连线
+  /// 连线松开:命中兼容端口 → 建边;Alt 命中可转换端口 → 中插转换节点链建边;
+  /// 空白处 → 弹出新建节点菜单并携带待连线
   void _finishConnect(_Conn conn, Offset flowPos) {
-    final target = _findSocketAt(flowPos, conn);
+    final target = _findSocketAt(flowPos, conn, allowConversion: _alt);
     if (target != null) {
-      if (conn.isSource) {
+      // 类型不兼容但可转换:自动插入转换节点链(可能多步),置于两端口路径上
+      final convPath = target.conversion
+          ? _conversionPath(conn, target.type)
+          : null;
+      if (convPath != null && convPath.isNotEmpty) {
+        _insertConversion(conn, target, convPath);
+      } else if (conn.isSource) {
         store.onConnect(
           source: conn.nodeId,
           target: target.nodeId,
@@ -1089,14 +1129,112 @@ class NodeCanvasState extends State<NodeCanvas>
     _bump();
   }
 
+  /// Alt 拖拽到不可直连但可转换的端口:在两端口路径上自动插入一条转换节点链
+  /// (依次为 [path] 中每个转换节点),并依次建立 源端口→→→目标端口 连线。
+  /// 多步时节点沿两端口连线方向均匀排布,间距不足时自动向两端延展避免重叠。
+  void _insertConversion(
+    _Conn conn,
+    ({
+      String nodeId,
+      String socketId,
+      bool isSource,
+      SocketType type,
+      Offset anchor,
+      bool conversion,
+    })
+    target,
+    List<String> path,
+  ) {
+    if (path.isEmpty) return;
+    final k = path.length;
+    final dir = target.anchor - conn.anchor;
+    final len = dir.distance;
+    final unit = len < 1e-6 ? const Offset(1, 0) : dir / len;
+    // 相邻节点中心距:略大于节点宽,保证不互相遮挡
+    const spacing = 300.0;
+    final half = math.max(len / 2, spacing * (k + 1) / 2);
+    final center = (conn.anchor + target.anchor) / 2;
+    // 先建全部节点(不依赖后面的连线),再统一建边
+    final ids = <String>[];
+    final inSocks = <String>[];
+    final outSocks = <String>[];
+    var logLabels = <String>[];
+    for (var i = 0; i < k; i++) {
+      final cfg = getConfig(path[i]);
+      if (cfg == null || cfg.inputs.isEmpty || cfg.outputs.isEmpty) continue;
+      // 第 i 个节点位置:整段(中心 ± half)内按 (i+1)/(k+1) 等分
+      final t = (i + 1) / (k + 1);
+      final pos = center + unit * (t - 0.5) * 2 * half;
+      final nid = store.addNode(path[i], pos);
+      ids.add(nid);
+      inSocks.add(cfg.inputs.first.id);
+      outSocks.add(cfg.outputs.first.id);
+      logLabels.add(cfg.label);
+    }
+    if (ids.isEmpty) return;
+    // 依次接线:源端口 → 节点1 → 节点2 → … → 目标端口
+    if (conn.isSource) {
+      store.onConnect(
+        source: conn.nodeId,
+        target: ids.first,
+        sourceHandle: conn.socketId,
+        targetHandle: inSocks.first,
+      );
+      for (var i = 0; i + 1 < ids.length; i++) {
+        store.onConnect(
+          source: ids[i],
+          target: ids[i + 1],
+          sourceHandle: outSocks[i],
+          targetHandle: inSocks[i + 1],
+        );
+      }
+      store.onConnect(
+        source: ids.last,
+        target: target.nodeId,
+        sourceHandle: outSocks.last,
+        targetHandle: target.socketId,
+      );
+    } else {
+      store.onConnect(
+        source: target.nodeId,
+        target: ids.first,
+        sourceHandle: target.socketId,
+        targetHandle: inSocks.first,
+      );
+      for (var i = 0; i + 1 < ids.length; i++) {
+        store.onConnect(
+          source: ids[i],
+          target: ids[i + 1],
+          sourceHandle: outSocks[i],
+          targetHandle: inSocks[i + 1],
+        );
+      }
+      store.onConnect(
+        source: ids.last,
+        target: conn.nodeId,
+        sourceHandle: outSocks.last,
+        targetHandle: conn.socketId,
+      );
+    }
+    store.addLog('ok', '已自动插入转换节点:${logLabels.join('→')}');
+  }
+
+  /// 被拖拽端口 → 目标端口类型 的最短转换链(多步);无转换路径返回 null
+  List<String>? _conversionPath(_Conn conn, SocketType targetType) {
+    return conn.isSource
+        ? conversionPath(conn.type, targetType)
+        : conversionPath(targetType, conn.type);
+  }
+
   ({
     String nodeId,
     String socketId,
     bool isSource,
     SocketType type,
     Offset anchor,
+    bool conversion,
   })?
-  _findSocketAt(Offset flowPos, _Conn conn) {
+  _findSocketAt(Offset flowPos, _Conn conn, {bool allowConversion = false}) {
     final threshold = 26 / _zoom;
     ({
       String nodeId,
@@ -1104,6 +1242,7 @@ class NodeCanvasState extends State<NodeCanvas>
       bool isSource,
       SocketType type,
       Offset anchor,
+      bool conversion,
     })?
     best;
     var bestDist = threshold;
@@ -1124,7 +1263,13 @@ class NodeCanvasState extends State<NodeCanvas>
           n.position.dy + rows[i].center,
         );
         final d = (pos - flowPos).distance;
-        if (d < bestDist && isCompatible(conn.type, socks[i].type)) {
+        // 直连:类型兼容;Alt 拖拽:类型不兼容但存在转换链也可作为落点
+        final compat = isCompatible(conn.type, socks[i].type);
+        final convertible =
+            !compat &&
+            allowConversion &&
+            _conversionPath(conn, socks[i].type) != null;
+        if (d < bestDist && (compat || convertible)) {
           bestDist = d;
           best = (
             nodeId: n.id,
@@ -1132,6 +1277,7 @@ class NodeCanvasState extends State<NodeCanvas>
             isSource: !isTargetInput,
             type: socks[i].type,
             anchor: pos,
+            conversion: convertible,
           );
         }
       }
@@ -1259,6 +1405,7 @@ class NodeCanvasState extends State<NodeCanvas>
   void _updateHover(Offset local) {
     final flow = _toFlow(local);
     _lastPointerFlow = flow; // Ctrl+V 粘贴定位
+    NodeCanvas.lastMouseWorldPos = flow; // 同步到 static 供外部(main.dart)访问
     final h = _handleAt(flow);
     final cur = _sockHover.value;
     // 连线拖拽中保留 active(起点端口脉冲),仅更新 hover(候选目标端口)
@@ -1315,6 +1462,8 @@ class NodeCanvasState extends State<NodeCanvas>
     // 预览窗面板内:指针事件由预览窗自身处理,画布层一律忽略
     // (防误触发清空多选/框选/Alt 划线等画布逻辑)
     if (_inMiniMap(e.position)) return;
+    // 缩放控制按钮组内:指针事件由按钮自身处理,画布层一律忽略
+    if (_inZoomControl(e.position)) return;
     _downButtons = e.buttons;
     _downPosScreen = e.localPosition;
     // 按下即结束实时预览:点击生成断点/命中节点/断点圆点等任何操作时,
@@ -1397,6 +1546,8 @@ class NodeCanvasState extends State<NodeCanvas>
           _startNodeDrag(store.multiSelected);
         }
         if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
+        store.selectEdge(null);
+        if (store.selectedEdgeId != null) store.selectEdge(null);
         return;
       }
     }
@@ -1422,6 +1573,8 @@ class NodeCanvasState extends State<NodeCanvas>
       _downAddedNode = false;
       _startNodeDrag(ids);
       if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
+      store.selectEdge(null);
+      if (store.selectedEdgeId != null) store.selectEdge(null);
       return;
     }
     // 命中连线(无修饰键 → 取消分割点选择;Alt → 进入划线模式,给经过的连线加断点)
@@ -1433,7 +1586,7 @@ class NodeCanvasState extends State<NodeCanvas>
           _addAltSplit(hit.edge, hit.hit.point);
           return;
         }
-        if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
+        store.selectEdge(hit.edge.id); // 选中整条连线
         return;
       }
       if (_alt) {
@@ -1454,12 +1607,19 @@ class NodeCanvasState extends State<NodeCanvas>
     if (_connecting != null) {
       _connectDownScreen ??= e.position;
       final flow = _toFlow(e.localPosition);
-      final target = _findSocketAt(flow, _connecting!);
+      // Alt 拖拽:兼容端口与"可转换端口"均可作为落点(转换落点稍后中插转换节点)
+      final target = _findSocketAt(flow, _connecting!, allowConversion: _alt);
       _connectFlowPos = target?.anchor ?? flow;
+      _connectConversion = target?.conversion ?? false;
       final cur = _sockHover.value;
       final hover = target == null
           ? null
-          : SocketHoverState(target.nodeId, target.socketId, target.isSource);
+          : SocketHoverState(
+              target.nodeId,
+              target.socketId,
+              target.isSource,
+              conversion: target.conversion,
+            );
       if (cur.hover != hover) {
         _sockHover.value = (active: cur.active, hover: hover);
       }
@@ -1476,6 +1636,7 @@ class NodeCanvasState extends State<NodeCanvas>
       return;
     }
     final flow = _toFlow(e.localPosition);
+    NodeCanvas.lastMouseWorldPos = flow; // 拖动中也同步 world pos(main.dart 粘贴定位用)
     final left = e.buttons & kPrimaryButton != 0;
     final inNode = _pointInAnyNode(flow);
 
@@ -1555,6 +1716,11 @@ class NodeCanvasState extends State<NodeCanvas>
       _downPosScreen = null;
       return;
     }
+    // 缩放控制按钮组内松开:画布层忽略(防误触“点击空白清空多选”)
+    if (_inZoomControl(e.position)) {
+      _downPosScreen = null;
+      return;
+    }
     // 结束 Alt 划线手势:为新增断点统一记录日志并触发一次流水线
     if (_altSweeping) {
       if (_altSweptEdges.isNotEmpty) {
@@ -1573,6 +1739,7 @@ class NodeCanvasState extends State<NodeCanvas>
       final conn = _connecting;
       _connecting = null;
       _connectDownScreen = null;
+      _connectConversion = false;
       _sockHover.value = (active: null, hover: null);
       if (moved && conn != null) {
         // 用最后一次绘制的终点(若已吸附目标端口则为中心)判定建线,
@@ -1616,6 +1783,7 @@ class NodeCanvasState extends State<NodeCanvas>
       // 刚通过 Alt 创建的断点保持选中(便于直接拖动微调)
       if (store.selectedSplitEdgeId != null && !_altJustSplit) {
         store.selectSplitEdge(null);
+        store.selectEdge(null);
       }
     }
     _altJustSplit = false;
@@ -1675,18 +1843,27 @@ class NodeCanvasState extends State<NodeCanvas>
     if (_menuPos != null) return;
     // 仅 Ctrl+滚轮缩放画布,普通滚轮不响应
     if (!_ctrl) return;
-    final local = e.localPosition;
     final factor = e.scrollDelta.dy < 0 ? 1.1 : 1 / 1.1;
+    _zoomAt(e.localPosition, factor);
+  }
+
+  /// 以屏幕 anchor 为锚点缩放 factor 倍(钳制在 0.25~2.5),锚点保持不动
+  void _zoomAt(Offset anchor, double factor) {
     setState(() {
       final nz = math.min(2.5, math.max(0.25, _zoom * factor));
       final f = nz / _zoom;
       _zoom = nz;
       _zoomNotifier.value = nz;
       _pan = Offset(
-        local.dx - (local.dx - _pan.dx) * f,
-        local.dy - (local.dy - _pan.dy) * f,
+        anchor.dx - (anchor.dx - _pan.dx) * f,
+        anchor.dy - (anchor.dy - _pan.dy) * f,
       );
     });
+  }
+
+  /// +/− 按钮缩放:以视口中心为锚点
+  void _zoomStep(double factor) {
+    _zoomAt(Offset(_canvasSize.width / 2, _canvasSize.height / 2), factor);
   }
 
   void _onBackgroundPanStart(DragStartDetails d) {
@@ -1920,13 +2097,22 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   void deleteSelection() {
-    if (store.selectedSplitEdgeId != null) {
-      store.updateEdgeData(store.selectedSplitEdgeId!, null);
-      store.selectSplitEdge(null);
+    // 优先级 1:选中整条连线 → 删连线
+    if (store.selectedEdgeId != null) {
+      store.removeEdge(store.selectedEdgeId!);
+      store.selectEdge(null);
       _bump();
       return;
     }
-    // 优先删除多选集;退化为单选
+    // 优先级 2:选中断点 → 清断点(mid),保留连线
+    if (store.selectedSplitEdgeId != null) {
+      store.updateEdgeData(store.selectedSplitEdgeId!, null);
+      store.selectSplitEdge(null);
+      store.selectEdge(null);
+      _bump();
+      return;
+    }
+    // 优先级 3:删除多选集节点;退化为单选
     final sel = store.multiSelected;
     final ids = sel.isNotEmpty
         ? sel.toList()
@@ -1937,8 +2123,9 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   /// 外部 CSV/Excel 文件拖入窗口:在放下位置生成"表格输入"节点并自动导入。
-  /// [clientPos] 为窗口客户区坐标(逻辑像素),[text] 为解析后的统一 CSV 文本。
-  void dropFileText(Offset clientPos, String text) {
+  /// [clientPos] 为窗口客户区坐标(逻辑像素),[text] 为解析后的统一 CSV 文本,
+  /// [fileName] 为文件基础名(不含扩展名),节点标题栏据此显示。
+  void dropFileText(Offset clientPos, String text, {String fileName = ''}) {
     if (text.trim().isEmpty) return;
     // 客户区坐标 → 画布局部坐标(画布在窗口内可能有偏移,如右侧属性面板区域)
     final box = context.findRenderObject() as RenderBox?;
@@ -1959,6 +2146,7 @@ class NodeCanvasState extends State<NodeCanvas>
       'mode': 'manual',
       'dataText': text,
       'delimiter': delimiter,
+      'name': fileName,
     });
     store.addLog('ok', '已导入数据文件生成表格输入节点');
   }
@@ -2139,6 +2327,7 @@ class NodeCanvasState extends State<NodeCanvas>
                   // 框选矩形(屏幕坐标)
                   if (_boxDragging && _boxStart != null && _boxEnd != null)
                     _buildBoxSelect(t),
+                  _buildZoomControl(t),
                   _buildMiniMap(),
                 ],
               );
@@ -2251,10 +2440,13 @@ class NodeCanvasState extends State<NodeCanvas>
       liveBursts: liveBursts,
       connecting: _connecting,
       connectPos: _connectFlowPos,
+      connectConversion: _connectConversion,
       selectedSplitEdgeId: store.selectedSplitEdgeId,
-      revision: _revision + store.structureVersion + store.runVersion,
+      selectedEdgeId: store.selectedEdgeId,
+      revision: _revision,
       flowEdge: t.flowEdge,
       accent: t.accent,
+      warn: t.warn,
       isDark: t.isDark,
       zoom: _zoom,
       slashTrail: _slashTrail,
@@ -2319,6 +2511,46 @@ class NodeCanvasState extends State<NodeCanvas>
     );
   }
 
+  /// 左下角缩放控制:竖直胶囊按钮组(+/-),点击以视口中心为锚点缩放画布
+  Widget _buildZoomControl(SyphonTheme t) {
+    return Positioned(
+      left: 14,
+      bottom: 14,
+      child: Container(
+        key: _zoomControlKey,
+        width: 44,
+        decoration: BoxDecoration(
+          color: t.bgFloat,
+          borderRadius: BorderRadius.circular(22), // 胶囊:圆角 = 半宽
+          border: Border.all(color: t.stroke),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: t.isDark ? 0.35 : 0.12),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _ZoomControlButton(
+              icon: Icons.add,
+              tooltip: '放大',
+              onTap: () => _zoomStep(1.2),
+            ),
+            Container(height: 1, color: t.stroke),
+            _ZoomControlButton(
+              icon: Icons.remove,
+              tooltip: '缩小',
+              onTap: () => _zoomStep(1 / 1.2),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 预览窗拖拽:更新画布平移(视口在迷你图中跟随鼠标)
   void _onMiniMapPan(Offset newPan) {
     _miniMapDragging = true;
@@ -2369,6 +2601,10 @@ class NodeCanvasState extends State<NodeCanvas>
         position: _menuPos!,
         canGroup: nodeMenu.length >= 2,
         canUngroup: nodeMenu.any((id) => store.groupOf(id) != null),
+        onRunNode: () {
+          store.runPipelineDirty(nodeMenu);
+          _closeMenu();
+        },
         onGroup: _groupSelection,
         onUngroup: _ungroupSelection,
         onDuplicate: _duplicateSelection,
@@ -2393,7 +2629,26 @@ class NodeCanvasState extends State<NodeCanvas>
 
   // ---------------- 画布层事件回调 ----------------
 
+  /// 当前焦点是否位于文本输入框内(EditableText 子树)。
+  /// 搜索框等输入框位于画布 Focus 子树内,按键会自输入框向上冒泡经过此处;
+  /// 若不甄别直接标记 handled,会吞掉空格/退格/回车,输入框将完全无法编辑。
+  static bool _focusInTextField() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    return ctx != null &&
+        ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    // 文本框聚焦时:所有按键交还输入框——冒泡到 App 层的
+    // DefaultTextEditingShortcuts 与引擎文本输入(IME)才能真正处理:
+    // 空格/回车插入字符、退格删除、Ctrl+C/V 复制粘贴选中文本。
+    if (_focusInTextField()) {
+      // 按住空格期间焦点移入输入框:KeyUp 也被放行,需在此复位平移态
+      if (event is KeyUpEvent && event.logicalKey == LogicalKeyboardKey.space) {
+        _spaceDown = false;
+      }
+      return KeyEventResult.ignored;
+    }
     if (event.logicalKey == LogicalKeyboardKey.space) {
       _spaceDown = event is KeyUpEvent ? false : true;
       _bump();
@@ -2415,6 +2670,9 @@ class NodeCanvasState extends State<NodeCanvas>
     if (event is KeyDownEvent || event is KeyRepeatEvent) {
       if (event.logicalKey == LogicalKeyboardKey.delete ||
           event.logicalKey == LogicalKeyboardKey.backspace) {
+        // 节点菜单打开期间(焦点在搜索框,已被上方 _focusInTextField 守卫放行;
+        // 此分支仅覆盖焦点仍在画布的兜底场景):退格/删除不删除选中节点。
+        if (_menuPos != null) return KeyEventResult.handled;
         deleteSelection();
         return KeyEventResult.handled;
       }
@@ -2425,6 +2683,7 @@ class NodeCanvasState extends State<NodeCanvas>
           store.selectNode(null);
           store.setMultiSelected({});
           store.selectSplitEdge(null);
+          store.selectEdge(null);
         }
         return KeyEventResult.handled;
       }
@@ -2437,6 +2696,7 @@ class NodeCanvasState extends State<NodeCanvas>
     // 菜单打开期间:不更新画布悬停,避免与菜单交互冲突
     if (_menuPos != null) return;
     if (_inMiniMap(e.position)) return; // 预览窗上悬停不高亮其背后的连线/端口
+    if (_inZoomControl(e.position)) return; // 缩放控制按钮上不高亮画布内容
     if (_connecting != null) return; // 拖拽中由 move 更新
     _updateHover(e.localPosition);
   }
@@ -2469,5 +2729,59 @@ class NodeCanvasState extends State<NodeCanvas>
     _boxDragging = false;
     _boxStart = null;
     _boxEnd = null;
+  }
+}
+
+/// 缩放胶囊内的单个半圆按钮:悬停/按下高亮(与 Fluent 悬停反馈一致)
+class _ZoomControlButton extends StatefulWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  const _ZoomControlButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  State<_ZoomControlButton> createState() => _ZoomControlButtonState();
+}
+
+class _ZoomControlButtonState extends State<_ZoomControlButton> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      cursor: SystemMouseCursors.click,
+      child: Tooltip(
+        message: widget.tooltip,
+        child: GestureDetector(
+          onTapDown: (_) => setState(() => _hover = true),
+          onTapUp: (_) => setState(() => _hover = false),
+          onTapCancel: () => setState(() => _hover = false),
+          onTap: widget.onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            width: 44,
+            height: 40,
+            decoration: BoxDecoration(
+              // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
+              color: _hover ? t.bgRaise : t.bgRaise.withValues(alpha: 0),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Icon(
+              widget.icon,
+              size: 20,
+              color: _hover ? t.accent : t.text,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

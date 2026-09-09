@@ -68,22 +68,37 @@ class SocketHoverState {
   final String socketId;
   final bool isSource;
 
-  const SocketHoverState(this.nodeId, this.socketId, this.isSource);
+  /// 命中端口与被拖拽端口类型不兼容,但 Alt 模式下可经转换节点连接
+  final bool conversion;
 
-  bool match(String nodeId, String socketId, bool isSource) =>
+  const SocketHoverState(
+    this.nodeId,
+    this.socketId,
+    this.isSource, {
+    this.conversion = false,
+  });
+
+  bool match(
+    String nodeId,
+    String socketId,
+    bool isSource, {
+    bool conversion = false,
+  }) =>
       this.nodeId == nodeId &&
       this.socketId == socketId &&
-      this.isSource == isSource;
+      this.isSource == isSource &&
+      this.conversion == conversion;
 
   @override
   bool operator ==(Object other) =>
       other is SocketHoverState &&
       other.nodeId == nodeId &&
       other.socketId == socketId &&
-      other.isSource == isSource;
+      other.isSource == isSource &&
+      other.conversion == conversion;
 
   @override
-  int get hashCode => Object.hash(nodeId, socketId, isSource);
+  int get hashCode => Object.hash(nodeId, socketId, isSource, conversion);
 }
 
 /// 悬停广播值:active = 连线拖拽起点端口;hover = 当前悬停端口

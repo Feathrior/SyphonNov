@@ -28,6 +28,8 @@ class SettingsStore extends ChangeNotifier {
   String locale = 'zh';
   bool loaded = false;
   bool demoLoaded = false;
+  /// 最近打开/保存的画布文件路径(新→旧,去重,最多 10 条)
+  List<String> recentFiles = [];
 
   static final SettingsStore instance = SettingsStore._();
   SettingsStore._();
@@ -47,6 +49,10 @@ class SettingsStore extends ChangeNotifier {
           final l = '${j['locale'] ?? ''}';
           if (l.isNotEmpty) locale = l;
           if (j['demoLoaded'] == true) demoLoaded = true;
+          final rf = j['recentFiles'];
+          if (rf is List) {
+            recentFiles = rf.whereType<String>().take(10).toList();
+          }
         }
       }
     } catch (e) {
@@ -84,12 +90,20 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 记录最近文件:置顶去重,超出 10 条截断
+  void addRecentFile(String path) {
+    recentFiles = [path, ...recentFiles.where((p) => p != path)].take(10).toList();
+    _write();
+    notifyListeners();
+  }
+
   void _write() {
     final json = jsonEncode({
       'autoRun': autoRun,
       'theme': theme == AppTheme.dark ? 'dark' : 'light',
       'locale': locale,
       'demoLoaded': demoLoaded,
+      'recentFiles': recentFiles,
     });
     try {
       getApplicationSupportDirectory()

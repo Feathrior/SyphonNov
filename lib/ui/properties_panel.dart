@@ -1250,7 +1250,8 @@ class _ParamControl extends StatelessWidget {
     }
   }
 
-  /// 将导入的表格文本写入节点参数(手动模式),并触发自动执行
+  /// 将导入的表格文本写入节点参数(手动模式)并触发自动执行;
+  /// 同时写入文件基础名,节点标题栏据此显示文件名
   void _applyImportedTable(String path, String text) {
     if (text.trim().isEmpty) return;
     final delimiter = text.contains('\t') && !text.contains(',')
@@ -1260,6 +1261,7 @@ class _ParamControl extends StatelessWidget {
       'mode': 'manual',
       'dataText': text,
       'delimiter': delimiter,
+      'name': fileBaseName(path),
     });
   }
 }
@@ -1464,7 +1466,8 @@ class PropertiesPanel extends StatelessWidget {
               if (cfg.params.isNotEmpty)
                 _section(t, '参数', [
                   for (final p in cfg.params)
-                    _paramRow(context, t, p, node, exposedKeys),
+                    if (_paramVisible(cfg, node, p))
+                      _paramRow(context, t, p, node, exposedKeys),
                 ]),
 
               // 输出状态
@@ -1598,6 +1601,24 @@ class PropertiesPanel extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  // 条件显示:dependsOn 参数值命中 visibleWhenValues 才渲染;
+  // 未配置条件时始终可见。依赖值缺失时回退到该参数默认值。
+  bool _paramVisible(md.NodeConfig cfg, GraphNode node, md.ParamSpec p) {
+    final dep = p.dependsOn;
+    final vals = p.visibleWhenValues;
+    if (dep == null || vals == null || vals.isEmpty) return true;
+    var v = node.params[dep];
+    if (v == null) {
+      for (final other in cfg.params) {
+        if (other.key == dep) {
+          v = other.defaultValue;
+          break;
+        }
+      }
+    }
+    return vals.contains(v?.toString());
   }
 
   // .nf-param-row:margin-bottom 8

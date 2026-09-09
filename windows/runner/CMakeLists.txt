@@ -20,6 +20,10 @@ add_executable(${BINARY_NAME} WIN32
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
+# 源文件含中文注释且保存为无 BOM 的 UTF-8:指定 /utf-8 让 MSVC 按 UTF-8
+# 解析,消除 C4819("不能在当前代码页(936)中表示的字符",被视为错误)。
+target_compile_options(${BINARY_NAME} PRIVATE "/utf-8")
+
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MAJOR=${FLUTTER_VERSION_MAJOR}")

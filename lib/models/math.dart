@@ -2,6 +2,7 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'data.dart';
 
@@ -246,6 +247,117 @@ String fmt(double v, [int digits = 4]) {
   return v.toStringAsFixed(digits).replaceFirst(RegExp(r'\.?0+$'), '');
 }
 
+// ==================== 精确有理数 ====================
+// 每个有限 double 都是"二进有理数"(m × 2^e),可用 BigInt 分子/分母精确表示。
+// 曲线交点求解用它做精确几何判定:小数量值(如 1e-9 量级坐标)下,
+// 浮点叉积误差会淹没平行判定/区间判定,有理化后无任何精度损失。
+
+/// BigInt 有理数(经 [_norm] 归一化:分母恒正、自动约分)
+class Frac {
+  final BigInt n; // 分子(带符号)
+  final BigInt d; // 分母(恒正)
+
+  const Frac._(this.n, this.d);
+
+  static final Frac zero = Frac._(BigInt.zero, BigInt.one);
+  static final Frac one = Frac._(BigInt.one, BigInt.one);
+
+  /// 归一化:分母转正 + gcd 约分
+  static Frac _norm(BigInt n, BigInt d) {
+    if (d.isNegative) {
+      n = -n;
+      d = -d;
+    }
+    final g = n == BigInt.zero ? BigInt.one : n.gcd(d);
+    return Frac._(n ~/ g, d ~/ g);
+  }
+
+  Frac operator +(Frac o) => _norm(n * o.d + o.n * d, d * o.d);
+  Frac operator -(Frac o) => _norm(n * o.d - o.n * d, d * o.d);
+  Frac operator *(Frac o) => _norm(n * o.n, d * o.d);
+  Frac operator -() => Frac._(-n, d);
+
+  /// 除法(o 为 0 时返回 null,由调用方处理)
+  Frac? div(Frac o) => o.n == BigInt.zero ? null : _norm(n * o.d, d * o.n);
+
+  bool get isZero => n == BigInt.zero;
+
+  /// 精确比较:a ? b → -1/0/1
+  int cmp(Frac o) => (n * o.d).compareTo(o.n * d);
+
+  /// double → 精确有理数(IEEE754 位分解:m × 2^(e-1075))
+  static Frac fromDouble(double v) {
+    if (v == 0.0) return zero;
+    final bytes = (ByteData(8)..setFloat64(0, v)).getUint64(0);
+    // 注意:getUint64 在 VM 上最高位为 1 时返回负 int,必须用无符号右移取符号位
+    final sign = bytes >>> 63;
+    var exp = (bytes >> 52) & 0x7FF;
+    var mant = BigInt.from(bytes & 0xFFFFFFFFFFFFF);
+    if (exp == 0) {
+      // 次正规数:m × 2^(-1074)
+      exp = 1;
+    } else {
+      mant |= BigInt.one << 52;
+    }
+    var num = mant;
+    // 指数 = exp - 1075(含隐含位);正指数进分子,负指数进分母
+    final e = exp - 1075;
+    BigInt den = BigInt.one;
+    if (e > 0) {
+      num = num << e;
+    } else if (e < 0) {
+      den = BigInt.one << -e;
+    }
+    if (sign == 1) num = -num;
+    return _norm(num, den);
+  }
+
+  /// 有理数 → double(最近舍入;超范围返回 ±inf)
+  double toDouble() => _bigDiv(n, d);
+
+  static double _bigDiv(BigInt a, BigInt b) {
+    // 缩放到 53 位尾数再相除,避免 BigInt→int 溢出
+    int shift(BigInt v) => v.bitLength > 53 ? v.bitLength - 53 : 0;
+    final sa = shift(a.abs());
+    final sb = shift(b.abs());
+    final ma = (a.abs() >> sa).toInt().toDouble();
+    final mb = (b.abs() >> sb).toInt().toDouble();
+    final r = ma / mb;
+    // a/b = (ma/mb) × 2^(sa-sb)
+    final scale = math.pow(2.0, sa - sb).toDouble();
+    final v = r * scale;
+    return a.isNegative ? -v : v;
+  }
+}
+
+/// 两线段精确交点(有理化几何):P1→P2 与 Q1→Q2。
+/// 返回 null 表示平行/共线或无交点;命中时 t/u/交点均为精确值(最后转 double)。
+({double x, double y})? exactSegIntersect(
+  double p1x, double p1y,
+  double p2x, double p2y,
+  double q1x, double q1y,
+  double q2x, double q2y,
+) {
+  final p1 = Frac.fromDouble(p1x), p1y_ = Frac.fromDouble(p1y);
+  final r = Frac.fromDouble(p2x) - p1, rY = Frac.fromDouble(p2y) - p1y_;
+  final q1f = Frac.fromDouble(q1x), q1fY = Frac.fromDouble(q1y);
+  final s = Frac.fromDouble(q2x) - q1f, sY = Frac.fromDouble(q2y) - q1fY;
+  // d = r × s(叉积);t = qp × s / d;u = qp × r / d
+  final d = r * sY - rY * s;
+  if (d.isZero) return null; // 精确平行/共线
+  final qpx = q1f - p1, qpy = q1fY - p1y_;
+  final t = (qpx * sY - qpy * s).div(d);
+  final u = (qpx * rY - qpy * r).div(d);
+  if (t == null || u == null) return null;
+  // 区间判定 [0,1] 精确无误差(小数量值场景浮点常在此误判)
+  final t0 = t.cmp(Frac.zero), t1 = t.cmp(Frac.one);
+  final u0 = u.cmp(Frac.zero), u1 = u.cmp(Frac.one);
+  if (t0 < 0 || t1 > 0 || u0 < 0 || u1 > 0) return null;
+  final x = p1 + t * r;
+  final y = p1y_ + t * rY;
+  return (x: x.toDouble(), y: y.toDouble());
+}
+
 /// 简单数学表达式求值(支持 x/y/pi/e/sin/cos/tan/exp/log/sqrt/abs/^)
 /// 返回 null 表示表达式非法
 double Function(double x, double y)? compileFormula(String src) {
@@ -416,6 +528,9 @@ class _ExprParser {
           return (x, y) => x;
         case 'Y':
           return (x, y) => y;
+        case 'T':
+          // 参数方程模式:t 作为第一参数传入(与 x 同槽位)
+          return (x, y) => x;
         default:
           throw const FormatException('unknown identifier');
       }
