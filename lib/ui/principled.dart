@@ -57,6 +57,12 @@ class _DrawCtx {
   });
 }
 
+class _SurfaceTri {
+  final List<Vec3> points;
+  final Color? color;
+  const _SurfaceTri(this.points, this.color);
+}
+
 Offset _project(_DrawCtx d, Vec3 p) {
   if (d.ortho2d) return Offset(d.ox + p.x * d.scale, d.oy - p.y * d.scale);
   final r = _rotate(p, d.rotX, d.rotY, d.rotZ);
@@ -139,6 +145,23 @@ class _AxesInfo {
   });
 }
 
+/// 在给定坐标盒内保持每个数据单位的物理长度一致。
+({double x, double y, double z}) equalDataAspectLengths(AxesData input) {
+  final xSpan = input.xMax - input.xMin;
+  final ySpan = input.yMax - input.yMin;
+  final zSpan = input.zMax - input.zMin;
+  if (![xSpan, ySpan, zSpan].every((v) => v.isFinite && v > 0)) {
+    return (x: input.xLen, y: input.yLen, z: input.zLen);
+  }
+  final sx = input.xLen / xSpan;
+  final sy = input.yLen / ySpan;
+  final sz = input.zLen / zSpan;
+  final common = input.dim == 2
+      ? math.min(sx, sy)
+      : math.min(sx, math.min(sy, sz));
+  return (x: xSpan * common, y: ySpan * common, z: zSpan * common);
+}
+
 _AxesInfo _resolveAxes(DataObject? input) {
   if (input is AxesData) {
     final xMin = input.xMin.isFinite ? input.xMin : 0.0;
@@ -153,11 +176,20 @@ _AxesInfo _resolveAxes(DataObject? input) {
     final zMax = input.zMax.isFinite && input.zMax > zMin
         ? input.zMax
         : zMin + 10.0;
+    var xLen = _mx(input.xLen, 0.1);
+    var yLen = _mx(input.yLen, 0.1);
+    var zLen = _mx(input.zLen, 0.1);
+    if (input.aspectMode == 'equal') {
+      final equal = equalDataAspectLengths(input);
+      xLen = equal.x;
+      yLen = equal.y;
+      zLen = equal.z;
+    }
     return _AxesInfo(
       dim: input.dim == 2 ? 2 : 3,
-      xLen: _mx(input.xLen, 0.1),
-      yLen: _mx(input.yLen, 0.1),
-      zLen: _mx(input.zLen, 0.1),
+      xLen: xLen,
+      yLen: yLen,
+      zLen: zLen,
       xMin: xMin,
       xMax: xMax,
       yMin: yMin,
@@ -495,10 +527,10 @@ class PrincipledPainter extends CustomPainter {
       _drawTris(canvas, d, distTris, C.dist, false, 1, true);
     }
 
-    // 面:样式完全由平面输入自控(线框/填充/透明度/颜色/边缘线)
+    // 曲面:预览可使用拓扑感知的确定性 LOD；导出始终遍历全量面。
     if (meshList.isNotEmpty) {
       for (final mesh in meshList) {
-        final tris = _meshTris(mesh, mapP);
+        final tris = _meshTris(mesh, mapP, preview: fixedSize == null);
         if (tris.isEmpty) continue;
         final wireframe = mesh.wireframe == true;
         final fill = mesh.fill ?? true;
@@ -510,7 +542,17 @@ class PrincipledPainter extends CustomPainter {
         final edgeColor = (mesh.edgeColor ?? '').isEmpty
             ? color
             : mesh.edgeColor!;
-        _drawTris(canvas, d, tris, color, wire, opacity, fill, edgeColor);
+        _drawSurfaceTris(
+          canvas,
+          d,
+          tris,
+          color,
+          wire,
+          opacity,
+          fill,
+          edgeColor,
+          mesh.doubleSided ?? true,
+        );
       }
     }
 
@@ -713,17 +755,58 @@ class PrincipledPainter extends CustomPainter {
     );
   }
 
-  /// 单个平面网格 → 场景三角形
-  List<List<Vec3>> _meshTris(MeshData mesh, Vec3 Function(Vec3) mapP) {
-    final raw = <List<Vec3>>[];
-    for (final f in mesh.faces) {
-      if (f.length < 3) continue;
-      final v0 = mesh.vertices.length > f[0] ? mesh.vertices[f[0]] : null;
-      final v1 = mesh.vertices.length > f[1] ? mesh.vertices[f[1]] : null;
-      final v2 = mesh.vertices.length > f[2] ? mesh.vertices[f[2]] : null;
-      if (v0 != null && v1 != null && v2 != null) raw.add([v0, v1, v2]);
+  /// 单个曲面网格 → 场景三角形。LOD 均匀覆盖完整面序列并保留首尾。
+  List<_SurfaceTri> _meshTris(
+    MeshData mesh,
+    Vec3 Function(Vec3) mapP, {
+    required bool preview,
+  }) {
+    final raw = <_SurfaceTri>[];
+    final budget = preview
+        ? (mesh.previewFaceBudget ?? 12000)
+        : mesh.faces.length;
+    final step = mesh.faces.length > budget ? mesh.faces.length / budget : 1.0;
+    final selected = <int>{};
+    if (step > 1) {
+      for (var i = 0; i < budget; i++) {
+        selected.add((i * step).floor().clamp(0, mesh.faces.length - 1));
+      }
+      selected.add(0);
+      selected.add(mesh.faces.length - 1);
     }
-    return raw.map((t) => t.map(mapP).toList()).toList();
+    for (var faceIndex = 0; faceIndex < mesh.faces.length; faceIndex++) {
+      if (step > 1 && !selected.contains(faceIndex)) continue;
+      final f = mesh.faces[faceIndex];
+      if (f.length < 3) continue;
+      if (f.any((i) => i < 0 || i >= mesh.vertices.length)) continue;
+      final vertices = [
+        mesh.vertices[f[0]],
+        mesh.vertices[f[1]],
+        mesh.vertices[f[2]],
+      ];
+      if (vertices.any(
+        (v) => !v.x.isFinite || !v.y.isFinite || !v.z.isFinite,
+      )) {
+        continue;
+      }
+      Color? faceColor;
+      final values = mesh.vertexValues;
+      final gradient = mesh.gradient;
+      final lo = mesh.valueMin, hi = mesh.valueMax;
+      if (values != null &&
+          gradient != null &&
+          lo != null &&
+          hi != null &&
+          f.every((i) => i < values.length)) {
+        final value = (values[f[0]] + values[f[1]] + values[f[2]]) / 3;
+        if (value.isFinite) {
+          final t = (hi - lo).abs() <= 1e-15 ? 0.5 : (value - lo) / (hi - lo);
+          faceColor = gradientColorAt(gradient, t);
+        }
+      }
+      raw.add(_SurfaceTri(vertices.map(mapP).toList(), faceColor));
+    }
+    return raw;
   }
 
   /// 分布柱 → 场景三角形(每柱两个三角面)
@@ -964,6 +1047,60 @@ class PrincipledPainter extends CustomPainter {
           path,
           Paint()
             ..color = strokeColor.withValues(alpha: opacity)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = _mx(0.5, _fzFor(d)),
+        );
+      }
+    }
+  }
+
+  void _drawSurfaceTris(
+    Canvas canvas,
+    _DrawCtx d,
+    List<_SurfaceTri> tris,
+    String color,
+    bool wire,
+    double opacity,
+    bool fill,
+    String edgeColor,
+    bool doubleSided,
+  ) {
+    final sorted = tris.map((tri) {
+      final p = tri.points;
+      final depth =
+          (_rotate(p[0], d.rotX, d.rotY, d.rotZ).z +
+              _rotate(p[1], d.rotX, d.rotY, d.rotZ).z +
+              _rotate(p[2], d.rotX, d.rotY, d.rotZ).z) /
+          3;
+      return (tri: tri, depth: depth);
+    }).toList()..sort((a, b) => a.depth.compareTo(b.depth));
+    final fallback = parseColor(color);
+    final stroke = parseColor(edgeColor);
+    for (final item in sorted) {
+      final p = item.tri.points;
+      final pa = _project(d, p[0]);
+      final pb = _project(d, p[1]);
+      final pc = _project(d, p[2]);
+      final signedArea =
+          (pb.dx - pa.dx) * (pc.dy - pa.dy) - (pb.dy - pa.dy) * (pc.dx - pa.dx);
+      if (!doubleSided && signedArea >= 0) continue;
+      final path = Path()
+        ..moveTo(pa.dx, pa.dy)
+        ..lineTo(pb.dx, pb.dy)
+        ..lineTo(pc.dx, pc.dy)
+        ..close();
+      if (fill) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = (item.tri.color ?? fallback).withValues(alpha: opacity),
+        );
+      }
+      if (wire) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = stroke.withValues(alpha: opacity)
             ..style = PaintingStyle.stroke
             ..strokeWidth = _mx(0.5, _fzFor(d)),
         );

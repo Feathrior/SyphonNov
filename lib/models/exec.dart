@@ -438,6 +438,7 @@ Map<String, ExecFn> _buildExec() {
           fontSize: fontSize,
           fontFamily: fontFamily,
           axisPreset: str(p['axisPreset'], 'default'),
+          aspectMode: str(p['aspectMode'], 'free'),
           arrows: AxisArrows(x: arrowX, y: arrowY),
           rotX: num_(p['rotX'], -20),
           rotY: num_(p['rotY'], 25),
@@ -472,7 +473,7 @@ Map<String, ExecFn> _buildExec() {
       };
     },
 
-    'plane_input': (ctx) => {'out0': genPlane(ctx.params)},
+    'surface_input': (ctx) => {'out0': genSurface(ctx)},
 
     'scatter_input': (ctx) {
       final p = ctx.params;
@@ -1518,110 +1519,354 @@ List<Pt> _implicitCurve(
   return out;
 }
 
-/// 平面生成:仅构建 x-y 平面(z=0)上的多边形面,适配 2D 坐标系
-/// (或 3D 坐标系的 x-y 轴)。预设:圆面/椭圆面/矩形面;自定义:点列多边形。
-/// 携带颜色/透明度/边缘线样式,渲染层优先使用。
-MeshData genPlane(Map<String, dynamic> params) {
-  final name = str(params['name'], '平面');
-  final shape = str(params['shape'], 'circle');
-  final cx = num_(params['cx'], 0);
-  final cy = num_(params['cy'], 0);
-  final r = num_(params['radius'], 3);
-  final rx = num_(params['rx'], 3);
-  final ry = num_(params['ry'], 2);
-  final w = num_(params['w'], 4);
-  final h = num_(params['h'], 3);
-  final slices = math.max(3, num_(params['slices'], 48).round());
-
-  final verts = <Vec3>[];
-  final faces = <List<int>>[];
-
-  // 多边形环(首尾可不闭合)→ 顶点 + 以首点为锚点的三角扇;闭合后形成平面
-  void addRing(List<Pt> ring) {
-    if (ring.length < 3) return;
-    final start = verts.length;
-    for (final p in ring) {
-      verts.add(Vec3(p.x, p.y, 0));
-    }
-    for (var i = 1; i < ring.length - 1; i++) {
-      faces.add([start, start + i, start + i + 1]);
-    }
+/// 统一曲面生成。规则网格保留非有限采样点作为孔洞标记，但面不会跨孔洞。
+MeshData genSurface(ExecContext ctx) {
+  final p = ctx.params;
+  final mode = str(p['mode'], 'explicit');
+  var rows = (toNum(p['rows']) ?? 61).round();
+  var columns = (toNum(p['columns']) ?? 61).round();
+  if (rows < 2 || rows > 400 || columns < 2 || columns > 400) {
+    throw Exception('曲面每个方向的采样数必须在 2 到 400 之间');
   }
+  if (rows * columns > 160000) throw Exception('曲面超过 160000 个顶点的资源预算');
 
-  switch (shape) {
-    case 'ellipse':
-      final ring = <Pt>[
-        for (var i = 0; i < slices; i++)
-          Pt(
-            cx + rx * math.cos(2 * math.pi * i / slices),
-            cy + ry * math.sin(2 * math.pi * i / slices),
-          ),
+  var wrapRows = p['wrapRows'] == true;
+  var wrapColumns = p['wrapColumns'] == true;
+  var a0 = toNum(p['xMin']) ?? -3;
+  var a1 = toNum(p['xMax']) ?? 3;
+  var b0 = toNum(p['yMin']) ?? -3;
+  var b1 = toNum(p['yMax']) ?? 3;
+  Vec3 Function(double, double)? sample;
+  List<double>? externalValues;
+  var valueLabel = str(p['valueMode'], 'z') == 'radius' ? '距原点距离' : 'Z';
+
+  if (mode == 'grid') {
+    final table = ctx.inputs['in0'];
+    if (table is! TableData) throw Exception('表格网格模式需要连接表格输入');
+    if (table.columns.length < 3) throw Exception('表格曲面至少需要三列');
+    if (str(p['gridLayout'], 'xyz') == 'matrix') {
+      final yColumn = table.columns.first;
+      final zColumns = table.columns.sublist(1);
+      final validRows = <int>[];
+      final ys = <double>[];
+      for (var i = 0; i < yColumn.values.length; i++) {
+        final y = toNum(yColumn.values[i]);
+        if (y != null && y.isFinite) {
+          validRows.add(i);
+          ys.add(y);
+        }
+      }
+      if (validRows.length < 2 || zColumns.length < 2) {
+        throw Exception('二维矩阵至少需要 2×2 个坐标');
+      }
+      final parsedX = zColumns.map((c) => double.tryParse(c.name)).toList();
+      final useNames = parsedX.every((x) => x != null && x.isFinite);
+      final xs = [
+        for (var i = 0; i < zColumns.length; i++)
+          useNames ? parsedX[i]! : i.toDouble(),
       ];
-      addRing(ring);
-    case 'rect':
-      final hw = w / 2;
-      final hh = h / 2;
-      verts.addAll([
-        Vec3(cx - hw, cy - hh, 0),
-        Vec3(cx + hw, cy - hh, 0),
-        Vec3(cx + hw, cy + hh, 0),
-        Vec3(cx - hw, cy + hh, 0),
-      ]);
-      faces.addAll([
-        [0, 1, 2],
-        [0, 2, 3],
-      ]);
-    case 'polygon':
-      final pts = <Pt>[];
-      for (final line in str(params['pointsText'], '').split('\n')) {
-        final cell = line
-            .split(RegExp(r'[,，\t;；\s]+'))
-            .where((s) => s.isNotEmpty)
-            .toList();
-        if (cell.length < 2) continue;
-        final x = double.tryParse(cell[0]);
-        final y = double.tryParse(cell[1]);
-        if (x != null && y != null) pts.add(Pt(x, y));
+      if (xs.toSet().length != xs.length || ys.toSet().length != ys.length) {
+        throw Exception('二维矩阵坐标不得重复');
       }
-      // 末尾与首点相同时去掉,避免重复顶点(Pt 无 ==,按字段比较)
-      if (pts.length > 1 &&
-          pts.last.x == pts.first.x &&
-          pts.last.y == pts.first.y) {
-        pts.removeLast();
-      }
-      addRing(pts);
-    default: // circle:圆心 + 圆周扇区
-      verts.add(Vec3(cx, cy, 0));
-      for (var i = 0; i < slices; i++) {
-        verts.add(
-          Vec3(
-            cx + r * math.cos(2 * math.pi * i / slices),
-            cy + r * math.sin(2 * math.pi * i / slices),
-            0,
-          ),
+      rows = xs.length;
+      columns = ys.length;
+      if (rows * columns > 160000) throw Exception('表格曲面超过 160000 个顶点的资源预算');
+      a0 = 0;
+      a1 = (rows - 1).toDouble();
+      b0 = 0;
+      b1 = (columns - 1).toDouble();
+      sample = (a, b) {
+        final xi = a.round(), yi = b.round();
+        final z = toNum(_cell(zColumns[xi], validRows[yi]));
+        return Vec3(xs[xi], ys[yi], z != null && z.isFinite ? z : double.nan);
+      };
+    } else {
+      Column find(String key, String fallback) {
+        final name = str(p[key], fallback);
+        return table.columns.firstWhere(
+          (c) => c.name == name,
+          orElse: () => throw Exception('表格中不存在 $name 列'),
         );
       }
-      for (var i = 0; i < slices; i++) {
-        final next = i + 1 == slices ? 1 : i + 2;
-        faces.add([0, i + 1, next]);
+
+      final xc = find('xCol', 'x'),
+          yc = find('yCol', 'y'),
+          zc = find('zCol', 'z');
+      final count = math.max(
+        xc.values.length,
+        math.max(yc.values.length, zc.values.length),
+      );
+      final valueName = str(p['valueCol']);
+      final valueColumn = valueName.isEmpty
+          ? null
+          : table.columns.where((c) => c.name == valueName).firstOrNull;
+      final records = <(double, double, double, double?)>[];
+      for (var i = 0; i < count; i++) {
+        final x = toNum(_cell(xc, i)),
+            y = toNum(_cell(yc, i)),
+            z = toNum(_cell(zc, i));
+        if (x == null || y == null || !x.isFinite || !y.isFinite) {
+          continue;
+        }
+        final scalar = valueColumn == null
+            ? null
+            : toNum(_cell(valueColumn, i));
+        records.add((
+          x,
+          y,
+          z != null && z.isFinite ? z : double.nan,
+          scalar != null && scalar.isFinite ? scalar : double.nan,
+        ));
       }
+      if (records.isEmpty) throw Exception('表格没有有效的 X/Y/Z 数值行');
+      final xs = records.map((r) => r.$1).toSet().toList()..sort();
+      final ys = records.map((r) => r.$2).toSet().toList()..sort();
+      rows = xs.length;
+      columns = ys.length;
+      if (rows < 2 || columns < 2) throw Exception('表格曲面至少需要 2×2 个不同的 X/Y 坐标');
+      if (rows * columns > 160000) throw Exception('表格曲面超过 160000 个顶点的资源预算');
+      final cells = <String, double>{};
+      String key(double x, double y) =>
+          '${x.toStringAsPrecision(17)}|${y.toStringAsPrecision(17)}';
+      for (final r in records) {
+        if (cells.containsKey(key(r.$1, r.$2))) {
+          throw Exception('表格存在重复的 (X,Y) 坐标: (${r.$1}, ${r.$2})');
+        }
+        cells[key(r.$1, r.$2)] = r.$3;
+      }
+      a0 = 0;
+      a1 = (rows - 1).toDouble();
+      b0 = 0;
+      b1 = (columns - 1).toDouble();
+      sample = (a, b) {
+        final x = xs[a.round()], y = ys[b.round()];
+        return Vec3(x, y, cells[key(x, y)] ?? double.nan);
+      };
+      if (valueColumn != null) {
+        final scalarCells = <String, double>{
+          for (final r in records) key(r.$1, r.$2): r.$4 ?? double.nan,
+        };
+        externalValues = [
+          for (final x in xs)
+            for (final y in ys) scalarCells[key(x, y)] ?? double.nan,
+        ];
+        valueLabel = valueName;
+      }
+    }
+    wrapRows = false;
+    wrapColumns = false;
+  } else if (mode == 'preset') {
+    final preset = str(p['preset'], 'plane');
+    final size = toNum(p['size']) ?? 2;
+    final minor = toNum(p['minorRadius']) ?? 0.65;
+    final constantZ = toNum(p['constantZ']) ?? 0;
+    if (!size.isFinite || size <= 0 || !minor.isFinite || minor <= 0) {
+      throw Exception('预设尺度必须是正有限数');
+    }
+    switch (preset) {
+      case 'disk' || 'ellipse':
+        a0 = 0;
+        a1 = 2 * math.pi;
+        b0 = 0;
+        b1 = 1;
+        wrapRows = true;
+        wrapColumns = false;
+        sample = (u, v) => Vec3(
+          size * v * math.cos(u),
+          (preset == 'ellipse' ? size * 0.6 : size) * v * math.sin(u),
+          constantZ,
+        );
+      case 'sphere':
+        a0 = 0;
+        a1 = 2 * math.pi;
+        b0 = -math.pi / 2;
+        b1 = math.pi / 2;
+        wrapRows = true;
+        wrapColumns = false;
+        sample = (u, v) => Vec3(
+          size * math.cos(v) * math.cos(u),
+          size * math.cos(v) * math.sin(u),
+          size * math.sin(v),
+        );
+      case 'cylinder' || 'cone':
+        a0 = 0;
+        a1 = 2 * math.pi;
+        b0 = -size;
+        b1 = size;
+        wrapRows = true;
+        wrapColumns = false;
+        sample = (u, v) {
+          final r = preset == 'cone'
+              ? size * (1 - (v + size) / (2 * size))
+              : size;
+          return Vec3(r * math.cos(u), r * math.sin(u), v);
+        };
+      case 'torus':
+        a0 = 0;
+        a1 = 2 * math.pi;
+        b0 = 0;
+        b1 = 2 * math.pi;
+        wrapRows = true;
+        wrapColumns = true;
+        sample = (u, v) => Vec3(
+          (size + minor * math.cos(v)) * math.cos(u),
+          (size + minor * math.cos(v)) * math.sin(u),
+          minor * math.sin(v),
+        );
+      case 'paraboloid':
+        a0 = -size;
+        a1 = size;
+        b0 = -size;
+        b1 = size;
+        sample = (x, y) => Vec3(x, y, (x * x + y * y) / size);
+      case 'saddle':
+        a0 = -size;
+        a1 = size;
+        b0 = -size;
+        b1 = size;
+        sample = (x, y) => Vec3(x, y, (x * x - y * y) / size);
+      case 'gaussian':
+        a0 = -2 * size;
+        a1 = 2 * size;
+        b0 = -2 * size;
+        b1 = 2 * size;
+        sample = (x, y) =>
+            Vec3(x, y, size * math.exp(-(x * x + y * y) / (size * size)));
+      default:
+        a0 = -size;
+        a1 = size;
+        b0 = -size;
+        b1 = size;
+        sample = (x, y) => Vec3(x, y, constantZ);
+    }
+  } else {
+    if (![a0, a1, b0, b1].every((v) => v.isFinite) || a0 >= a1 || b0 >= b1) {
+      throw Exception('曲面参数范围必须是递增的有限区间');
+    }
+    final fz = compileFormula(str(p['exprZ'], 'sin(x)*cos(y)'));
+    if (fz == null) throw Exception('无法解析曲面 Z 表达式');
+    if (mode == 'parametric') {
+      final fx = compileFormula(str(p['exprX'], 'x'));
+      final fy = compileFormula(str(p['exprY'], 'y'));
+      if (fx == null || fy == null) throw Exception('无法解析参数曲面的 X/Y 表达式');
+      sample = (u, v) => Vec3(fx(u, v), fy(u, v), fz(u, v));
+    } else if (mode == 'explicit') {
+      sample = (x, y) => Vec3(x, y, fz(x, y));
+    } else {
+      throw Exception('未知曲面生成方式: $mode');
+    }
   }
 
+  final vertices = <Vec3>[];
+  for (var i = 0; i < rows; i++) {
+    final a = a0 + (a1 - a0) * i / (wrapRows ? rows : rows - 1);
+    for (var j = 0; j < columns; j++) {
+      final b = b0 + (b1 - b0) * j / (wrapColumns ? columns : columns - 1);
+      try {
+        vertices.add(sample(a, b));
+      } catch (_) {
+        vertices.add(const Vec3(double.nan, double.nan, double.nan));
+      }
+    }
+  }
+  bool finite(Vec3 v) => v.x.isFinite && v.y.isFinite && v.z.isFinite;
+  final faces = <List<int>>[];
+  final rowCells = wrapRows ? rows : rows - 1;
+  final columnCells = wrapColumns ? columns : columns - 1;
+  for (var i = 0; i < rowCells; i++) {
+    for (var j = 0; j < columnCells; j++) {
+      final i1 = (i + 1) % rows, j1 = (j + 1) % columns;
+      final q = [
+        i * columns + j,
+        i1 * columns + j,
+        i1 * columns + j1,
+        i * columns + j1,
+      ];
+      if (q.every((k) => finite(vertices[k]))) {
+        faces.add([q[0], q[1], q[2]]);
+        faces.add([q[0], q[2], q[3]]);
+      }
+    }
+  }
+  if (faces.isEmpty) throw Exception('曲面没有可绘制的有限网格面');
+
+  final sums = List<Vec3>.filled(vertices.length, const Vec3(0, 0, 0));
+  for (final f in faces) {
+    final a = vertices[f[0]], b = vertices[f[1]], c = vertices[f[2]];
+    final u = b - a, v = c - a;
+    final n = Vec3(
+      u.y * v.z - u.z * v.y,
+      u.z * v.x - u.x * v.z,
+      u.x * v.y - u.y * v.x,
+    );
+    for (final k in f) {
+      sums[k] = sums[k] + n;
+    }
+  }
+  final normals = sums.map((n) {
+    final length = math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    return length > 0 && length.isFinite
+        ? n.scale(1 / length)
+        : const Vec3(0, 0, 0);
+  }).toList();
+  final valueMode = str(p['valueMode'], 'z');
+  final values =
+      externalValues ??
+      (valueMode == 'none'
+          ? null
+          : vertices
+                .map(
+                  (v) => !finite(v)
+                      ? double.nan
+                      : valueMode == 'radius'
+                      ? math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+                      : v.z,
+                )
+                .toList());
+  final finiteValues =
+      values?.where((v) => v.isFinite).toList() ?? const <double>[];
+  final cb = ctx.inputs['in1'];
   return MeshData(
-    name: name,
-    vertices: verts,
+    name: str(p['name'], '曲面'),
+    vertices: vertices,
     faces: faces,
-    color: (params['color'] is String && '${params['color']}'.isNotEmpty)
-        ? '${params['color']}'
+    normals: normals,
+    vertexValues: values,
+    gradient: cb is ColorbarData
+        ? cb.stops.map((s) => s.copy()).toList()
         : null,
-    opacity: num_(params['opacity'], 0.85).clamp(0.05, 1.0),
-    showEdge: params['showEdge'] != false,
-    edgeColor:
-        (params['edgeColor'] is String && '${params['edgeColor']}'.isNotEmpty)
-        ? '${params['edgeColor']}'
+    valueMin: cb is ColorbarData && cb.min != null
+        ? cb.min
+        : finiteValues.isEmpty
+        ? null
+        : finiteValues.reduce(math.min),
+    valueMax: cb is ColorbarData && cb.max != null
+        ? cb.max
+        : finiteValues.isEmpty
+        ? null
+        : finiteValues.reduce(math.max),
+    valueLabel: cb is ColorbarData ? cb.label ?? valueLabel : valueLabel,
+    gridRows: rows,
+    gridColumns: columns,
+    wrapRows: wrapRows,
+    wrapColumns: wrapColumns,
+    previewFaceBudget: (toNum(p['previewFaceBudget']) ?? 12000).round().clamp(
+      100,
+      100000,
+    ),
+    sourceVertexCount: vertices.length,
+    sourceFaceCount: faces.length,
+    doubleSided: p['doubleSided'] != false,
+    color: p['color'] is String && '${p['color']}'.isNotEmpty
+        ? '${p['color']}'
         : null,
-    wireframe: params['wireframe'] == true,
-    fill: params['fillFaces'] != false,
+    opacity: num_(p['opacity'], 0.85).clamp(0.05, 1.0),
+    showEdge: p['showEdge'] != false,
+    edgeColor: p['edgeColor'] is String && '${p['edgeColor']}'.isNotEmpty
+        ? '${p['edgeColor']}'
+        : null,
+    wireframe: p['wireframe'] == true,
+    fill: p['fillFaces'] != false,
   );
 }
 

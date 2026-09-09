@@ -1125,7 +1125,7 @@ class GraphStore extends ChangeNotifier {
       'version': workflowFormatVersion,
       'provenance': {
         'application': 'SyphonNov',
-        'applicationVersion': '0.4.0',
+        'applicationVersion': '0.4.1',
         'numericSemantics': 'full-precision',
       },
       'nodes': nodes.map((n) => n.toJson()).toList(),
@@ -1177,7 +1177,11 @@ class GraphStore extends ChangeNotifier {
           throw FormatException('节点 ID 为空或重复: $id');
         }
         var configId = '${n['configId'] ?? ''}';
-        if (configId == 'face_input') configId = 'plane_input';
+        if (configId == 'plane_input' || configId == 'face_input') {
+          throw const FormatException(
+            '该工作流含已在 v0.4.1 删除的平面节点；请用曲面输入的平面预设重新建立该节点',
+          );
+        }
         if (configId == 'viz_preset') {
           final p = n['params'] is Map ? n['params'] as Map : const {};
           configId = vizMap['${p['chartType'] ?? 'scatter'}'] ?? 'viz_scatter';

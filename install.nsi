@@ -1,11 +1,11 @@
 ; SyphonNov Windows installer script (NSIS 3.x, ASCII only)
-; Build: makensis install.nsi  ->  dist\SyphonNov-0.4.0-Setup.exe
+; Build: makensis install.nsi  ->  dist\SyphonNov-0.4.1-Setup.exe
 Unicode True
 
 !include "MUI2.nsh"
 
 Name "SyphonNov"
-OutFile "dist\SyphonNov-0.4.0-Setup.exe"
+OutFile "dist\SyphonNov-0.4.1-Setup.exe"
 InstallDir "$PROGRAMFILES64\SyphonNov"
 InstallDirRegKey HKCU "Software\SyphonNov" "InstallDir"
 RequestExecutionLevel admin
@@ -38,7 +38,7 @@ Section "Install" SEC_MAIN
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKCU "Software\SyphonNov" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayName" "SyphonNov"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayVersion" "0.4.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayVersion" "0.4.1"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "Publisher" "Feathrior"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayIcon" "$INSTDIR\syphon_nov.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "UninstallString" '"$INSTDIR\uninstall.exe"'

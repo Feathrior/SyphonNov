@@ -300,9 +300,13 @@ String _buildDemoGraph() {
           {'x': 5, 'y': 3, 'size': 5, 'color': '#2a9d8f'},
         ],
       }),
-      node('pl', 'plane_input', 330, 2820, {
-        'shape': 'circle',
-        'radius': 3,
+      node('pl', 'surface_input', 330, 2820, {
+        'name': '高斯曲面',
+        'mode': 'preset',
+        'preset': 'gaussian',
+        'size': 2,
+        'rows': 41,
+        'columns': 41,
         'color': '#4f8ef7',
         'opacity': 0.7,
       }),

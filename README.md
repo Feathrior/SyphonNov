@@ -18,7 +18,7 @@ A node-based data processing & visualization workbench. Connect input → transf
 - **数据处理**：清洗(缺失值/去重)、标准化、条件筛选、抽样、提取列/行、表格↔散点/曲线互转
 - **数据运算**：求导、积分、拟合、平滑、公式运算、曲线求交
 - **数据可视化**：散点 / 折线 / 柱状 / 火山 / 热力 / 箱线 / 小提琴 / 桑基 / 网络 共 9 类图表，全部自绘（无图表库依赖），支持缩放平移与导出 PNG；桑基图支持直线/环形两种布局与多色带
-- **原理化输出**：像 Blender 一样在坐标系内组合点/线/面/文本图元，支持颜色预设、导出与预览等比例
+- **原理化输出**：像 Blender 一样在坐标系内组合点/线/曲面/文本图元；曲面支持显式式、参数式、表格网格、预设、孔洞、色带、线框、LOD 与 equal/data 比例
 - **参数暴露**：点大小/颜色、线宽/颜色等参数可暴露为输入口，接入数据列后逐点/逐段变化
 - 其他：撤销/重做、亮/暗主题、全局快捷键、无边框自定义标题栏
 
@@ -26,7 +26,7 @@ A node-based data processing & visualization workbench. Connect input → transf
 
 | 分类 | 节点 |
 | --- | --- |
-| 输入 | 表格、坐标系、文本、色带、线、平面、网格数据、聚合点、曲线、函数曲线 |
+| 输入 | 表格、坐标系、文本、色带、线、曲面、网格数据、聚合点、曲线、函数曲线 |
 | 清洗 | 数据清洗、标准化、条件筛选、数据抽样 |
 | 运算 | 数值求导、数值积分、曲线拟合、平滑、公式运算、曲线求交 |
 | 转化 | 提取列、提取行、表格转散点、表格转曲线、曲线转散点、散点转表格 |
@@ -37,7 +37,7 @@ A node-based data processing & visualization workbench. Connect input → transf
 1. 空白处右键 → 新建「表格输入」（选预设 / 粘贴 CSV / 选择或拖入文件）
 2. 再添加一个可视化节点（如「散点图」），从表格输出口拖线连到图表输入口
 3. 任意修改参数都会自动重算；或点工具栏「运行」手动触发
-4. 想画 3D：添加「坐标系输入」+ 点/线/面/文本输入，连到「原理化输出」
+4. 想画 3D：添加「坐标系输入」+ 点/线/曲面/文本输入，连到「原理化输出」
 
 ### 快捷键
 
@@ -85,7 +85,7 @@ flutter build windows
 
 | Category | Nodes |
 | --- | --- |
-| Input | Table, CoordinateSystem, Text, Colorbar, Line, Plane, Grid, AggregatePoints, Curve, FunctionCurve |
+| Input | Table, CoordinateSystem, Text, Colorbar, Line, Surface, Grid, AggregatePoints, Curve, FunctionCurve |
 | Clean | Clean, Standardize, Filter, Sample |
 | Compute | Derivative, Integral, Fit, Smooth, Formula, CurveIntersect |
 | Transform | SelectCols, SelectRows, TableToScatter, TableToCurve, CurveToScatter, ScatterToTable |

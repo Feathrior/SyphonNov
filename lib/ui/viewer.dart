@@ -2365,7 +2365,7 @@ class ChartPainter extends CustomPainter {
           ..color = edgeColor
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1;
-        // 线框模式强制画边线;填充由平面输入控制
+        // 线框模式强制画边线;填充由曲面输入控制
         final fill = m.fill ?? true;
         final wireframe = m.wireframe == true;
         final showEdge = (m.showEdge ?? true) || wireframe;
