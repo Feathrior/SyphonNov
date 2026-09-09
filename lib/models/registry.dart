@@ -172,6 +172,34 @@ final List<NodeConfig> kNodeConfigs = [
           {'value': 'manual', 'label': '文件数据'},
         ],
       ),
+      param(
+        key: 'headerMode',
+        label: '表头',
+        type: 'select',
+        defaultValue: 'auto',
+        options: [
+          {'value': 'auto', 'label': '自动检测'},
+          {'value': 'present', 'label': '第一行为表头'},
+          {'value': 'absent', 'label': '无表头'},
+        ],
+      ),
+      param(
+        key: 'encodingMode',
+        label: 'UTF-8 解码',
+        type: 'select',
+        defaultValue: 'strict',
+        options: const [
+          {'value': 'strict', 'label': '严格（推荐）'},
+          {'value': 'replace', 'label': '替换损坏字节'},
+        ],
+      ),
+      param(
+        key: 'seed',
+        label: '随机种子',
+        type: 'number',
+        defaultValue: 0,
+        step: 1,
+      ),
       param(key: 'name', label: '名称', type: 'text', defaultValue: ''),
       param(
         key: 'import',
@@ -551,6 +579,55 @@ final List<NodeConfig> kNodeConfigs = [
     exec: kExec['text_input'],
   ),
   NodeConfig(
+    id: 'colorbar_input',
+    label: '色带输入',
+    category: Category.input,
+    description: '定义一个可调节的渐变色带:增删渐变停止点、调整颜色与位置。输出"色带",接入热力图等图表后控制其颜色映射。',
+    inputs: [],
+    outputs: [s('out0', '色带', SocketType.colorbar)],
+    params: [
+      param(
+        key: 'gradient',
+        label: '渐变色带',
+        type: 'gradient',
+        defaultValue: kDefaultGradient.map((s) => s.copy()).toList(),
+        help: '点击可选中停止点,拖动调整位置;下方可改颜色,支持增删停止点',
+      ),
+      param(
+        key: 'min',
+        label: '最小值',
+        type: 'number',
+        defaultValue: 0,
+        step: 0.1,
+      ),
+      param(
+        key: 'max',
+        label: '最大值',
+        type: 'number',
+        defaultValue: 1,
+        step: 0.1,
+      ),
+      param(
+        key: 'label',
+        label: '色带标签',
+        type: 'text',
+        defaultValue: '',
+        placeholder: '如:表达量',
+      ),
+      param(
+        key: 'orientation',
+        label: '方向',
+        type: 'select',
+        defaultValue: 'horizontal',
+        options: [
+          {'value': 'horizontal', 'label': '水平'},
+          {'value': 'vertical', 'label': '垂直'},
+        ],
+      ),
+    ],
+    exec: kExec['colorbar_input'],
+  ),
+  NodeConfig(
     id: 'plane_input',
     label: '平面输入',
     category: Category.input,
@@ -915,6 +992,13 @@ final List<NodeConfig> kNodeConfigs = [
         defaultValue: 2,
         step: 1,
         min: 1,
+      ),
+      param(
+        key: 'seed',
+        label: '随机种子',
+        type: 'number',
+        defaultValue: 0,
+        step: 1,
       ),
     ],
     exec: kExec['sample'],
@@ -1380,6 +1464,33 @@ final List<NodeConfig> kNodeConfigs = [
         defaultValue: 'log2FC',
       ),
       param(key: 'pCol', label: 'p 值列', type: 'text', defaultValue: 'pvalue'),
+      param(
+        key: 'significanceKind',
+        label: '显著性类型',
+        type: 'select',
+        defaultValue: 'p',
+        options: const [
+          {'value': 'p', 'label': 'p 值'},
+          {'value': 'q', 'label': 'q 值/FDR'},
+        ],
+      ),
+      param(
+        key: 'fcThreshold',
+        label: 'fold-change 阈值',
+        type: 'number',
+        defaultValue: 1.0,
+        min: 0,
+        step: 0.1,
+      ),
+      param(
+        key: 'significanceThreshold',
+        label: 'p/q 阈值',
+        type: 'number',
+        defaultValue: 0.05,
+        min: 1e-300,
+        max: 1,
+        step: 0.01,
+      ),
       param(key: 'title', label: '图表标题', type: 'text', defaultValue: ''),
       param(
         key: 'fontSizeCm',
@@ -1408,8 +1519,7 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'viz_heatmap',
     label: '热力图',
     category: Category.visualize,
-    description:
-        '数值矩阵热力图:取表格前 10 个数值列,行数自动降采样以保证流畅。可接入坐标系输入,按坐标系轴风格/范围/网格渲染。颜色渐变可在属性面板直接编辑。',
+    description: '数值矩阵热力图：显示全部数值列与行。可接入坐标系输入，按坐标系轴风格、范围与网格渲染；颜色渐变可在属性面板直接编辑。',
     inputs: [
       s('in0', '表格', SocketType.table),
       s('in1', '坐标系', SocketType.axes),
@@ -1460,6 +1570,16 @@ final List<NodeConfig> kNodeConfigs = [
     params: [
       param(key: 'title', label: '图表标题', type: 'text', defaultValue: ''),
       param(
+        key: 'whiskerMode',
+        label: '须线模式',
+        type: 'select',
+        defaultValue: 'tukey',
+        options: const [
+          {'value': 'tukey', 'label': 'Tukey 1.5×IQR'},
+          {'value': 'minmax', 'label': '最小值—最大值'},
+        ],
+      ),
+      param(
         key: 'fontSizeCm',
         label: '文字大小(厘米)',
         type: 'number',
@@ -1494,6 +1614,25 @@ final List<NodeConfig> kNodeConfigs = [
     outputs: [],
     params: [
       param(key: 'title', label: '图表标题', type: 'text', defaultValue: ''),
+      param(
+        key: 'bandwidthMode',
+        label: '带宽规则',
+        type: 'select',
+        defaultValue: 'silverman',
+        options: const [
+          {'value': 'silverman', 'label': 'Silverman'},
+          {'value': 'scott', 'label': 'Scott'},
+          {'value': 'manual', 'label': '手动'},
+        ],
+      ),
+      param(
+        key: 'bandwidth',
+        label: '手动带宽/规则倍率',
+        type: 'number',
+        defaultValue: 1.0,
+        min: 1e-12,
+        step: 0.1,
+      ),
       param(
         key: 'fontSizeCm',
         label: '文字大小(厘米)',

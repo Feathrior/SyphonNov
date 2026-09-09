@@ -251,7 +251,7 @@ int _targetCount(double cmLen) => _mx(3, _mn(10, (cmLen / 2).round())).toInt();
   final ticks = <double>[];
   final first = (min / step - 1e-9).ceil() * step;
   for (var v = first; v <= max + step * 1e-6; v += step) {
-    ticks.add(double.parse(v.toStringAsFixed(10)));
+    ticks.add(v);
   }
   if (ticks.isEmpty) ticks.add(min);
   return (ticks: ticks, step: step);
@@ -263,7 +263,7 @@ String _fmtTick(double v, double step) {
   final dec = step >= 1
       ? 0
       : _mn(6, _mx(0, (-math.log(step) / math.ln10).ceil())).toInt();
-  return double.parse(v.toStringAsFixed(dec)).toString();
+  return v.toStringAsFixed(dec).replaceFirst(RegExp(r'\.?0+$'), '');
 }
 
 // ==================== 绘制 ====================
@@ -833,7 +833,7 @@ class PrincipledPainter extends CustomPainter {
       final baseShape = (sc.pointShape ?? '').isEmpty
           ? 'circle'
           : sc.pointShape!;
-      final n = _mn(6000, sc.points.length);
+      final n = sc.points.length;
       for (var i = 0; i < n; i++) {
         final p = sc.points[i];
         final sz = _mx(
