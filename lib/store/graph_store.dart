@@ -13,6 +13,48 @@ import '../models/data.dart';
 import '../models/exec_engine.dart';
 import '../models/registry.dart';
 
+class _RunRequest {
+  final List<GraphNodeLite> nodes;
+  final List<GraphEdgeLite> edges;
+  final Set<String>? dirtyIds;
+  final Map<String, ExecResult> previous;
+
+  const _RunRequest(this.nodes, this.edges, this.dirtyIds, this.previous);
+
+  RunOutcome run() =>
+      runGraph(nodes, edges, dirtyIds: dirtyIds, prevResults: previous);
+}
+
+class _RunWorkerRequest {
+  final _RunRequest request;
+  final SendPort sendPort;
+
+  const _RunWorkerRequest(this.request, this.sendPort);
+}
+
+void _runWorker(_RunWorkerRequest worker) {
+  try {
+    final outcome = runGraph(
+      worker.request.nodes,
+      worker.request.edges,
+      dirtyIds: worker.request.dirtyIds,
+      prevResults: worker.request.previous,
+      onProgress: (completed, total) => worker.sendPort.send({
+        'kind': 'progress',
+        'completed': completed,
+        'total': total,
+      }),
+    );
+    worker.sendPort.send({'kind': 'outcome', 'value': outcome});
+  } catch (error, stack) {
+    worker.sendPort.send({
+      'kind': 'error',
+      'message': '$error',
+      'stack': '$stack',
+    });
+  }
+}
+
 /// 画布节点
 class GraphNode {
   final String id;
@@ -282,13 +324,21 @@ class GraphStore extends ChangeNotifier {
   String? selectedId;
   Set<String> multiSelected = {}; // 多选节点集(Shift 点击/框选/分组)
   String? selectedSplitEdgeId; // 选中断点(Alt 创建 / 点击 mid)
-  String? selectedEdgeId;      // 选中整条连线(点击连线本体)
+  String? selectedEdgeId; // 选中整条连线(点击连线本体)
   bool autoRun = true;
   int runVersion = 0;
   int structureVersion = 0;
   Map<String, ExecResult> results = {};
   bool hasCycle = false;
   String? lastError;
+  int executionRevision = 0;
+  int committedRevision = 0;
+  String executionStatus = 'idle';
+  double executionProgress = 0;
+  int executionCompletedNodes = 0;
+  int executionTotalNodes = 0;
+  Map<String, dynamic>? structuredError;
+  List<String> cyclePath = const [];
   List<LogEntry> logs = [];
   List<GraphSnapshot> past = [];
   List<GraphSnapshot> future = [];
@@ -340,7 +390,7 @@ class GraphStore extends ChangeNotifier {
   }
 
   // ---------- 节点/连线操作 ----------
-  String addNode(String configId, Offset position) {
+  String addNode(String configId, Offset position, {bool triggerRun = true}) {
     snapshotNow();
     final cfg = getConfig(configId);
     final defaults = <String, dynamic>{};
@@ -371,7 +421,7 @@ class GraphStore extends ChangeNotifier {
     selectedId = node.id;
     structureVersion++;
     notifyListeners();
-    if (autoRun) runAfterGraphChange(changedIds: {node.id});
+    if (autoRun && triggerRun) runAfterGraphChange(changedIds: {node.id});
     return node.id;
   }
 
@@ -412,7 +462,10 @@ class GraphStore extends ChangeNotifier {
     notifyListeners();
     // 删除节点改变数据流:自动执行下重算(否则下游残留旧结果不刷新)
     if (autoRun) {
-      runAfterGraphChange(changedIds: {...setIds, ...downstream}, edgeChanged: true);
+      runAfterGraphChange(
+        changedIds: {...setIds, ...downstream},
+        edgeChanged: true,
+      );
     }
   }
 
@@ -862,6 +915,7 @@ class GraphStore extends ChangeNotifier {
       position: n.position,
     );
     nodes = updated;
+    selectedId = id;
     structureVersion++;
     notifyListeners();
     // 参数变化影响数据流:自动执行下立即重算(原理化输出等图据此实时刷新)
@@ -901,36 +955,91 @@ class GraphStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void onConnect({
+  bool onConnect({
     required String source,
     required String target,
     String? sourceHandle,
     String? targetHandle,
+    bool triggerRun = true,
   }) {
-    snapshotNow();
     GraphNode? srcNode;
     GraphNode? tnNode;
     for (final n in nodes) {
       if (n.id == source) srcNode = n;
       if (n.id == target) tnNode = n;
     }
-    edges = [
-      ...edges,
-      GraphEdge(
-        id: genId('e'),
-        source: source,
-        target: target,
-        sourceHandle: sourceHandle,
-        targetHandle: targetHandle,
-      ),
-    ];
+    final srcConfig = srcNode == null ? null : getConfig(srcNode.configId);
+    final targetConfig = tnNode == null ? null : getConfig(tnNode.configId);
+    if (srcConfig == null || targetConfig == null || source == target) {
+      addLog('error', '连接失败:节点不存在或不能连接自身');
+      return false;
+    }
+    final outputId =
+        sourceHandle ??
+        (srcConfig.outputs.isEmpty ? null : srcConfig.outputs.first.id);
+    final inputId =
+        targetHandle ??
+        (targetConfig.inputs.isEmpty ? null : targetConfig.inputs.first.id);
+    final outputs = srcConfig.outputs.where((socket) => socket.id == outputId);
+    final inputs = targetConfig.inputs.where((socket) => socket.id == inputId);
+    if (outputs.isEmpty ||
+        inputs.isEmpty ||
+        !isCompatible(outputs.first.type, inputs.first.type)) {
+      addLog('error', '连接失败:端口不存在或类型不兼容');
+      return false;
+    }
+    var nextEdges = edges;
+    if (inputs.first.multi != true) {
+      nextEdges = nextEdges
+          .where(
+            (edge) => edge.target != target || edge.targetHandle != inputId,
+          )
+          .toList();
+    }
+    if (nextEdges.any(
+      (edge) =>
+          edge.source == source &&
+          edge.target == target &&
+          edge.sourceHandle == outputId &&
+          edge.targetHandle == inputId,
+    )) {
+      return false;
+    }
+    final candidate = GraphEdge(
+      id: genId('e'),
+      source: source,
+      target: target,
+      sourceHandle: outputId,
+      targetHandle: inputId,
+    );
+    final graphEdges = [...nextEdges, candidate];
+    if (topoSort(
+          nodes.map((node) => node.id).toList(),
+          graphEdges
+              .map(
+                (edge) => GraphEdgeLite(
+                  source: edge.source,
+                  target: edge.target,
+                  sourceHandle: edge.sourceHandle,
+                  targetHandle: edge.targetHandle,
+                ),
+              )
+              .toList(),
+        ) ==
+        null) {
+      addLog('error', '连接失败:该连接会形成循环');
+      return false;
+    }
+    snapshotNow();
+    edges = graphEdges;
     structureVersion++;
     addLog(
       'ok',
       '已连接 ${srcNode?.configId ?? ''} → ${tnNode?.configId ?? ''}(${targetHandle ?? 'in0'})',
     );
     // 连线变化改变数据流:自动执行下重算
-    if (autoRun) runAfterGraphChange(edgeChanged: true);
+    if (autoRun && triggerRun) runAfterGraphChange(edgeChanged: true);
+    return true;
   }
 
   /// 更新连线 data(mid 分割点;不入撤销历史)。
@@ -1007,14 +1116,30 @@ class GraphStore extends ChangeNotifier {
   }
 
   // ---------- 保存/加载 ----------
+  static const int workflowFormatVersion = 2;
+
   String saveGraph() {
     return const JsonEncoder.withIndent('  ').convert({
       'format': 'syphon-graph',
-      'version': 1,
+      'formatVersion': workflowFormatVersion,
+      'version': workflowFormatVersion,
+      'provenance': {
+        'application': 'SyphonNov',
+        'applicationVersion': '0.4.0',
+        'numericSemantics': 'full-precision',
+      },
       'nodes': nodes.map((n) => n.toJson()).toList(),
       'edges': edges.map((e) => e.toJson()).toList(),
       'groups': groups.map((g) => g.toJson()).toList(),
     });
+  }
+
+  int _stableSeed(String id) {
+    var value = 0x811c9dc5;
+    for (final unit in id.codeUnits) {
+      value = ((value ^ unit) * 0x01000193) & 0x7fffffff;
+    }
+    return value;
   }
 
   bool loadGraph(String json, {bool silent = false}) {
@@ -1023,9 +1148,14 @@ class GraphStore extends ChangeNotifier {
       if (data is! Map ||
           data['format'] != 'syphon-graph' ||
           data['nodes'] is! List) {
-        return false;
+        throw const FormatException('不是 SyphonNov 工作流文件');
       }
-      snapshotNow();
+      final rawVersion = data['formatVersion'] ?? data['version'] ?? 1;
+      if (rawVersion is! num ||
+          rawVersion.toInt() < 1 ||
+          rawVersion.toInt() > workflowFormatVersion) {
+        throw FormatException('不支持的工作流格式版本: $rawVersion');
+      }
       const vizMap = {
         'scatter': 'viz_scatter',
         'line': 'viz_line',
@@ -1038,79 +1168,158 @@ class GraphStore extends ChangeNotifier {
         'graph': 'viz_graph',
       };
       final loadedNodes = <GraphNode>[];
+      final ids = <String>{};
       for (final raw in data['nodes'] as List) {
-        final n = raw is Map
-            ? Map<String, dynamic>.from(raw)
-            : <String, dynamic>{};
+        if (raw is! Map) throw const FormatException('节点必须是对象');
+        final n = Map<String, dynamic>.from(raw);
+        final id = '${n['id'] ?? ''}'.trim();
+        if (id.isEmpty || !ids.add(id)) {
+          throw FormatException('节点 ID 为空或重复: $id');
+        }
         var configId = '${n['configId'] ?? ''}';
-        // 旧版"面输入"(3D 网格)已改为"平面输入":加载旧画布时迁移
         if (configId == 'face_input') configId = 'plane_input';
         if (configId == 'viz_preset') {
-          final params = n['params'] is Map ? n['params'] as Map : const {};
-          final ct = '${params['chartType'] ?? 'scatter'}';
-          configId = vizMap[ct] ?? 'viz_scatter';
+          final p = n['params'] is Map ? n['params'] as Map : const {};
+          configId = vizMap['${p['chartType'] ?? 'scatter'}'] ?? 'viz_scatter';
+        }
+        if (getConfig(configId) == null) {
+          throw FormatException('未知节点类型: $configId');
         }
         final pos = n['position'];
+        if (pos != null &&
+            (pos is! Map || pos['x'] is! num || pos['y'] is! num)) {
+          throw FormatException('节点 $id 的坐标无效');
+        }
+        final x = pos is Map ? (pos['x'] as num).toDouble() : 0.0;
+        final y = pos is Map ? (pos['y'] as num).toDouble() : 0.0;
+        if (!x.isFinite || !y.isFinite) {
+          throw FormatException('节点 $id 的坐标不是有限数');
+        }
+        final params = n['params'] is Map
+            ? Map<String, dynamic>.from(n['params'] as Map)
+            : <String, dynamic>{};
+        if (configId == 'table_input') {
+          params.putIfAbsent('headerMode', () => 'auto');
+        }
+        if (configId == 'table_input' || configId == 'sample') {
+          params.putIfAbsent('seed', () => _stableSeed(id));
+        }
         loadedNodes.add(
           GraphNode(
-            id: '${n['id'] ?? ''}',
+            id: id,
             configId: configId,
-            params: n['params'] is Map
-                ? Map<String, dynamic>.from(n['params'] as Map)
-                : <String, dynamic>{},
+            params: params,
             exposed: n['exposed'] is List
                 ? (n['exposed'] as List).map((e) => '$e').toList()
-                : [],
+                : const [],
             collapsed: n['collapsed'] == true,
-            position: pos is Map
-                ? Offset(
-                    (pos['x'] is num) ? (pos['x'] as num).toDouble() : 0,
-                    (pos['y'] is num) ? (pos['y'] as num).toDouble() : 0,
-                  )
-                : Offset.zero,
+            position: Offset(x, y),
           ),
         );
       }
+
+      final byId = {for (final n in loadedNodes) n.id: n};
       final loadedEdges = <GraphEdge>[];
-      final rawEdges = data['edges'] is List
-          ? data['edges'] as List
-          : <dynamic>[];
-      for (final raw in rawEdges) {
-        final e = raw is Map
-            ? Map<String, dynamic>.from(raw)
-            : <String, dynamic>{};
-        final m = e['mid'];
+      final occupied = <String>{}, edgeIds = <String>{};
+      for (final raw
+          in data['edges'] is List ? data['edges'] as List : const []) {
+        if (raw is! Map) throw const FormatException('连线必须是对象');
+        final e = Map<String, dynamic>.from(raw);
+        final id = '${e['id'] ?? ''}'.trim(),
+            source = '${e['source'] ?? ''}',
+            target = '${e['target'] ?? ''}';
+        if (id.isEmpty || !edgeIds.add(id)) {
+          throw FormatException('连线 ID 为空或重复: $id');
+        }
+        final sourceNode = byId[source], targetNode = byId[target];
+        if (sourceNode == null || targetNode == null || source == target) {
+          throw FormatException('连线 $id 引用了无效节点');
+        }
+        final sourceConfig = getConfig(sourceNode.configId)!,
+            targetConfig = getConfig(targetNode.configId)!;
+        final sourceHandle = e['sourceHandle'] == null
+            ? (sourceConfig.outputs.isEmpty
+                  ? null
+                  : sourceConfig.outputs.first.id)
+            : '${e['sourceHandle']}';
+        final targetHandle = e['targetHandle'] == null
+            ? (targetConfig.inputs.isEmpty
+                  ? null
+                  : targetConfig.inputs.first.id)
+            : '${e['targetHandle']}';
+        final outs = sourceConfig.outputs.where((s) => s.id == sourceHandle),
+            ins = targetConfig.inputs.where((s) => s.id == targetHandle);
+        if (outs.isEmpty ||
+            ins.isEmpty ||
+            !isCompatible(outs.first.type, ins.first.type)) {
+          throw FormatException('连线 $id 的端口不存在或类型不兼容');
+        }
+        final portKey = '$target\u0000$targetHandle';
+        if (ins.first.multi != true && !occupied.add(portKey)) {
+          throw FormatException('非多连接端口 $targetHandle 收到多条连线');
+        }
+        final mid = e['mid'];
+        Offset? midpoint;
+        if (mid != null) {
+          if (mid is! Map || mid['x'] is! num || mid['y'] is! num) {
+            throw FormatException('连线 $id 的控制点无效');
+          }
+          midpoint = Offset(
+            (mid['x'] as num).toDouble(),
+            (mid['y'] as num).toDouble(),
+          );
+          if (!midpoint.dx.isFinite || !midpoint.dy.isFinite) {
+            throw FormatException('连线 $id 的控制点不是有限数');
+          }
+        }
         loadedEdges.add(
           GraphEdge(
-            id: '${e['id'] ?? genId('e')}',
-            source: '${e['source'] ?? ''}',
-            target: '${e['target'] ?? ''}',
-            sourceHandle: e['sourceHandle'] == null
-                ? null
-                : '${e['sourceHandle']}',
-            targetHandle: e['targetHandle'] == null
-                ? null
-                : '${e['targetHandle']}',
-            mid: m is Map && m['x'] is num
-                ? Offset((m['x'] as num).toDouble(), (m['y'] as num).toDouble())
-                : null,
+            id: id,
+            source: source,
+            target: target,
+            sourceHandle: sourceHandle,
+            targetHandle: targetHandle,
+            mid: midpoint,
           ),
         );
       }
+      final liteEdges = loadedEdges
+          .map(
+            (e) => GraphEdgeLite(
+              source: e.source,
+              target: e.target,
+              sourceHandle: e.sourceHandle,
+              targetHandle: e.targetHandle,
+            ),
+          )
+          .toList();
+      if (topoSort(loadedNodes.map((n) => n.id).toList(), liteEdges) == null) {
+        final path = findCyclePath(
+          loadedNodes.map((n) => n.id).toList(),
+          liteEdges,
+        );
+        throw FormatException('工作流包含循环: ${path.join(' → ')}');
+      }
+
+      final loadedGroups = <NodeGroup>[];
+      if (data['groups'] is List) {
+        final groupIds = <String>{};
+        for (final raw in data['groups'] as List) {
+          if (raw is! Map) throw const FormatException('分组必须是对象');
+          final group = NodeGroup.fromJson(Map<String, dynamic>.from(raw));
+          if (group.id.isEmpty ||
+              !groupIds.add(group.id) ||
+              group.nodeIds.any((id) => !byId.containsKey(id))) {
+            throw FormatException('分组 ${group.id} 无效');
+          }
+          loadedGroups.add(group);
+        }
+      }
+
+      snapshotNow();
       nodes = loadedNodes;
       edges = loadedEdges;
-      // 兼容旧画布文件(无 groups 字段):分组默认为空
-      final rawGroups = data['groups'];
-      groups = rawGroups is List
-          ? rawGroups
-                .map(
-                  (raw) => raw is Map
-                      ? NodeGroup.fromJson(Map<String, dynamic>.from(raw))
-                      : null,
-                )
-                .whereType<NodeGroup>()
-                .toList()
-          : [];
+      groups = loadedGroups;
       selectedId = null;
       multiSelected = {};
       results = {};
@@ -1118,14 +1327,17 @@ class GraphStore extends ChangeNotifier {
       lastError = null;
       structureVersion++;
       if (!silent) {
-        addLog('ok', '已加载画布:${nodes.length} 个节点 / ${edges.length} 条连线');
+        addLog(
+          'ok',
+          '已加载 schema v$rawVersion 画布:${nodes.length} 个节点 / ${edges.length} 条连线',
+        );
       }
       notifyListeners();
-      // 加载/预设替换画布后自动执行,图表立即出图
       if (autoRun) runPipeline();
       return true;
     } catch (e) {
       debugPrint('加载画布失败: $e');
+      if (!silent) addLog('error', '加载失败:$e');
       return false;
     }
   }
@@ -1294,7 +1506,9 @@ class GraphStore extends ChangeNotifier {
     }
     if (edgeChanged) {
       // 连线变更:所有边的 target 及其下游都脏
-      for (final e in edges) seeds.add(e.target);
+      for (final e in edges) {
+        seeds.add(e.target);
+      }
     }
     if (seeds.isEmpty) {
       // 没有明确的脏节点,保守全量
@@ -1307,6 +1521,7 @@ class GraphStore extends ChangeNotifier {
   // 执行任务链:多次触发串行排队,结果按触发顺序落定;
   // 测试可通过 settled 等待异步执行完成
   Future<void> _runChain = Future<void>.value();
+  Isolate? _activeExecutionIsolate;
 
   /// 测试开关:false 时在主 Isolate 同步执行。
   /// (testWidgets 假异步事件循环不会派发 Isolate 消息,真实 Isolate 会挂起)
@@ -1316,21 +1531,61 @@ class GraphStore extends ChangeNotifier {
   Future<void> get settled => _runChain;
 
   /// 落定一次执行结果并广播
-  void _applyOutcome(RunOutcome outcome) {
+  void _applyOutcome(RunOutcome outcome, int revision) {
+    if (revision != executionRevision) return;
     results = outcome.results;
     hasCycle = outcome.hasCycle;
+    cyclePath = outcome.cyclePath;
     lastError = null;
+    structuredError = null;
+    if (outcome.hasCycle) {
+      lastError = '工作流包含循环: ${outcome.cyclePath.join(' → ')}';
+      structuredError = {
+        'code': 'cycle',
+        'message': lastError,
+        'cyclePath': outcome.cyclePath,
+      };
+    }
     for (final r in outcome.results.entries) {
       if (r.value.error != null) {
         lastError = r.value.error;
         break;
       }
     }
+    if (lastError != null && structuredError == null) {
+      structuredError = {'code': 'node_execution', 'message': lastError};
+    }
+    committedRevision = revision;
+    executionStatus = lastError == null ? 'succeeded' : 'failed';
+    executionProgress = 1;
+    executionCompletedNodes = outcome.order.length;
+    executionTotalNodes = outcome.order.length;
     runVersion++;
     notifyListeners();
   }
 
   Future<void> _runDirty(Set<String>? dirtySeeds) {
+    final revision = ++executionRevision;
+    executionStatus = 'queued';
+    executionProgress = 0;
+    executionCompletedNodes = 0;
+    executionTotalNodes = nodes.length;
+    structuredError = null;
+    const maxNodesPerRun = 10000;
+    const maxEdgesPerRun = 50000;
+    if (nodes.length > maxNodesPerRun || edges.length > maxEdgesPerRun) {
+      executionStatus = 'failed';
+      lastError =
+          '工作流超过执行预算:节点 ${nodes.length}/$maxNodesPerRun，连线 ${edges.length}/$maxEdgesPerRun';
+      structuredError = {
+        'code': 'resource_budget',
+        'message': lastError,
+        'nodes': nodes.length,
+        'edges': edges.length,
+      };
+      notifyListeners();
+      return Future<void>.value();
+    }
     // 触发时即固化输入(节点/边/旧结果快照):
     // 任务在 Isolate 中异步执行,排队期间图可能被继续修改
     final liteNodes = nodes
@@ -1349,37 +1604,110 @@ class GraphStore extends ChangeNotifier {
           ),
         )
         .toList();
-    final prev = results;
-    RunOutcome runSync() => runGraph(
+    // 同步模式(测试):主 Isolate 直接执行,保持旧的同步语义
+    if (!useIsolate) {
+      _applyOutcome(
+        runGraph(
           liteNodes,
           liteEdges,
           dirtyIds: dirtySeeds,
-          prevResults: prev,
-        );
-
-    // 同步模式(测试):主 Isolate 直接执行,保持旧的同步语义
-    if (!useIsolate) {
-      _applyOutcome(runSync());
+          prevResults: results,
+        ),
+        revision,
+      );
       return Future<void>.value();
     }
 
     Future<void> task() async {
-      RunOutcome outcome;
+      if (revision != executionRevision) return;
+      executionStatus = 'running';
+      executionProgress = 0;
+      notifyListeners();
+      // Read predecessor results when the queued task actually starts. A
+      // snapshot captured at enqueue time can overwrite a newer sibling.
+      final previous = results;
+      RunOutcome? outcome;
+      final port = ReceivePort();
+      Isolate? workerIsolate;
       try {
-        // 执行引擎移入 Isolate:大数据流计算不再阻塞 UI 线程。
-        // runGraph 为纯函数(仅依赖 lite 数据与全局注册表),可安全跨 Isolate
-        outcome = await Isolate.run(runSync);
-      } catch (_) {
-        // 兜底:Isolate 拷贝失败(参数含不可发送对象)等场景回退主 Isolate 同步执行
-        outcome = runSync();
+        final isolate = await Isolate.spawn(
+          _runWorker,
+          // A full latest-revision run is deliberate: it coalesces all dirty
+          // edits that invalidated older queued partial snapshots.
+          _RunWorkerRequest(
+            _RunRequest(liteNodes, liteEdges, null, previous),
+            port.sendPort,
+          ),
+          onExit: port.sendPort,
+        );
+        workerIsolate = isolate;
+        _activeExecutionIsolate = isolate;
+        await for (final message in port) {
+          if (revision != executionRevision) {
+            isolate.kill(priority: Isolate.immediate);
+            break;
+          }
+          if (message == null) {
+            if (outcome == null) throw StateError('后台执行意外终止');
+            break;
+          }
+          if (message is! Map) continue;
+          switch (message['kind']) {
+            case 'progress':
+              final completed = message['completed'] as int;
+              final total = message['total'] as int;
+              executionCompletedNodes = completed;
+              executionTotalNodes = total;
+              executionProgress = total == 0 ? 1 : completed / total;
+              notifyListeners();
+              break;
+            case 'outcome':
+              outcome = message['value'] as RunOutcome;
+              break;
+            case 'error':
+              throw StateError('${message['message']}\n${message['stack']}');
+          }
+          if (outcome != null) break;
+        }
+      } catch (error, stack) {
+        debugPrint('后台执行失败: $error\n$stack');
+        if (revision == executionRevision) {
+          executionStatus = 'failed';
+          lastError = '$error';
+          structuredError = {
+            'code': 'isolate_failure',
+            'message': '$error',
+            'stack': '$stack',
+          };
+          notifyListeners();
+        }
+        return;
+      } finally {
+        port.close();
+        if (identical(_activeExecutionIsolate, workerIsolate)) {
+          _activeExecutionIsolate = null;
+        }
+        workerIsolate?.kill(priority: Isolate.immediate);
       }
-      _applyOutcome(outcome);
+      if (outcome != null) _applyOutcome(outcome, revision);
     }
 
     _runChain = _runChain.then((_) => task()).catchError((Object e) {
       addLog('error', '执行失败:$e');
     });
     return _runChain;
+  }
+
+  /// Logically cancels queued/running work. An isolate already computing may
+  /// finish, but its obsolete revision is forbidden from committing results.
+  void cancelExecution() {
+    executionRevision++;
+    _activeExecutionIsolate?.kill(priority: Isolate.immediate);
+    _activeExecutionIsolate = null;
+    executionStatus = 'cancelled';
+    executionProgress = 0;
+    executionCompletedNodes = 0;
+    notifyListeners();
   }
 
   /// 运行单个节点及其全部下游(右键菜单"运行此节点")

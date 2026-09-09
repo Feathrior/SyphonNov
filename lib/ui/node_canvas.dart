@@ -397,8 +397,9 @@ class _EdgesPainter extends CustomPainter {
       for (final e in edges) {
         final mid = e.mid;
         if (mid == null) continue;
-        if (!inGroup.contains(e.source) || !inGroup.contains(e.target))
+        if (!inGroup.contains(e.source) || !inGroup.contains(e.target)) {
           continue;
+        }
         box = box == null
             ? Rect.fromCircle(center: mid, radius: 0)
             : box.expandToInclude(Rect.fromCircle(center: mid, radius: 0));
@@ -1120,7 +1121,6 @@ class NodeCanvasState extends State<NodeCanvas>
           targetHandle: conn.socketId,
         );
       }
-      if (store.autoRun) store.runPipeline();
     } else {
       // 空白处松开:弹出新建节点菜单并携带待连线
       _menuPos = _toScreen(flowPos);
@@ -1165,7 +1165,7 @@ class NodeCanvasState extends State<NodeCanvas>
       // 第 i 个节点位置:整段(中心 ± half)内按 (i+1)/(k+1) 等分
       final t = (i + 1) / (k + 1);
       final pos = center + unit * (t - 0.5) * 2 * half;
-      final nid = store.addNode(path[i], pos);
+      final nid = store.addNode(path[i], pos, triggerRun: false);
       ids.add(nid);
       inSocks.add(cfg.inputs.first.id);
       outSocks.add(cfg.outputs.first.id);
@@ -1179,6 +1179,7 @@ class NodeCanvasState extends State<NodeCanvas>
         target: ids.first,
         sourceHandle: conn.socketId,
         targetHandle: inSocks.first,
+        triggerRun: false,
       );
       for (var i = 0; i + 1 < ids.length; i++) {
         store.onConnect(
@@ -1186,6 +1187,7 @@ class NodeCanvasState extends State<NodeCanvas>
           target: ids[i + 1],
           sourceHandle: outSocks[i],
           targetHandle: inSocks[i + 1],
+          triggerRun: false,
         );
       }
       store.onConnect(
@@ -1193,6 +1195,7 @@ class NodeCanvasState extends State<NodeCanvas>
         target: target.nodeId,
         sourceHandle: outSocks.last,
         targetHandle: target.socketId,
+        triggerRun: false,
       );
     } else {
       store.onConnect(
@@ -1200,6 +1203,7 @@ class NodeCanvasState extends State<NodeCanvas>
         target: ids.first,
         sourceHandle: target.socketId,
         targetHandle: inSocks.first,
+        triggerRun: false,
       );
       for (var i = 0; i + 1 < ids.length; i++) {
         store.onConnect(
@@ -1207,6 +1211,7 @@ class NodeCanvasState extends State<NodeCanvas>
           target: ids[i + 1],
           sourceHandle: outSocks[i],
           targetHandle: inSocks[i + 1],
+          triggerRun: false,
         );
       }
       store.onConnect(
@@ -1214,9 +1219,11 @@ class NodeCanvasState extends State<NodeCanvas>
         target: conn.nodeId,
         sourceHandle: outSocks.last,
         targetHandle: conn.socketId,
+        triggerRun: false,
       );
     }
     store.addLog('ok', '已自动插入转换节点:${logLabels.join('→')}');
+    if (store.autoRun) store.runAfterGraphChange(edgeChanged: true);
   }
 
   /// 被拖拽端口 → 目标端口类型 的最短转换链(多步);无转换路径返回 null
@@ -1688,7 +1695,6 @@ class NodeCanvasState extends State<NodeCanvas>
         );
         if (_bursts.length > 16) _bursts.removeAt(0); // 手势中限长防堆积
         if (!_cutTicker.isActive) _cutTicker.start();
-        if (store.autoRun) store.runPipeline();
       }
       _bump();
       return;
@@ -1725,7 +1731,6 @@ class NodeCanvasState extends State<NodeCanvas>
     if (_altSweeping) {
       if (_altSweptEdges.isNotEmpty) {
         store.addLog('info', '已在 ${_altSweptEdges.length} 条曲线上插入分割点');
-        if (store.autoRun) store.runPipeline();
       }
       _altSweeping = false;
       _altSweptEdges.clear();
@@ -2092,7 +2097,6 @@ class NodeCanvasState extends State<NodeCanvas>
     }
     _pendingConn = null;
     _connecting = null;
-    if (store.autoRun) store.runPipeline();
     _bump();
   }
 
@@ -2353,6 +2357,13 @@ class NodeCanvasState extends State<NodeCanvas>
         builder: (context, _) {
           final nodes = store.nodes;
           final edges = store.edges;
+          final selected = store.selectedId;
+          final paintNodes = selected == null
+              ? nodes
+              : [
+                  ...nodes.where((node) => node.id != selected),
+                  ...nodes.where((node) => node.id == selected),
+                ];
           return Transform(
             transform: Matrix4.identity()
               ..translateByDouble(_pan.dx, _pan.dy, 0, 1)
@@ -2363,7 +2374,7 @@ class NodeCanvasState extends State<NodeCanvas>
               children: [
                 _buildBgLayer(t),
                 _buildEdgesLayer(t, nodes, edges),
-                for (final n in nodes) _buildNodeLayer(n),
+                for (final n in paintNodes) _buildNodeLayer(n),
               ],
             ),
           );

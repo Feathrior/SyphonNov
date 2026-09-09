@@ -53,6 +53,7 @@ class RunOutcome {
   final Map<String, ExecResult> results;
   final List<String> order;
   final bool hasCycle;
+  final List<String> cyclePath;
   final double totalMs;
 
   /// 本次实际执行了多少个节点(非跳过)
@@ -61,9 +62,45 @@ class RunOutcome {
     required this.results,
     required this.order,
     required this.hasCycle,
+    this.cyclePath = const [],
     required this.totalMs,
     this.executedCount = 0,
   });
+}
+
+List<String> findCyclePath(List<String> nodeIds, List<GraphEdgeLite> edges) {
+  final adjacency = <String, List<String>>{
+    for (final id in nodeIds) id: <String>[],
+  };
+  for (final edge in edges) {
+    if (adjacency.containsKey(edge.source) &&
+        adjacency.containsKey(edge.target)) {
+      adjacency[edge.source]!.add(edge.target);
+    }
+  }
+  final state = <String, int>{};
+  final stack = <String>[];
+  List<String>? found;
+  bool visit(String node) {
+    state[node] = 1;
+    stack.add(node);
+    for (final next in adjacency[node]!) {
+      if (state[next] == 1) {
+        final start = stack.indexOf(next);
+        found = [...stack.sublist(start), next];
+        return true;
+      }
+      if (state[next] != 2 && visit(next)) return true;
+    }
+    stack.removeLast();
+    state[node] = 2;
+    return false;
+  }
+
+  for (final node in nodeIds) {
+    if (state[node] == null && visit(node)) break;
+  }
+  return found ?? const [];
 }
 
 /// 拓扑排序(Kahn)。返回 null 表示存在环。
@@ -103,7 +140,9 @@ Map<String, List<GraphEdgeLite>> _buildIncoming(
   List<GraphEdgeLite> edges,
 ) {
   final incoming = <String, List<GraphEdgeLite>>{};
-  for (final id in nodeIds) incoming[id] = [];
+  for (final id in nodeIds) {
+    incoming[id] = [];
+  }
   for (final e in edges) {
     if (!incoming.containsKey(e.target)) continue;
     incoming[e.target]!.add(e);
@@ -117,7 +156,9 @@ Map<String, List<GraphEdgeLite>> _buildOutgoing(
   List<GraphEdgeLite> edges,
 ) {
   final outgoing = <String, List<GraphEdgeLite>>{};
-  for (final id in nodeIds) outgoing[id] = [];
+  for (final id in nodeIds) {
+    outgoing[id] = [];
+  }
   for (final e in edges) {
     if (!outgoing.containsKey(e.source)) continue;
     outgoing[e.source]!.add(e);
@@ -156,12 +197,22 @@ RunOutcome runGraph(
   List<GraphEdgeLite> edges, {
   Set<String>? dirtyIds,
   Map<String, ExecResult>? prevResults,
+  void Function(int completed, int total)? onProgress,
 }) {
   final t0 = DateTime.now().microsecondsSinceEpoch;
   final nodeIds = nodes.map((n) => n.id).toList();
   final order = topoSort(nodeIds, edges);
   final hasCycle = order == null;
-  final seq = order ?? nodeIds;
+  if (hasCycle) {
+    return RunOutcome(
+      results: const {},
+      order: const [],
+      hasCycle: true,
+      cyclePath: findCyclePath(nodeIds, edges),
+      totalMs: 0,
+    );
+  }
+  final seq = order;
   final idSet = nodeIds.toSet();
   final nodeMap = {for (final n in nodes) n.id: n};
   // 邻接表:O(nodes+edges) 构建,按节点查表 O(1)
@@ -175,9 +226,18 @@ RunOutcome runGraph(
   }
   final results = <String, ExecResult>{};
   var executed = 0;
+  var completed = 0;
+  void reportProgress() {
+    completed++;
+    onProgress?.call(completed, seq.length);
+  }
+
   for (final nodeId in seq) {
     final node = nodeMap[nodeId];
-    if (node == null) continue;
+    if (node == null) {
+      reportProgress();
+      continue;
+    }
     final config = getConfig(node.configId);
     // 未脏节点:直接继承 prevResults(有就用,无就保持空 outputs 让下游报错)
     if (!execSet.contains(nodeId)) {
@@ -187,10 +247,12 @@ RunOutcome runGraph(
         // 首次执行但不在脏集合里(不应该发生,保守处理)
         results[nodeId] = ExecResult();
       }
+      reportProgress();
       continue;
     }
     if (config == null) {
       results[nodeId] = ExecResult(error: '未知节点类型 ${node.configId}');
+      reportProgress();
       continue;
     }
     final inputs = <String, DataObject>{};
@@ -245,6 +307,7 @@ RunOutcome runGraph(
       error: error,
       execMs: execMs,
     );
+    reportProgress();
   }
   final elapsed = (DateTime.now().microsecondsSinceEpoch - t0) / 1000.0;
   return RunOutcome(

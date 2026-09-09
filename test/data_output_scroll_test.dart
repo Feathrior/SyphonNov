@@ -46,8 +46,7 @@ void main() {
     for (final s in tester.stateList<ScrollableState>(
       find.descendant(of: doCard, matching: find.byType(Scrollable)),
     )) {
-      if (s.position.axis == Axis.vertical &&
-          s.position.maxScrollExtent > 0) {
+      if (s.position.axis == Axis.vertical && s.position.maxScrollExtent > 0) {
         scrollable = s;
         break;
       }
@@ -60,8 +59,12 @@ void main() {
     // 表格自身 rect 的中心可能落在节点外的裁剪区域,不可直接使用)
     final box = scrollable.context.findRenderObject() as RenderBox;
     final vpRect = box.localToGlobal(Offset.zero) & box.size;
-    // 取视口上部 1/4 处:避开被后绘制节点(viz_line 等)遮挡的下半区域
-    final center = Offset(vpRect.center.dx, vpRect.top + vpRect.height * 0.25);
+    // 取视口左上 1/4 处：避开下方节点，也避开窗口右侧属性面板可能覆盖的
+    // 画布溢出区域。测试必须从用户实际可见、可交互的表格区域发起。
+    final center = Offset(
+      vpRect.left + vpRect.width * 0.25,
+      vpRect.top + vpRect.height * 0.25,
+    );
 
     // 向上拖 → 内容上移(scrollOffset 增大)
     final before = pos.pixels;
