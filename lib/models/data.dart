@@ -196,6 +196,10 @@ class SeriesData extends DataObject {
 
   /// 可选逐点 Z 坐标；为空时曲线位于 z=0。NaN 断点应在三列同步出现。
   final List<double>? zValues;
+  final List<double>? xErrorMinus, xErrorPlus, yErrorMinus, yErrorPlus;
+  final List<double>? bandLow, bandHigh;
+  final String? uncertaintyKind;
+  final String? uncertaintySource;
 
   /// 线样式(由"表格转曲线"等源节点提供)
   final double? lineWidth;
@@ -209,6 +213,14 @@ class SeriesData extends DataObject {
     required this.name,
     required this.points,
     this.zValues,
+    this.xErrorMinus,
+    this.xErrorPlus,
+    this.yErrorMinus,
+    this.yErrorPlus,
+    this.bandLow,
+    this.bandHigh,
+    this.uncertaintyKind,
+    this.uncertaintySource,
     this.lineWidth,
     this.lineColor,
     this.lineStyle,
@@ -408,6 +420,10 @@ class AxesData extends DataObject {
   final String fontFamily;
   final String? axisPreset;
   final String aspectMode; // free|equal
+  final String xScale, yScale, zScale;
+  final double symlogThreshold;
+  final String legendMode, legendPosition, legendGrouping;
+  final List<String> legendOrder, legendHidden;
   final AxisArrows? arrows;
 
   /// 原理化 3D 视角旋转角(度);2D 坐标系下不生效
@@ -430,6 +446,8 @@ class AxesData extends DataObject {
   final String bgColor;
   final double canvasPxW;
   final double canvasPxH;
+  final String exportUnit, exportPreset, fontExportStrategy;
+  final double exportWidth, exportHeight, exportDpi;
 
   AxesData({
     required this.name,
@@ -458,6 +476,15 @@ class AxesData extends DataObject {
     required this.fontFamily,
     this.axisPreset,
     this.aspectMode = 'free',
+    this.xScale = 'linear',
+    this.yScale = 'linear',
+    this.zScale = 'linear',
+    this.symlogThreshold = 1,
+    this.legendMode = 'auto',
+    this.legendPosition = 'right',
+    this.legendGrouping = 'type',
+    this.legendOrder = const [],
+    this.legendHidden = const [],
     this.arrows,
     this.rotX = -20,
     this.rotY = 25,
@@ -472,6 +499,12 @@ class AxesData extends DataObject {
     this.bgColor = '#ffffff',
     this.canvasPxW = 1920,
     this.canvasPxH = 1200,
+    this.exportUnit = 'px',
+    this.exportPreset = 'custom',
+    this.fontExportStrategy = 'embed',
+    this.exportWidth = 1920,
+    this.exportHeight = 1200,
+    this.exportDpi = 300,
   });
 }
 

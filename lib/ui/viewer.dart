@@ -2,8 +2,10 @@
 // (由 React 版 ui/ViewerRender.tsx 移植,不含 ECharts 依赖)
 library;
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:file_selector/file_selector.dart';
@@ -2642,17 +2644,66 @@ class ChartPainter extends CustomPainter {
 
 // ==================== 预览交互 + 导出 ====================
 
-Future<void> savePngImage(ui.Image image, String suggestedName) async {
+Future<String?> savePngImage(
+  ui.Image image,
+  String suggestedName, {
+  Map<String, dynamic>? manifest,
+  double? dpi,
+}) async {
   final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-  if (bytes == null) return;
+  if (bytes == null) return null;
   final loc = await getSaveLocation(
     suggestedName: suggestedName,
     acceptedTypeGroups: const [
       XTypeGroup(label: 'PNG 图片', extensions: ['png']),
     ],
   );
-  if (loc == null) return;
-  await File(loc.path).writeAsBytes(bytes.buffer.asUint8List());
+  if (loc == null) return null;
+  var png = bytes.buffer.asUint8List();
+  if (dpi != null && dpi.isFinite && dpi > 0) {
+    png = pngWithPhysicalResolution(png, dpi);
+  }
+  await File(loc.path).writeAsBytes(png);
+  if (manifest != null) {
+    await File(
+      '${loc.path}.manifest.json',
+    ).writeAsString(const JsonEncoder.withIndent('  ').convert(manifest));
+  }
+  return loc.path;
+}
+
+Uint8List pngWithPhysicalResolution(Uint8List png, double dpi) {
+  // PNG pHYs stores pixels per metre. Place it directly after IHDR.
+  if (png.length < 33) return png;
+  final ppm = (dpi / .0254).round().clamp(1, 0xffffffff);
+  final data = ByteData(9)
+    ..setUint32(0, ppm)
+    ..setUint32(4, ppm)
+    ..setUint8(8, 1);
+  final type = Uint8List.fromList(const [0x70, 0x48, 0x59, 0x73]);
+  final payload = data.buffer.asUint8List();
+  final crcInput = Uint8List.fromList([...type, ...payload]);
+  final chunk = BytesBuilder()
+    ..add((ByteData(4)..setUint32(0, payload.length)).buffer.asUint8List())
+    ..add(type)
+    ..add(payload)
+    ..add((ByteData(4)..setUint32(0, _crc32(crcInput))).buffer.asUint8List());
+  return Uint8List.fromList([
+    ...png.sublist(0, 33),
+    ...chunk.takeBytes(),
+    ...png.sublist(33),
+  ]);
+}
+
+int _crc32(Uint8List bytes) {
+  var crc = 0xffffffff;
+  for (final byte in bytes) {
+    crc ^= byte;
+    for (var i = 0; i < 8; i++) {
+      crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xedb88320 : crc >> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) & 0xffffffff;
 }
 
 /// 将 painter 渲染为指定像素尺寸的 PNG 并保存(等比导出现在由 _export 内联实现)

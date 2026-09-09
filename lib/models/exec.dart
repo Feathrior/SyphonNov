@@ -7,6 +7,7 @@ import 'csv.dart';
 import 'data.dart';
 import 'math.dart';
 import 'sample_data.dart';
+import 'scales.dart';
 
 class _SegmentBox {
   final Pt a;
@@ -408,8 +409,55 @@ Map<String, ExecFn> _buildExec() {
 
       final colorPreset = str(p['colorPreset'], 'paper');
       final bgColor = '${p['bgColor'] ?? '#ffffff'}';
-      final canvasPxW = (num_(p['canvasPxW'], 1920)).round().clamp(100, 8000);
-      final canvasPxH = (num_(p['canvasPxH'], 1200)).round().clamp(100, 8000);
+      final xScale = str(p['xScale'], 'linear');
+      final yScale = str(p['yScale'], 'linear');
+      final zScale = str(p['zScale'], 'linear');
+      final symlogThreshold = num_(p['symlogThreshold'], 1);
+      // 构造即验证范围；对数轴的非正范围在执行阶段给出明确错误。
+      AxisScale.named(xScale, xMin, xMax, linearThreshold: symlogThreshold);
+      AxisScale.named(yScale, yMin, yMax, linearThreshold: symlogThreshold);
+      AxisScale.named(zScale, zMin, zMax, linearThreshold: symlogThreshold);
+      final exportPreset = str(p['exportPreset'], 'custom');
+      var exportUnit = str(p['exportUnit'], 'px');
+      var exportWidth = num_(p['exportWidth'], num_(p['canvasPxW'], 1920));
+      var exportHeight = num_(p['exportHeight'], num_(p['canvasPxH'], 1200));
+      switch (exportPreset) {
+        case 'single':
+          exportUnit = 'mm';
+          exportWidth = 89;
+          exportHeight = 60;
+          break;
+        case 'double':
+          exportUnit = 'mm';
+          exportWidth = 183;
+          exportHeight = 110;
+          break;
+        case 'poster':
+          exportUnit = 'mm';
+          exportWidth = 420;
+          exportHeight = 297;
+          break;
+        case 'slides':
+          exportUnit = 'inch';
+          exportWidth = 13.333;
+          exportHeight = 7.5;
+          break;
+        default:
+          break;
+      }
+      final exportDpi = num_(p['exportDpi'], 300).clamp(36, 2400).toDouble();
+      double pixels(double value) => exportUnit == 'mm'
+          ? value / 25.4 * exportDpi
+          : exportUnit == 'inch'
+          ? value * exportDpi
+          : value;
+      final canvasPxW = pixels(exportWidth).round().clamp(100, 12000);
+      final canvasPxH = pixels(exportHeight).round().clamp(100, 12000);
+      List<String> names(dynamic value) => '$value'
+          .split(',')
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList(growable: false);
 
       return {
         'out0': AxesData(
@@ -439,6 +487,15 @@ Map<String, ExecFn> _buildExec() {
           fontFamily: fontFamily,
           axisPreset: str(p['axisPreset'], 'default'),
           aspectMode: str(p['aspectMode'], 'free'),
+          xScale: xScale,
+          yScale: yScale,
+          zScale: zScale,
+          symlogThreshold: symlogThreshold,
+          legendMode: str(p['legendMode'], 'auto'),
+          legendPosition: str(p['legendPosition'], 'right'),
+          legendGrouping: str(p['legendGrouping'], 'type'),
+          legendOrder: names(p['legendOrder'] ?? ''),
+          legendHidden: names(p['legendHidden'] ?? ''),
           arrows: AxisArrows(x: arrowX, y: arrowY),
           rotX: num_(p['rotX'], -20),
           rotY: num_(p['rotY'], 25),
@@ -453,6 +510,12 @@ Map<String, ExecFn> _buildExec() {
           bgColor: bgColor,
           canvasPxW: canvasPxW.toDouble(),
           canvasPxH: canvasPxH.toDouble(),
+          exportUnit: exportUnit,
+          exportPreset: exportPreset,
+          fontExportStrategy: str(p['fontExportStrategy'], 'embed'),
+          exportWidth: exportWidth,
+          exportHeight: exportHeight,
+          exportDpi: exportDpi,
         ),
       };
     },
@@ -1060,6 +1123,93 @@ Map<String, ExecFn> _buildExec() {
         };
       }
       throw Exception('只支持曲线×曲线、曲线×曲面或曲面×曲面');
+    },
+
+    'stat_uncertainty': (ctx) {
+      final table = ctx.inputs['in0'];
+      if (table is! TableData) throw Exception('误差与区间节点需要表格输入');
+      Column requiredColumn(String key, String fallback) {
+        final name = str(ctx.params[key], fallback);
+        return table.columns.firstWhere(
+          (c) => c.name == name,
+          orElse: () => throw Exception('表格中不存在 $name 列'),
+        );
+      }
+
+      Column? optionalColumn(String key) {
+        final name = str(ctx.params[key]);
+        if (name.isEmpty) return null;
+        return table.columns.where((c) => c.name == name).firstOrNull;
+      }
+
+      final xc = requiredColumn('xCol', 'x'), yc = requiredColumn('yCol', 'y');
+      final xm = optionalColumn('xMinusCol'), xp = optionalColumn('xPlusCol');
+      final ym = optionalColumn('yMinusCol'), yp = optionalColumn('yPlusCol');
+      final band = str(ctx.params['representation'], 'error') == 'band';
+      if (band && (ym == null || yp == null)) {
+        throw Exception('区间带必须指定 Y 下界列和 Y 上界列');
+      }
+      final count = [
+        xc,
+        yc,
+        ?xm,
+        ?xp,
+        ?ym,
+        ?yp,
+      ].map((c) => c.values.length).reduce(math.max);
+      final points = <Pt>[],
+          xMinus = <double>[],
+          xPlus = <double>[],
+          yMinus = <double>[],
+          yPlus = <double>[];
+      for (var i = 0; i < count; i++) {
+        final x = toNum(_cell(xc, i)), y = toNum(_cell(yc, i));
+        if (x == null || y == null || !x.isFinite || !y.isFinite) {
+          points.add(const Pt(double.nan, double.nan));
+          xMinus.add(double.nan);
+          xPlus.add(double.nan);
+          yMinus.add(double.nan);
+          yPlus.add(double.nan);
+          continue;
+        }
+        points.add(Pt(x, y));
+        double value(Column? c, [double fallback = 0]) {
+          final v = c == null ? null : toNum(_cell(c, i));
+          return v != null && v.isFinite ? v : fallback;
+        }
+
+        final xv = value(xm), yv = value(ym);
+        xMinus.add(xv);
+        xPlus.add(value(xp, xv));
+        yMinus.add(yv);
+        yPlus.add(value(yp, yv));
+      }
+      if (!band &&
+          [
+            ...xMinus,
+            ...xPlus,
+            ...yMinus,
+            ...yPlus,
+          ].where((v) => v.isFinite).any((v) => v < 0)) {
+        throw Exception('误差量不得为负数');
+      }
+      return {
+        'out0': SeriesData(
+          name: str(ctx.params['name'], '统计曲线'),
+          points: points,
+          lineWidth: num_(ctx.params['lineWidth'], 2),
+          lineColor: str(ctx.params['lineColor'], '#2563eb'),
+          lineStyle: str(ctx.params['lineStyle'], 'solid'),
+          xErrorMinus: band ? null : xMinus,
+          xErrorPlus: band ? null : xPlus,
+          yErrorMinus: band ? null : yMinus,
+          yErrorPlus: band ? null : yPlus,
+          bandLow: band ? yMinus : null,
+          bandHigh: band ? yPlus : null,
+          uncertaintyKind: str(ctx.params['uncertaintyKind'], 'sd'),
+          uncertaintySource: str(ctx.params['source']),
+        ),
+      };
     },
 
     // ---------- 数据转化 ----------
@@ -1812,7 +1962,7 @@ Vec3 _unit3(Vec3 a) {
 /// 六四面体分解，避免相邻立方体在共享面上选择不同对角线而产生裂缝。
 MeshData _genImplicitSurface(ExecContext ctx, int nx, int ny) {
   final p = ctx.params;
-  final nz = (toNum(p['depthSamples']) ?? 41).round();
+  final nz = (toNum(p['depthSamples']) ?? 25).round();
   final x0 = toNum(p['xMin']) ?? -3, x1 = toNum(p['xMax']) ?? 3;
   final y0 = toNum(p['yMin']) ?? -3, y1 = toNum(p['yMax']) ?? 3;
   final z0 = toNum(p['zMin']) ?? -3, z1 = toNum(p['zMax']) ?? 3;
@@ -1961,7 +2111,7 @@ MeshData _genImplicitSurface(ExecContext ctx, int nx, int ny) {
   }
   if (faces.isEmpty) throw Exception('当前范围内没有检测到隐式曲面，请调整方程或范围');
   final cb = ctx.inputs['in1'];
-  final display = str(p['displayMode'], 'surfaceEdges');
+  final display = str(p['displayMode'], 'surface');
   return MeshData(
     name: str(p['name'], '隐式曲面'),
     vertices: vertices,
@@ -1978,7 +2128,7 @@ MeshData _genImplicitSurface(ExecContext ctx, int nx, int ny) {
         ? cb.max
         : values.reduce(math.max),
     valueLabel: cb is ColorbarData ? cb.label ?? 'Z' : 'Z',
-    previewFaceBudget: (toNum(p['previewFaceBudget']) ?? 12000).round().clamp(
+    previewFaceBudget: (toNum(p['previewFaceBudget']) ?? 6000).round().clamp(
       100,
       100000,
     ),
@@ -1988,7 +2138,7 @@ MeshData _genImplicitSurface(ExecContext ctx, int nx, int ny) {
     color: p['color'] is String && '${p['color']}'.isNotEmpty
         ? '${p['color']}'
         : null,
-    opacity: num_(p['opacity'], .85).clamp(.05, 1),
+    opacity: num_(p['opacity'], .6).clamp(.05, 1),
     showEdge: display != 'surface',
     edgeColor: p['edgeColor'] is String && '${p['edgeColor']}'.isNotEmpty
         ? '${p['edgeColor']}'
@@ -2002,8 +2152,8 @@ MeshData _genImplicitSurface(ExecContext ctx, int nx, int ny) {
 MeshData genSurface(ExecContext ctx) {
   final p = ctx.params;
   final mode = str(p['mode'], 'explicit');
-  var rows = (toNum(p['rows']) ?? 61).round();
-  var columns = (toNum(p['columns']) ?? 61).round();
+  var rows = (toNum(p['rows']) ?? 31).round();
+  var columns = (toNum(p['columns']) ?? 31).round();
   if (rows < 2 || rows > 400 || columns < 2 || columns > 400) {
     throw Exception('曲面每个方向的采样数必须在 2 到 400 之间');
   }
@@ -2306,7 +2456,7 @@ MeshData genSurface(ExecContext ctx) {
   final finiteValues =
       values?.where((v) => v.isFinite).toList() ?? const <double>[];
   final cb = ctx.inputs['in1'];
-  final display = str(p['displayMode'], 'surfaceEdges');
+  final display = str(p['displayMode'], 'surface');
   return MeshData(
     name: str(p['name'], '曲面'),
     vertices: vertices,
@@ -2331,7 +2481,7 @@ MeshData genSurface(ExecContext ctx) {
     gridColumns: columns,
     wrapRows: wrapRows,
     wrapColumns: wrapColumns,
-    previewFaceBudget: (toNum(p['previewFaceBudget']) ?? 12000).round().clamp(
+    previewFaceBudget: (toNum(p['previewFaceBudget']) ?? 6000).round().clamp(
       100,
       100000,
     ),
@@ -2341,7 +2491,7 @@ MeshData genSurface(ExecContext ctx) {
     color: p['color'] is String && '${p['color']}'.isNotEmpty
         ? '${p['color']}'
         : null,
-    opacity: num_(p['opacity'], 0.85).clamp(0.05, 1.0),
+    opacity: num_(p['opacity'], 0.6).clamp(0.05, 1.0),
     showEdge: display != 'surface',
     edgeColor: p['edgeColor'] is String && '${p['edgeColor']}'.isNotEmpty
         ? '${p['edgeColor']}'

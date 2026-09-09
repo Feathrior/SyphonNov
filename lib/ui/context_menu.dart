@@ -150,6 +150,16 @@ class _NodeMenuState extends State<NodeMenu> {
     for (final cfg in _allConfigs) {
       m.putIfAbsent(cfg.category, () => []).add(cfg);
     }
+    const inputOrder = {
+      'scatter_input': 0,
+      'func_curve': 1,
+      'surface_input': 2,
+    };
+    m[Category.input]?.sort((a, b) {
+      final pa = inputOrder[a.id] ?? 100;
+      final pb = inputOrder[b.id] ?? 100;
+      return pa != pb ? pa.compareTo(pb) : 0;
+    });
     return m;
   }();
   late final List<Category> _cats = Category.values

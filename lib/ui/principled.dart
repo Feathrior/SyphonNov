@@ -12,6 +12,8 @@ import 'package:flutter/material.dart';
 import '../models/color_utils.dart';
 import '../models/data.dart';
 import '../models/exec_engine.dart';
+import '../models/publication_export.dart';
+import '../models/scales.dart';
 import '../store/graph_store.dart';
 import 'viewer.dart' show savePngImage;
 
@@ -89,6 +91,10 @@ class _AxesInfo {
   final double fontSize;
   final String fontFamily;
   final bool arrowX, arrowY;
+  final String xScale, yScale, zScale;
+  final double symlogThreshold;
+  final String legendMode, legendPosition, legendGrouping;
+  final List<String> legendOrder, legendHidden;
 
   /// 原理化 3D 视角旋转角(度,来自坐标系输入;2D 时忽略)
   final double rotX;
@@ -134,6 +140,15 @@ class _AxesInfo {
     required this.fontFamily,
     required this.arrowX,
     required this.arrowY,
+    this.xScale = 'linear',
+    this.yScale = 'linear',
+    this.zScale = 'linear',
+    this.symlogThreshold = 1,
+    this.legendMode = 'auto',
+    this.legendPosition = 'right',
+    this.legendGrouping = 'type',
+    this.legendOrder = const [],
+    this.legendHidden = const [],
     this.rotX = -20,
     this.rotY = 25,
     this.rotZ = 0,
@@ -215,6 +230,15 @@ _AxesInfo _resolveAxes(DataObject? input) {
       fontFamily: input.fontFamily.isEmpty ? 'sans-serif' : input.fontFamily,
       arrowX: input.arrows?.x ?? true,
       arrowY: input.arrows?.y ?? true,
+      xScale: input.xScale,
+      yScale: input.yScale,
+      zScale: input.zScale,
+      symlogThreshold: input.symlogThreshold,
+      legendMode: input.legendMode,
+      legendPosition: input.legendPosition,
+      legendGrouping: input.legendGrouping,
+      legendOrder: input.legendOrder,
+      legendHidden: input.legendHidden,
       // 视角旋转随坐标系输入(原理化 3D 旋转)
       rotX: input.rotX.isFinite ? input.rotX : -20,
       rotY: input.rotY.isFinite ? input.rotY : 25,
@@ -258,45 +282,6 @@ _AxesInfo _resolveAxes(DataObject? input) {
 }
 
 int _targetCount(double cmLen) => _mx(3, _mn(10, (cmLen / 2).round())).toInt();
-
-({List<double> ticks, double step}) _niceTicks(
-  double min,
-  double max,
-  int targetCount,
-) {
-  final span = max - min;
-  if (!span.isFinite || span <= 1e-9) return (ticks: [min], step: 1);
-  final raw = span / _mx(1, targetCount);
-  final mag = math.pow(10, (math.log(raw) / math.ln10).floor()).toDouble();
-  final norm = raw / mag;
-  double step;
-  if (norm < 1.5) {
-    step = 1;
-  } else if (norm < 3.5) {
-    step = 2;
-  } else if (norm < 7.5) {
-    step = 5;
-  } else {
-    step = 10;
-  }
-  step *= mag;
-  final ticks = <double>[];
-  final first = (min / step - 1e-9).ceil() * step;
-  for (var v = first; v <= max + step * 1e-6; v += step) {
-    ticks.add(v);
-  }
-  if (ticks.isEmpty) ticks.add(min);
-  return (ticks: ticks, step: step);
-}
-
-String _fmtTick(double v, double step) {
-  if (!v.isFinite) return '';
-  if (v.abs() < 1e-9) v = 0;
-  final dec = step >= 1
-      ? 0
-      : _mn(6, _mx(0, (-math.log(step) / math.ln10).ceil())).toInt();
-  return v.toStringAsFixed(dec).replaceFirst(RegExp(r'\.?0+$'), '');
-}
 
 // ==================== 绘制 ====================
 
@@ -565,6 +550,7 @@ class PrincipledPainter extends CustomPainter {
 
     // 坐标轴与刻度(最后绘制;隐藏坐标系时不绘制)
     if (!axes.hidden) _drawAxes(canvas, d, axes, mapP, C);
+    _drawLegend(canvas, size, axes, seriesList, scatterList, meshList, C);
     canvas.restore();
   }
 
@@ -573,15 +559,136 @@ class PrincipledPainter extends CustomPainter {
     final hx = axes.xLen / 2;
     final hy = axes.yLen / 2;
     final hz = axes.zLen / 2;
-    final sx = axes.xLen / _mx(axes.xMax - axes.xMin, 1e-9);
-    final sy = axes.yLen / _mx(axes.yMax - axes.yMin, 1e-9);
-    final sz = axes.zLen / _mx(axes.zMax - axes.zMin, 1e-9);
+    final xs = AxisScale.named(
+      axes.xScale,
+      axes.xMin,
+      axes.xMax,
+      linearThreshold: axes.symlogThreshold,
+    );
+    final ys = AxisScale.named(
+      axes.yScale,
+      axes.yMin,
+      axes.yMax,
+      linearThreshold: axes.symlogThreshold,
+    );
+    final zs = AxisScale.named(
+      axes.zScale,
+      axes.zMin,
+      axes.zMax,
+      linearThreshold: axes.symlogThreshold,
+    );
     return (Vec3 p) => Vec3(
-      (p.x - axes.xMin) * sx - hx,
-      (p.y - axes.yMin) * sy - hy,
-      (p.z - axes.zMin) * sz - hz,
+      xs.transform(p.x) * axes.xLen - hx,
+      ys.transform(p.y) * axes.yLen - hy,
+      zs.transform(p.z) * axes.zLen - hz,
     );
   }
+
+  void _drawLegend(
+    Canvas canvas,
+    Size size,
+    _AxesInfo axes,
+    List<SeriesData> lines,
+    List<ScatterData> points,
+    List<MeshData> meshes,
+    PresetColors colors,
+  ) {
+    if (axes.legendMode == 'hidden') return;
+    var items =
+        <({String name, String color, String kind})>[
+              for (final line in lines)
+                (
+                  name: line.name,
+                  color: line.lineColor ?? colors.line,
+                  kind: 'line',
+                ),
+              for (final point in points)
+                (
+                  name: point.name,
+                  color: point.pointColor ?? colors.point,
+                  kind: 'point',
+                ),
+              for (final mesh in meshes)
+                (
+                  name: mesh.name,
+                  color: mesh.color ?? colors.face,
+                  kind: 'surface',
+                ),
+            ]
+            .where(
+              (item) =>
+                  item.name.trim().isNotEmpty &&
+                  !axes.legendHidden.contains(item.name),
+            )
+            .toList();
+    if (axes.legendMode == 'manual') {
+      int rank(String name) {
+        final i = axes.legendOrder.indexOf(name);
+        return i < 0 ? 1 << 20 : i;
+      }
+
+      items.sort((a, b) => rank(a.name).compareTo(rank(b.name)));
+    } else if (axes.legendGrouping == 'type') {
+      const rank = {'line': 0, 'point': 1, 'surface': 2};
+      items.sort((a, b) => (rank[a.kind] ?? 9).compareTo(rank[b.kind] ?? 9));
+    }
+    if (items.isEmpty) return;
+    const row = 18.0, width = 150.0, pad = 8.0;
+    final height = items.length * row + pad * 2;
+    final left = axes.legendPosition == 'left'
+        ? 12.0
+        : axes.legendPosition == 'bottom'
+        ? (size.width - width) / 2
+        : size.width - width - 12;
+    final top = axes.legendPosition == 'bottom'
+        ? size.height - height - 12
+        : 12.0;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top, width, height),
+        const Radius.circular(4),
+      ),
+      Paint()..color = parseColor(colors.bg).withValues(alpha: .86),
+    );
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i], y = top + pad + i * row + row / 2;
+      final paint = Paint()
+        ..color = parseColor(item.color)
+        ..strokeWidth = 2;
+      if (item.kind == 'line') {
+        canvas.drawLine(Offset(left + 8, y), Offset(left + 28, y), paint);
+      } else if (item.kind == 'point') {
+        canvas.drawCircle(Offset(left + 18, y), 3, paint);
+      } else {
+        canvas.drawRect(
+          Rect.fromCenter(center: Offset(left + 18, y), width: 18, height: 8),
+          paint,
+        );
+      }
+      _pText(
+        canvas,
+        item.name,
+        Offset(left + 36, y),
+        color: parseColor(colors.axis),
+        size: 10,
+        align: 'left',
+        maxWidth: width - 44,
+      );
+    }
+  }
+
+  List<ScaleTick> _ticks(
+    String kind,
+    double min,
+    double max,
+    double length,
+    double threshold,
+  ) => AxisScale.named(
+    kind,
+    min,
+    max,
+    linearThreshold: threshold,
+  ).ticks(_targetCount(length));
 
   /// 计算场景角点投影后的屏幕包围盒
   ({Offset min, Offset max}) _projectBounds(
@@ -646,55 +753,63 @@ class PrincipledPainter extends CustomPainter {
       ..strokeWidth = _mx(0.5, _fzFor(d));
     final path = Path();
     if (axes.dim == 3) {
-      final xt = _niceTicks(
+      final xt = _ticks(
+        axes.xScale,
         axes.xMin,
         axes.xMax,
-        _targetCount(axes.xLen),
-      ).ticks;
-      final zt = _niceTicks(
+        axes.xLen,
+        axes.symlogThreshold,
+      );
+      final zt = _ticks(
+        axes.zScale,
         axes.zMin,
         axes.zMax,
-        _targetCount(axes.zLen),
-      ).ticks;
+        axes.zLen,
+        axes.symlogThreshold,
+      );
       if (axes.gridX) {
         for (final t in xt) {
-          final a = _project(d, mapP(Vec3(t, axes.yMin, axes.zMin)));
-          final b = _project(d, mapP(Vec3(t, axes.yMin, axes.zMax)));
+          final a = _project(d, mapP(Vec3(t.value, axes.yMin, axes.zMin)));
+          final b = _project(d, mapP(Vec3(t.value, axes.yMin, axes.zMax)));
           path.moveTo(a.dx, a.dy);
           path.lineTo(b.dx, b.dy);
         }
       }
       if (axes.gridZ) {
         for (final t in zt) {
-          final a = _project(d, mapP(Vec3(axes.xMin, axes.yMin, t)));
-          final b = _project(d, mapP(Vec3(axes.xMax, axes.yMin, t)));
+          final a = _project(d, mapP(Vec3(axes.xMin, axes.yMin, t.value)));
+          final b = _project(d, mapP(Vec3(axes.xMax, axes.yMin, t.value)));
           path.moveTo(a.dx, a.dy);
           path.lineTo(b.dx, b.dy);
         }
       }
     } else {
-      final xt = _niceTicks(
+      final xt = _ticks(
+        axes.xScale,
         axes.xMin,
         axes.xMax,
-        _targetCount(axes.xLen),
-      ).ticks;
-      final yt = _niceTicks(
+        axes.xLen,
+        axes.symlogThreshold,
+      );
+      final yt = _ticks(
+        axes.yScale,
         axes.yMin,
         axes.yMax,
-        _targetCount(axes.yLen),
-      ).ticks;
+        axes.yLen,
+        axes.symlogThreshold,
+      );
       if (axes.gridX) {
         for (final t in xt) {
-          final a = _project(d, mapP(Vec3(t, axes.yMin, 0)));
-          final b = _project(d, mapP(Vec3(t, axes.yMax, 0)));
+          final a = _project(d, mapP(Vec3(t.value, axes.yMin, 0)));
+          final b = _project(d, mapP(Vec3(t.value, axes.yMax, 0)));
           path.moveTo(a.dx, a.dy);
           path.lineTo(b.dx, b.dy);
         }
       }
       if (axes.gridY) {
         for (final t in yt) {
-          final a = _project(d, mapP(Vec3(axes.xMin, t, 0)));
-          final b = _project(d, mapP(Vec3(axes.xMax, t, 0)));
+          final a = _project(d, mapP(Vec3(axes.xMin, t.value, 0)));
+          final b = _project(d, mapP(Vec3(axes.xMax, t.value, 0)));
           path.moveTo(a.dx, a.dy);
           path.lineTo(b.dx, b.dy);
         }
@@ -789,6 +904,10 @@ class PrincipledPainter extends CustomPainter {
       )) {
         continue;
       }
+      final mapped = vertices.map(mapP).toList();
+      if (mapped.any((v) => !v.x.isFinite || !v.y.isFinite || !v.z.isFinite)) {
+        continue;
+      }
       Color? faceColor;
       final values = mesh.vertexValues;
       final gradient = mesh.gradient;
@@ -804,7 +923,7 @@ class PrincipledPainter extends CustomPainter {
           faceColor = gradientColorAt(gradient, t);
         }
       }
-      raw.add(_SurfaceTri(vertices.map(mapP).toList(), faceColor));
+      raw.add(_SurfaceTri(mapped, faceColor));
     }
     return raw;
   }
@@ -855,8 +974,64 @@ class PrincipledPainter extends CustomPainter {
       final pts = sr.points;
       final zs = sr.zValues;
       if (pts.isEmpty) continue;
+      final low = sr.bandLow, high = sr.bandHigh;
+      if (low != null && high != null) {
+        var start = 0;
+        while (start < pts.length) {
+          while (start < pts.length &&
+              (start >= low.length ||
+                  start >= high.length ||
+                  !pts[start].x.isFinite ||
+                  !low[start].isFinite ||
+                  !high[start].isFinite)) {
+            start++;
+          }
+          var end = start;
+          while (end < pts.length &&
+              end < low.length &&
+              end < high.length &&
+              pts[end].x.isFinite &&
+              low[end].isFinite &&
+              high[end].isFinite) {
+            end++;
+          }
+          if (end - start >= 2) {
+            final upper = <Offset>[], lower = <Offset>[];
+            for (var i = start; i < end; i++) {
+              final up = mapP(Vec3(pts[i].x, high[i], 0));
+              final lo = mapP(Vec3(pts[i].x, low[i], 0));
+              if (up.x.isFinite &&
+                  up.y.isFinite &&
+                  lo.x.isFinite &&
+                  lo.y.isFinite) {
+                upper.add(_project(d, up));
+                lower.add(_project(d, lo));
+              }
+            }
+            if (upper.length >= 2 && upper.length == lower.length) {
+              final path = Path()..moveTo(upper.first.dx, upper.first.dy);
+              for (final p in upper.skip(1)) {
+                path.lineTo(p.dx, p.dy);
+              }
+              for (final p in lower.reversed) {
+                path.lineTo(p.dx, p.dy);
+              }
+              path.close();
+              canvas.drawPath(
+                path,
+                Paint()..color = parseColor(baseC).withValues(alpha: .18),
+              );
+            }
+          }
+          start = math.max(end, start + 1);
+        }
+      }
       if (pts.length == 1) {
-        final sp = _project(d, mapP(Vec3(pts[0].x, pts[0].y, zs?.first ?? 0)));
+        final mapped = mapP(Vec3(pts[0].x, pts[0].y, zs?.first ?? 0));
+        if (!mapped.x.isFinite || !mapped.y.isFinite || !mapped.z.isFinite) {
+          continue;
+        }
+        final sp = _project(d, mapped);
         final col = (sr.colors ?? const []).isNotEmpty ? sr.colors![0] : baseC;
         final sz = _mx(
           1.5,
@@ -901,6 +1076,7 @@ class PrincipledPainter extends CustomPainter {
             ),
           ),
         );
+        if (![a.dx, a.dy, b.dx, b.dy].every((v) => v.isFinite)) continue;
         final pp = Paint()
           ..color = parseColor(c)
           ..strokeWidth = w
@@ -909,6 +1085,37 @@ class PrincipledPainter extends CustomPainter {
           canvas.drawPath(_dashPath(a, b, dash), pp);
         } else {
           canvas.drawLine(a, b, pp);
+        }
+      }
+      final em = sr.xErrorMinus,
+          ep = sr.xErrorPlus,
+          fm = sr.yErrorMinus,
+          fp = sr.yErrorPlus;
+      if (em != null || ep != null || fm != null || fp != null) {
+        final paint = Paint()
+          ..color = parseColor(baseC)
+          ..strokeWidth = _mx(.7, baseW * fz * .7);
+        for (var i = 0; i < pts.length; i++) {
+          final p = pts[i];
+          if (!p.x.isFinite || !p.y.isFinite) continue;
+          final xm = em != null && i < em.length ? em[i] : 0,
+              xp = ep != null && i < ep.length ? ep[i] : xm;
+          final ym = fm != null && i < fm.length ? fm[i] : 0,
+              yp = fp != null && i < fp.length ? fp[i] : ym;
+          if ([xm, xp, ym, yp].any((v) => !v.isFinite || v < 0)) continue;
+          void bar(Vec3 va, Vec3 vb) {
+            final ma = mapP(va), mb = mapP(vb);
+            if ([ma.x, ma.y, mb.x, mb.y].every((v) => v.isFinite)) {
+              canvas.drawLine(_project(d, ma), _project(d, mb), paint);
+            }
+          }
+
+          if (xm > 0 || xp > 0) {
+            bar(Vec3(p.x - xm, p.y, 0), Vec3(p.x + xp, p.y, 0));
+          }
+          if (ym > 0 || yp > 0) {
+            bar(Vec3(p.x, p.y - ym, 0), Vec3(p.x, p.y + yp, 0));
+          }
         }
       }
     }
@@ -949,7 +1156,11 @@ class PrincipledPainter extends CustomPainter {
             (sc.shapes ?? const []).isNotEmpty && i < (sc.shapes?.length ?? 0)
             ? sc.shapes![i]
             : baseShape;
-        final sp = _project(d, mapP(Vec3(p.x, p.y, p.z ?? 0)));
+        final mapped = mapP(Vec3(p.x, p.y, p.z ?? 0));
+        if (!mapped.x.isFinite || !mapped.y.isFinite || !mapped.z.isFinite) {
+          continue;
+        }
+        final sp = _project(d, mapped);
         _drawShapeFilled(canvas, shp, sp, sz, parseColor(col));
       }
     }
@@ -1187,9 +1398,15 @@ class PrincipledPainter extends CustomPainter {
     final tickPaint = Paint()
       ..color = parseColor(cx)
       ..strokeWidth = _mx(1, fz);
-    final xt = _niceTicks(axes.xMin, axes.xMax, _targetCount(axes.xLen));
-    for (final t in xt.ticks) {
-      final p = _project(d, mapP(Vec3(t, axisXY, 0)));
+    final xt = _ticks(
+      axes.xScale,
+      axes.xMin,
+      axes.xMax,
+      axes.xLen,
+      axes.symlogThreshold,
+    );
+    for (final t in xt) {
+      final p = _project(d, mapP(Vec3(t.value, axisXY, 0)));
       canvas.drawLine(
         Offset(p.dx, p.dy - 4 * fz),
         Offset(p.dx, p.dy + 4 * fz),
@@ -1197,7 +1414,7 @@ class PrincipledPainter extends CustomPainter {
       );
       _pText(
         canvas,
-        _fmtTick(t, xt.step),
+        t.label,
         Offset(p.dx, p.dy + 14 * fz),
         color: parseColor(cx),
         size: fontPx(axes.fontSize),
@@ -1206,9 +1423,15 @@ class PrincipledPainter extends CustomPainter {
     final tickYPaint = Paint()
       ..color = parseColor(cy)
       ..strokeWidth = _mx(1, fz);
-    final yt = _niceTicks(axes.yMin, axes.yMax, _targetCount(axes.yLen));
-    for (final t in yt.ticks) {
-      final p = _project(d, mapP(Vec3(axisYX, t, 0)));
+    final yt = _ticks(
+      axes.yScale,
+      axes.yMin,
+      axes.yMax,
+      axes.yLen,
+      axes.symlogThreshold,
+    );
+    for (final t in yt) {
+      final p = _project(d, mapP(Vec3(axisYX, t.value, 0)));
       canvas.drawLine(
         Offset(p.dx - 4 * fz, p.dy),
         Offset(p.dx + 4 * fz, p.dy),
@@ -1216,7 +1439,7 @@ class PrincipledPainter extends CustomPainter {
       );
       _pText(
         canvas,
-        _fmtTick(t, yt.step),
+        t.label,
         Offset(p.dx - 6 * fz, p.dy + 3 * fz),
         color: parseColor(cy),
         size: fontPx(axes.fontSize),
@@ -1318,6 +1541,7 @@ class PrincipledPainter extends CustomPainter {
       axes.yLen / _mx(axes.yMax - axes.yMin, 1e-9),
       axes.zLen / _mx(axes.zMax - axes.zMin, 1e-9),
     ];
+    final scaleKinds = <String>[axes.xScale, axes.yScale, axes.zScale];
     final lengths = <double>[axes.xLen, axes.yLen, axes.zLen];
     final axisColors = <String>[cx, cy, cz];
     final axisWidthsCm = <double>[axes.widthX, axes.widthY, axes.widthZ];
@@ -1335,6 +1559,7 @@ class PrincipledPainter extends CustomPainter {
         scales,
         lengths,
         ranges,
+        scaleKinds,
       );
     }
   }
@@ -1353,6 +1578,7 @@ class PrincipledPainter extends CustomPainter {
     List<double> scales,
     List<double> lengths,
     List<(double, double)> ranges,
+    List<String> scaleKinds,
   ) {
     final end = e.$1;
     final label = e.$2;
@@ -1378,7 +1604,13 @@ class PrincipledPainter extends CustomPainter {
     // 刻度 + 数字
     final rMin = ranges[axisIdx].$1;
     final rMax = ranges[axisIdx].$2;
-    final tk = _niceTicks(rMin, rMax, _targetCount(lengths[axisIdx]));
+    final axisScale = AxisScale.named(
+      scaleKinds[axisIdx],
+      rMin,
+      rMax,
+      linearThreshold: axes.symlogThreshold,
+    );
+    final tk = axisScale.ticks(_targetCount(lengths[axisIdx]));
     final dx = ep.dx - o.dx;
     final dy = ep.dy - o.dy;
     final L = math.sqrt(dx * dx + dy * dy);
@@ -1388,8 +1620,10 @@ class PrincipledPainter extends CustomPainter {
       final tickPaint = Paint()
         ..color = parseColor(axisColors[axisIdx]).withValues(alpha: 0.7)
         ..strokeWidth = _mx(1, fz);
-      for (final t in tk.ticks) {
-        final loc = (t - rMin) * scales[axisIdx] - lengths[axisIdx] / 2;
+      for (final t in tk) {
+        final loc =
+            axisScale.transform(t.value) * lengths[axisIdx] -
+            lengths[axisIdx] / 2;
         final tickVec = axisIdx == 0
             ? Vec3(loc, 0, 0)
             : axisIdx == 1
@@ -1403,7 +1637,7 @@ class PrincipledPainter extends CustomPainter {
         );
         _pText(
           canvas,
-          _fmtTick(t, tk.step),
+          t.label,
           Offset(
             tp.dx + (dx / L) * 12 * fz,
             tp.dy + (dy / L) * 12 * fz - 2 * fz,
@@ -1499,7 +1733,18 @@ class _PrincipledCanvasState extends State<PrincipledCanvas> {
     final canvas = Canvas(recorder);
     painter.paint(canvas, Size(w.toDouble(), h.toDouble()));
     final img = await recorder.endRecording().toImage(w, h);
-    await savePngImage(img, 'principled.png');
+    await savePngImage(
+      img,
+      'principled.png',
+      manifest: ax is AxesData ? exportManifest(ax, 'png') : null,
+      dpi: ax is AxesData ? ax.exportDpi : null,
+    );
+  }
+
+  Future<void> _exportVector(String format) async {
+    final result = GraphStore.instance.results[widget.nodeId];
+    final input = result?.inputs['in0'] ?? result?.inputs['in4'];
+    if (input is AxesData) await saveVectorPublication(input, format);
   }
 
   @override
@@ -1561,8 +1806,9 @@ class _PrincipledCanvasState extends State<PrincipledCanvas> {
 
   /// 左下角控制条:缩放百分比 + 初始化 + 导出 PNG
   Widget _buildControls() {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
       children: [
         Text(
           '${(_zoom * 100).round()}%',
@@ -1570,8 +1816,9 @@ class _PrincipledCanvasState extends State<PrincipledCanvas> {
         ),
         const SizedBox(width: 8),
         _miniBtn('初始化', _reset),
-        const SizedBox(width: 6),
         _miniBtn('导出 PNG', _export),
+        _miniBtn('SVG', () => _exportVector('svg')),
+        _miniBtn('PDF', () => _exportVector('pdf')),
       ],
     );
   }
