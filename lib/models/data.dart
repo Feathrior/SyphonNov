@@ -2,6 +2,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart' show Color;
 
@@ -168,7 +169,25 @@ sealed class DataObject {}
 class TableData extends DataObject {
   final List<Column> columns;
 
-  TableData(this.columns);
+  TableData(List<Column> source) : columns = _rectangularColumns(source);
+}
+
+List<Column> _rectangularColumns(List<Column> source) {
+  final width = source.fold<int>(
+    0,
+    (rows, column) => math.max(rows, column.values.length),
+  );
+  return source
+      .map(
+        (column) => Column(
+          name: column.name,
+          values: [
+            ...column.values,
+            ...List<dynamic>.filled(width - column.values.length, null),
+          ],
+        ),
+      )
+      .toList(growable: false);
 }
 
 class SeriesData extends DataObject {

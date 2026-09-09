@@ -8,6 +8,78 @@ import 'data.dart';
 import 'math.dart';
 import 'sample_data.dart';
 
+class _SegmentBox {
+  final Pt a;
+  final Pt b;
+  final double minX, maxX, minY, maxY;
+  _SegmentBox(this.a, this.b)
+    : minX = math.min(a.x, b.x),
+      maxX = math.max(a.x, b.x),
+      minY = math.min(a.y, b.y),
+      maxY = math.max(a.y, b.y);
+  bool overlaps(double x0, double x1, double y0, double y1) =>
+      maxX >= x0 && minX <= x1 && maxY >= y0 && minY <= y1;
+}
+
+class _SegmentBvh {
+  final double minX, maxX, minY, maxY;
+  final _SegmentBvh? left, right;
+  final List<_SegmentBox> leaf;
+  _SegmentBvh._(
+    this.minX,
+    this.maxX,
+    this.minY,
+    this.maxY,
+    this.left,
+    this.right,
+    this.leaf,
+  );
+
+  factory _SegmentBvh.build(List<_SegmentBox> segments) {
+    final minX = segments.map((s) => s.minX).reduce(math.min);
+    final maxX = segments.map((s) => s.maxX).reduce(math.max);
+    final minY = segments.map((s) => s.minY).reduce(math.min);
+    final maxY = segments.map((s) => s.maxY).reduce(math.max);
+    if (segments.length <= 8) {
+      return _SegmentBvh._(minX, maxX, minY, maxY, null, null, segments);
+    }
+    final splitX = maxX - minX >= maxY - minY;
+    segments.sort(
+      (a, b) => (splitX ? a.minX + a.maxX : a.minY + a.maxY).compareTo(
+        splitX ? b.minX + b.maxX : b.minY + b.maxY,
+      ),
+    );
+    final mid = segments.length ~/ 2;
+    return _SegmentBvh._(
+      minX,
+      maxX,
+      minY,
+      maxY,
+      _SegmentBvh.build(segments.sublist(0, mid)),
+      _SegmentBvh.build(segments.sublist(mid)),
+      const [],
+    );
+  }
+
+  void query(
+    double x0,
+    double x1,
+    double y0,
+    double y1,
+    List<_SegmentBox> out,
+  ) {
+    if (maxX < x0 || minX > x1 || maxY < y0 || minY > y1) return;
+    if (left == null) {
+      for (final segment in leaf) {
+        if (segment.overlaps(x0, x1, y0, y1)) out.add(segment);
+      }
+      return;
+    }
+    left!.query(x0, x1, y0, y1, out);
+    right!.query(x0, x1, y0, y1, out);
+  }
+}
+
 double num_(dynamic v, double d) {
   final n = v is num ? v.toDouble() : double.tryParse('$v');
   return (n != null && n.isFinite) ? n : d;
@@ -20,7 +92,7 @@ List<Pt>? toSeries(DataObject? obj) {
   if (obj == null) return null;
   if (obj is SeriesData) return obj.points;
   if (obj is ScatterData) {
-    return obj.points.map((p) => Pt(p.x, p.z != null ? 0.0 : p.y)).toList();
+    return obj.points.map((p) => Pt(p.x, p.y)).toList();
   }
   return null;
 }
@@ -29,6 +101,49 @@ List<Pt>? toSeries(DataObject? obj) {
 List<Column>? toTable(DataObject? obj) {
   if (obj == null || obj is! TableData) return null;
   return obj.columns;
+}
+
+dynamic _cell(Column column, int row) =>
+    row >= 0 && row < column.values.length ? column.values[row] : null;
+
+bool _isMissing(dynamic value) =>
+    value == null || (value is String && value.trim().isEmpty);
+
+double _safeMean(List<double> values) {
+  if (values.isEmpty) return 0;
+  final scale = values.fold<double>(0, (m, v) => math.max(m, v.abs()));
+  if (scale == 0) return 0;
+  return values.fold<double>(0, (s, v) => s + v / scale) /
+      values.length *
+      scale;
+}
+
+List<double> _stableZScores(List<double> values) {
+  if (values.isEmpty) return const [];
+  final scale = values.fold<double>(0, (m, v) => math.max(m, v.abs()));
+  if (scale == 0) return List<double>.filled(values.length, 0);
+  final scaled = values.map((v) => v / scale).toList();
+  var mean = 0.0;
+  var m2 = 0.0;
+  for (var i = 0; i < scaled.length; i++) {
+    final delta = scaled[i] - mean;
+    mean += delta / (i + 1);
+    m2 += delta * (scaled[i] - mean);
+  }
+  final std = math.sqrt(m2 / scaled.length);
+  if (std == 0) return List<double>.filled(values.length, 0);
+  return scaled.map((v) => (v - mean) / std).toList();
+}
+
+List<double> _stableMinMax(List<double> values) {
+  if (values.isEmpty) return const [];
+  final mn = values.reduce(math.min);
+  final mx = values.reduce(math.max);
+  if (mn == mx) return List<double>.filled(values.length, 0);
+  final scale = math.max(mn.abs(), mx.abs());
+  final lo = mn / scale;
+  final span = mx / scale - lo;
+  return values.map((v) => (v / scale - lo) / span).toList();
 }
 
 List<Column> firstNumericCols(List<Column> columns, int count) {
@@ -185,10 +300,21 @@ Map<String, ExecFn> _buildExec() {
         final delimiter = str(ctx.params['delimiter'], 'csv') == 'tsv'
             ? '\t'
             : ',';
-        return {'out0': TableData(parseDelimitedText(text, delimiter))};
+        final headerMode = HeaderMode.values.firstWhere(
+          (mode) => mode.name == str(ctx.params['headerMode'], 'auto'),
+          orElse: () => HeaderMode.auto,
+        );
+        return {
+          'out0': TableData(parseDelimitedText(text, delimiter, headerMode)),
+        };
       }
       return {
-        'out0': TableData(presetTable(str(ctx.params['preset'], 'phys'))),
+        'out0': TableData(
+          presetTable(
+            str(ctx.params['preset'], 'phys'),
+            seed: num_(ctx.params['seed'], 0).round(),
+          ),
+        ),
       };
     },
 
@@ -206,9 +332,12 @@ Map<String, ExecFn> _buildExec() {
       var yMax = num_(p['yEnd'], 10);
       var zMin = num_(p['zStart'], -5);
       var zMax = num_(p['zEnd'], 5);
-      if (xMax - xMin < 1e-9) xMax = xMin + 1;
-      if (yMax - yMin < 1e-9) yMax = yMin + 1;
-      if (zMax - zMin < 1e-9) zMax = zMin + 1;
+      if (xMax < xMin || yMax < yMin || zMax < zMin) {
+        throw Exception('坐标轴终点不得小于起点');
+      }
+      if (xMax == xMin) xMax = xMin + math.max(1, xMin.abs()) * 1e-6;
+      if (yMax == yMin) yMax = yMin + math.max(1, yMin.abs()) * 1e-6;
+      if (zMax == zMin) zMax = zMin + math.max(1, zMin.abs()) * 1e-6;
       final axisOrigin = str(p['axisOrigin'], 'origin') == 'left'
           ? 'left'
           : 'origin';
@@ -360,12 +489,7 @@ Map<String, ExecFn> _buildExec() {
         final x = toNum(rec['x']);
         final y = toNum(rec['y']);
         if (x == null || y == null) continue;
-        points.add(
-          Pt3(
-            double.parse(x.toStringAsFixed(5)),
-            double.parse(y.toStringAsFixed(5)),
-          ),
-        );
+        points.add(Pt3(x, y));
         final size = toNum(rec['size']);
         final shape = str(rec['shape'], 'circle');
         final color = str(rec['color'], '#1f77b4');
@@ -425,11 +549,13 @@ Map<String, ExecFn> _buildExec() {
         if (tMax <= tMin) throw Exception('t 结束需大于 t 起始');
         points = [
           for (final t in linspace(tMin, tMax, samples))
-            if (fx(t, 0).isFinite && fy(t, 0).isFinite)
-              Pt(
-                double.parse(fx(t, 0).toStringAsFixed(6)),
-                double.parse(fy(t, 0).toStringAsFixed(6)),
-              ),
+            (() {
+              final x = fx(t, 0);
+              final y = fy(t, 0);
+              return x.isFinite && y.isFinite
+                  ? Pt(x, y)
+                  : const Pt(double.nan, double.nan);
+            })(),
         ];
         if (points.isEmpty) throw Exception('函数在此范围内无有效值');
       } else {
@@ -441,11 +567,10 @@ Map<String, ExecFn> _buildExec() {
         if (xMax <= xMin) throw Exception('X 结束需大于 X 起始');
         points = [
           for (final x in linspace(xMin, xMax, samples))
-            if (f(x, 0).isFinite)
-              Pt(
-                double.parse(x.toStringAsFixed(6)),
-                double.parse(f(x, 0).toStringAsFixed(6)),
-              ),
+            (() {
+              final y = f(x, 0);
+              return y.isFinite ? Pt(x, y) : const Pt(double.nan, double.nan);
+            })(),
         ];
         if (points.isEmpty) throw Exception('函数在此范围内无有效值');
       }
@@ -473,15 +598,11 @@ Map<String, ExecFn> _buildExec() {
           }
           final nums = vals.map(toNum).toList();
           final present = nums.whereType<double>().toList();
-          final mean = present.isEmpty
-              ? 0.0
-              : present.reduce((s, v) => s + v) / present.length;
+          final mean = _safeMean(present);
           if (fillMode == 'mean') {
             return Column(
               name: col.name,
-              values: vals
-                  .map((v) => v ?? double.parse(mean.toStringAsFixed(4)))
-                  .toList(),
+              values: vals.map((v) => v ?? mean).toList(),
             );
           }
           // 线性插值
@@ -493,29 +614,29 @@ Map<String, ExecFn> _buildExec() {
                 final a = num_(vals[prevIdx], 0);
                 final b = num_(vals[i], a);
                 for (var k = prevIdx + 1; k < i; k++) {
-                  out[k] = double.parse(
-                    (a + (b - a) * (k - prevIdx) / (i - prevIdx))
-                        .toStringAsFixed(4),
-                  );
+                  out[k] = a + (b - a) * (k - prevIdx) / (i - prevIdx);
                 }
               }
               prevIdx = i;
             }
           }
           for (var i = 0; i < out.length; i++) {
-            if (out[i] == null) out[i] = double.parse(mean.toStringAsFixed(4));
+            if (out[i] == null) out[i] = mean;
           }
           return Column(name: col.name, values: out);
         }).toList();
       }
 
-      final rowCount = columns.isEmpty ? 0 : columns.first.values.length;
+      final rowCount = columns.fold<int>(
+        0,
+        (count, column) => math.max(count, column.values.length),
+      );
       final keep = <int>[];
       final seen = <String>{};
       for (var r = 0; r < rowCount; r++) {
-        final rowMissing = columns.any((c) => toNum(c.values[r]) == null);
+        final rowMissing = columns.any((c) => _isMissing(_cell(c, r)));
         if (dropMissing && rowMissing) continue;
-        final key = columns.map((c) => '${c.values[r]}').join('\u0001');
+        final key = columns.map((c) => '${_cell(c, r)}').join('\u0001');
         if (dedupe && seen.contains(key)) continue;
         if (dedupe) seen.add(key);
         keep.add(r);
@@ -526,7 +647,7 @@ Map<String, ExecFn> _buildExec() {
               .map(
                 (c) => Column(
                   name: c.name,
-                  values: keep.map((r) => c.values[r]).toList(),
+                  values: keep.map((r) => _cell(c, r)).toList(),
                 ),
               )
               .toList(),
@@ -552,33 +673,16 @@ Map<String, ExecFn> _buildExec() {
         if (!targets.contains(col.name)) return col.copy();
         final nums = col.values.map(toNum).toList();
         final present = nums.whereType<double>().toList();
-        double? Function(double?) fn = (v) => v;
-        if (present.isNotEmpty) {
-          if (method == 'zscore') {
-            final mean = present.reduce((s, v) => s + v) / present.length;
-            final variance =
-                present.fold(
-                  0.0,
-                  (s, v) => s + math.pow(v - mean, 2).toDouble(),
-                ) /
-                present.length;
-            var std = math.sqrt(variance);
-            if (std == 0) std = 1.0;
-            fn = (v) => v == null
-                ? null
-                : double.parse(((v - mean) / std).toStringAsFixed(5));
-          } else {
-            final mn = present.reduce(math.min);
-            final mx = present.reduce(math.max);
-            final span = (mx - mn) == 0 ? 1.0 : mx - mn;
-            fn = (v) => v == null
-                ? null
-                : double.parse(((v - mn) / span).toStringAsFixed(5));
-          }
-        }
+        final normalized = method == 'zscore'
+            ? _stableZScores(present)
+            : _stableMinMax(present);
+        var valueIndex = 0;
         return Column(
           name: col.name,
-          values: col.values.map((v) => fn(toNum(v))).toList(),
+          values: col.values.map((v) {
+            final number = toNum(v);
+            return number == null ? null : normalized[valueIndex++];
+          }).toList(),
         );
       }).toList();
       return {'out0': TableData(columns)};
@@ -641,7 +745,8 @@ Map<String, ExecFn> _buildExec() {
         }
       } else if (method == 'random') {
         final all = List<int>.generate(rowCount, (i) => i);
-        all.shuffle(math.Random());
+        final seed = num_(ctx.params['seed'], 0).round();
+        all.shuffle(math.Random(seed));
         final n = math.min(count, rowCount);
         keep = all.sublist(0, n)..sort();
       } else {
@@ -668,14 +773,7 @@ Map<String, ExecFn> _buildExec() {
         'out0': styledSeries(
           ctx,
           str(ctx.params['name'], '导数'),
-          derivative(pts)
-              .map(
-                (p) => Pt(
-                  double.parse(p.x.toStringAsFixed(6)),
-                  double.parse(p.y.toStringAsFixed(6)),
-                ),
-              )
-              .toList(),
+          derivative(pts).map((p) => Pt(p.x, p.y)).toList(),
         ),
       };
     },
@@ -686,21 +784,14 @@ Map<String, ExecFn> _buildExec() {
         'out0': styledSeries(
           ctx,
           str(ctx.params['name'], '积分'),
-          cumulativeIntegral(pts)
-              .map(
-                (p) => Pt(
-                  double.parse(p.x.toStringAsFixed(6)),
-                  double.parse(p.y.toStringAsFixed(6)),
-                ),
-              )
-              .toList(),
+          cumulativeIntegral(pts).map((p) => Pt(p.x, p.y)).toList(),
         ),
       };
     },
 
     'fit': (ctx) {
       final pts = makeSeries(ctx, 'in0');
-      if (pts.length < 3) throw Exception('数据点过少,无法拟合');
+      if (pts.length < 2) throw Exception('拟合至少需要两个有限数据点');
       final xs = pts.map((p) => p.x).toList();
       final ys = pts.map((p) => p.y).toList();
       final method = str(ctx.params['method'], 'linear');
@@ -711,14 +802,11 @@ Map<String, ExecFn> _buildExec() {
       if (method == 'exponential') {
         final ef = exponentialFit(xs, ys);
         if (ef == null) throw Exception('指数拟合失败(需要 y>0)');
-        final out = linspace(xmin, xmax, 200)
-            .map(
-              (x) => Pt(
-                double.parse(x.toStringAsFixed(4)),
-                double.parse((ef.a * math.exp(ef.b * x)).toStringAsFixed(5)),
-              ),
-            )
-            .toList();
+        final out = linspace(
+          xmin,
+          xmax,
+          200,
+        ).map((x) => Pt(x, ef.evaluate(x))).toList();
         return {
           'out0': styledSeries(ctx, name, out),
           'out1': TableData([
@@ -729,9 +817,9 @@ Map<String, ExecFn> _buildExec() {
             Column(
               name: '值',
               values: [
-                ef.a.toStringAsFixed(4),
-                ef.b.toStringAsFixed(4),
-                ef.r2.toStringAsFixed(4),
+                ef.a,
+                ef.b,
+                ef.r2.isFinite ? ef.r2 : null,
               ].map((s) => s as dynamic).toList(),
             ),
           ]),
@@ -739,14 +827,11 @@ Map<String, ExecFn> _buildExec() {
       }
       final degree = num_(ctx.params['degree'], 1).round();
       final coeffs = polyFit(xs, ys, degree);
-      final out = linspace(xmin, xmax, 200)
-          .map(
-            (x) => Pt(
-              double.parse(x.toStringAsFixed(4)),
-              double.parse(polyEval(coeffs, x).toStringAsFixed(5)),
-            ),
-          )
-          .toList();
+      final out = linspace(
+        xmin,
+        xmax,
+        200,
+      ).map((x) => Pt(x, polyEval(coeffs, x))).toList();
       return {
         'out0': styledSeries(ctx, name, out),
         'out1': TableData([
@@ -754,12 +839,7 @@ Map<String, ExecFn> _buildExec() {
             name: '参数',
             values: List.generate(coeffs.length, (i) => 'c$i' as dynamic),
           ),
-          Column(
-            name: '值',
-            values: coeffs
-                .map((c) => double.parse(c.toStringAsFixed(6)) as dynamic)
-                .toList(),
-          ),
+          Column(name: '值', values: coeffs.map((c) => c as dynamic).toList()),
         ]),
       };
     },
@@ -771,14 +851,11 @@ Map<String, ExecFn> _buildExec() {
       final fit = linearFit(xs, ys);
       final xmin = xs.reduce(math.min);
       final xmax = xs.reduce(math.max);
-      final out = linspace(xmin, xmax, 200)
-          .map(
-            (x) => Pt(
-              double.parse(x.toStringAsFixed(4)),
-              double.parse((fit.a + fit.b * x).toStringAsFixed(5)),
-            ),
-          )
-          .toList();
+      final out = linspace(
+        xmin,
+        xmax,
+        200,
+      ).map((x) => Pt(x, fit.a + fit.b * x)).toList();
       return {
         'out0': SeriesData(name: '线性回归', points: out),
         'out1': TableData([
@@ -789,9 +866,9 @@ Map<String, ExecFn> _buildExec() {
           Column(
             name: '值',
             values: [
-              double.parse(fit.a.toStringAsFixed(5)),
-              double.parse(fit.b.toStringAsFixed(5)),
-              double.parse(fit.r2.toStringAsFixed(5)),
+              fit.a,
+              fit.b,
+              fit.r2.isFinite ? fit.r2 : null,
             ].map((s) => s as dynamic).toList(),
           ),
         ]),
@@ -818,10 +895,7 @@ Map<String, ExecFn> _buildExec() {
       final points = pts.map((p) {
         final v = f(p.x, p.y);
         if (!v.isFinite) throw Exception('表达式计算失败');
-        return Pt(
-          double.parse(p.x.toStringAsFixed(6)),
-          double.parse(v.toStringAsFixed(6)),
-        );
+        return Pt(p.x, v);
       }).toList();
       return {
         'out0': styledSeries(
@@ -845,9 +919,8 @@ Map<String, ExecFn> _buildExec() {
         throw Exception('需要两条曲线输入');
       }
       final list = <Pt3>[];
-      // 限制采样规模,避免 O(n×m) 爆炸
-      final pa = a.points.length > 3000 ? a.points.sublist(0, 3000) : a.points;
-      final pb = b.points.length > 3000 ? b.points.sublist(0, 3000) : b.points;
+      final pa = a.points;
+      final pb = b.points;
       // 坐标尺度:全部点最大绝对值(尺度自适应阈值,小数量值不被绝对 eps 吞掉);
       // 跳过 NaN 断点(隐式曲线多分支分隔),防 max 污染成 NaN
       var scale = 0.0;
@@ -865,6 +938,14 @@ Map<String, ExecFn> _buildExec() {
       // 叉积量纲为坐标²:相对平行阈值与 scale² 成比例
       final eps = 1e-12 * scale * scale;
       final dedup = 1e-6 * scale;
+      final bSegments = <_SegmentBox>[];
+      for (var j = 0; j < pb.length - 1; j++) {
+        final q1 = pb[j], q2 = pb[j + 1];
+        if (q1.x.isFinite && q1.y.isFinite && q2.x.isFinite && q2.y.isFinite) {
+          bSegments.add(_SegmentBox(q1, q2));
+        }
+      }
+      final bvh = bSegments.isEmpty ? null : _SegmentBvh.build(bSegments);
       for (var i = 0; i < pa.length - 1; i++) {
         final p1 = pa[i];
         final p2 = pa[i + 1];
@@ -873,11 +954,23 @@ Map<String, ExecFn> _buildExec() {
         if (!p2.x.isFinite || !p2.y.isFinite) continue;
         final rdx = p2.x - p1.x;
         final rdy = p2.y - p1.y;
-        for (var j = 0; j < pb.length - 1; j++) {
-          final q1 = pb[j];
-          final q2 = pb[j + 1];
-          if (!q1.x.isFinite || !q1.y.isFinite) continue;
-          if (!q2.x.isFinite || !q2.y.isFinite) continue;
+        final candidates = <_SegmentBox>[];
+        bvh?.query(
+          math.min(p1.x, p2.x),
+          math.max(p1.x, p2.x),
+          math.min(p1.y, p2.y),
+          math.max(p1.y, p2.y),
+          candidates,
+        );
+        for (final segment in candidates) {
+          final q1 = segment.a;
+          final q2 = segment.b;
+          if (math.max(p1.x, p2.x) < math.min(q1.x, q2.x) ||
+              math.max(q1.x, q2.x) < math.min(p1.x, p2.x) ||
+              math.max(p1.y, p2.y) < math.min(q1.y, q2.y) ||
+              math.max(q1.y, q2.y) < math.min(p1.y, p2.y)) {
+            continue;
+          }
           final sdx = q2.x - q1.x;
           final sdy = q2.y - q1.y;
           final d = rdx * sdy - rdy * sdx;
@@ -1026,18 +1119,12 @@ Map<String, ExecFn> _buildExec() {
       final colors = <String>[];
       final n = math.max(xCol.values.length, yCol.values.length);
       for (var i = 0; i < n; i++) {
-        final x = toNum(xCol.values[i]);
-        final y = toNum(yCol.values[i]);
+        final x = toNum(_cell(xCol, i));
+        final y = toNum(_cell(yCol, i));
         if (x == null || y == null) continue;
-        final z = zCol != null ? toNum(zCol.values[i]) : null;
+        final z = zCol != null ? toNum(_cell(zCol, i)) : null;
         if (zCol != null && z == null) continue;
-        points.add(
-          Pt3(
-            double.parse(x.toStringAsFixed(5)),
-            double.parse(y.toStringAsFixed(5)),
-            z == null ? null : double.parse(z.toStringAsFixed(5)),
-          ),
-        );
+        points.add(Pt3(x, y, z));
         if (normSize != null) {
           sizes.add(
             baseSize * math.max(0.3, i < normSize.length ? normSize[i] : 0.5),
@@ -1085,16 +1172,15 @@ Map<String, ExecFn> _buildExec() {
       final points = <Pt>[];
       final sizes = <double>[];
       final colors = <String>[];
-      for (var i = 0; i < xCol.values.length; i++) {
-        final x = toNum(xCol.values[i]);
-        final y = toNum(yCol.values[i]);
-        if (x == null || y == null) continue;
-        points.add(
-          Pt(
-            double.parse(x.toStringAsFixed(5)),
-            double.parse(y.toStringAsFixed(5)),
-          ),
-        );
+      final n = math.max(xCol.values.length, yCol.values.length);
+      for (var i = 0; i < n; i++) {
+        final x = toNum(_cell(xCol, i));
+        final y = toNum(_cell(yCol, i));
+        if (x == null || y == null) {
+          points.add(const Pt(double.nan, double.nan));
+          continue;
+        }
+        points.add(Pt(x, y));
         if (normW != null) {
           sizes.add(baseW * math.max(0.3, i < normW.length ? normW[i] : 0.5));
         }

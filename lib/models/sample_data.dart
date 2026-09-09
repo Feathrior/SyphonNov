@@ -7,7 +7,9 @@ import 'data.dart';
 import 'math.dart';
 
 /// 预设表格数据
-List<Column> presetTable(String preset) {
+List<Column> presetTable(String preset, {int seed = 0}) {
+  final random = math.Random(seed);
+  double g([double mean = 0, double std = 1]) => gaussRand(mean, std, random);
   switch (preset) {
     case 'volcano':
       {
@@ -18,17 +20,13 @@ List<Column> presetTable(String preset) {
         final exprA = <dynamic>[];
         final exprB = <dynamic>[];
         for (var i = 0; i < 200; i++) {
-          final fc = gaussRand(0, 1.4);
-          final p = math.exp(-gaussRand(0, 3.2).abs() * 1.1);
+          final fc = g(0, 1.4);
+          final p = math.exp(-g(0, 3.2).abs() * 1.1);
           gene.add('基因${i + 1}');
-          log2fc.add(double.parse(fc.toStringAsFixed(3)));
-          pvalue.add(double.parse(p.toStringAsFixed(5)));
-          exprA.add(
-            double.parse((50 + fc * 6 + gaussRand(0, 4)).toStringAsFixed(2)),
-          );
-          exprB.add(
-            double.parse((50 + fc * 6 + gaussRand(0, 4)).toStringAsFixed(2)),
-          );
+          log2fc.add(fc);
+          pvalue.add(p);
+          exprA.add(50 + fc * 6 + g(0, 4));
+          exprB.add(50 + fc * 6 + g(0, 4));
         }
         return [
           Column(name: 'gene', values: gene),
@@ -45,18 +43,8 @@ List<Column> presetTable(String preset) {
         final profit = <dynamic>[];
         for (var m = 1; m <= 24; m++) {
           month.add('$m月');
-          sales.add(
-            double.parse(
-              (120 + 40 * math.sin(m / 3) + m * 3 + gaussRand(0, 12))
-                  .toStringAsFixed(0),
-            ),
-          );
-          profit.add(
-            double.parse(
-              (30 + 15 * math.sin(m / 2.5) + m * 1.2 + gaussRand(0, 5))
-                  .toStringAsFixed(1),
-            ),
-          );
+          sales.add(120 + 40 * math.sin(m / 3) + m * 3 + g(0, 12));
+          profit.add(30 + 15 * math.sin(m / 2.5) + m * 1.2 + g(0, 5));
         }
         return [
           Column(name: '月份', values: month),
@@ -78,30 +66,10 @@ List<Column> presetTable(String preset) {
         ];
         for (var i = 0; i < 150; i++) {
           final c = centers[i % 3];
-          sl.add(
-            double.parse(
-              ((c[0] as num).toDouble() + gaussRand(0, 0.35)).toStringAsFixed(
-                1,
-              ),
-            ),
-          );
-          sw.add(
-            double.parse(
-              ((c[1] as num).toDouble() + gaussRand(0, 0.3)).toStringAsFixed(1),
-            ),
-          );
-          pl.add(
-            double.parse(
-              ((c[2] as num).toDouble() + gaussRand(0, 0.4)).toStringAsFixed(1),
-            ),
-          );
-          pw.add(
-            double.parse(
-              ((c[3] as num).toDouble() + gaussRand(0, 0.25)).toStringAsFixed(
-                1,
-              ),
-            ),
-          );
+          sl.add((c[0] as num).toDouble() + g(0, 0.35));
+          sw.add((c[1] as num).toDouble() + g(0, 0.3));
+          pl.add((c[2] as num).toDouble() + g(0, 0.4));
+          pw.add((c[3] as num).toDouble() + g(0, 0.25));
           species.add(c[4]);
         }
         return [
@@ -117,17 +85,11 @@ List<Column> presetTable(String preset) {
         // phys:带噪声的物理曲线数据
         final n = 200;
         final xs = linspace(0, 6 * math.pi, n);
-        final ys = xs
-            .map(
-              (x) => double.parse(
-                (math.sin(x) + 0.12 * gaussRand(0, 1)).toStringAsFixed(4),
-              ),
-            )
-            .toList();
+        final ys = xs.map((x) => math.sin(x) + 0.12 * g(0, 1)).toList();
         return [
           Column(
             name: 'x',
-            values: xs.map((v) => double.parse(v.toStringAsFixed(4))).toList(),
+            values: xs,
           ),
           Column(name: 'y', values: ys),
         ];
@@ -136,7 +98,9 @@ List<Column> presetTable(String preset) {
 }
 
 /// 预设散点数据
-DataObject presetScatter(String preset) {
+DataObject presetScatter(String preset, {int seed = 0}) {
+  final random = math.Random(seed);
+  double g([double mean = 0, double std = 1]) => gaussRand(mean, std, random);
   final n = 300;
   if (preset == 'cluster') {
     final pts = <Pt3>[];
@@ -149,8 +113,8 @@ DataObject presetScatter(String preset) {
       final c = centers[i % 3];
       pts.add(
         Pt3(
-          double.parse((c[0] + gaussRand(0, 0.9)).toStringAsFixed(3)),
-          double.parse((c[1] + gaussRand(0, 0.9)).toStringAsFixed(3)),
+          c[0] + g(0, 0.9),
+          c[1] + g(0, 0.9),
           (i % 3).toDouble(),
         ),
       );
@@ -163,9 +127,9 @@ DataObject presetScatter(String preset) {
     final t = (i / n) * 8 * math.pi;
     pts.add(
       Pt3(
-        double.parse((math.cos(t) * t * 0.4).toStringAsFixed(3)),
-        double.parse((math.sin(t) * t * 0.4).toStringAsFixed(3)),
-        double.parse((t * 0.5).toStringAsFixed(3)),
+        math.cos(t) * t * 0.4,
+        math.sin(t) * t * 0.4,
+        t * 0.5,
       ),
     );
   }

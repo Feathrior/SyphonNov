@@ -17,41 +17,66 @@ String fileBaseName(String path) {
   return dot > 0 ? base.substring(0, dot) : base;
 }
 
-/// 简易 CSV/TSV 解析(支持引号包裹)
-List<Column> parseDelimitedText(String text, [String delimiter = ',']) {
-  final lines = text
-      .replaceAll('\r\n', '\n')
-      .split('\n')
-      .map((l) => l.trimRight())
-      .where((l) => l.trim().isNotEmpty)
-      .toList();
-  if (lines.isEmpty) return [];
+enum HeaderMode { auto, present, absent }
 
-  List<String> splitLine(String line) {
-    final cells = <String>[];
-    var cur = '';
-    var inQuote = false;
-    for (var i = 0; i < line.length; i++) {
-      final ch = line[i];
-      if (ch == '"') {
-        if (inQuote && i + 1 < line.length && line[i + 1] == '"') {
-          cur += '"';
-          i++;
-        } else {
-          inQuote = !inQuote;
-        }
-      } else if (ch == delimiter && !inQuote) {
-        cells.add(cur);
-        cur = '';
-      } else {
-        cur += ch;
-      }
-    }
-    cells.add(cur);
-    return cells;
+/// RFC-style CSV/TSV parser. Record separators inside quoted fields are data.
+List<Column> parseDelimitedText(
+  String text, [
+  String delimiter = ',',
+  HeaderMode headerMode = HeaderMode.auto,
+]) {
+  if (delimiter.length != 1) {
+    throw ArgumentError.value(delimiter, 'delimiter', '必须是单个字符');
+  }
+  final rows = <List<String>>[];
+  var row = <String>[];
+  var cell = StringBuffer();
+  var quoted = false;
+  var afterQuote = false;
+  void finishCell() {
+    row.add(cell.toString());
+    cell = StringBuffer();
+    afterQuote = false;
   }
 
-  final rows = lines.map(splitLine).toList();
+  void finishRow() {
+    finishCell();
+    if (row.any((value) => value.isNotEmpty)) rows.add(row);
+    row = <String>[];
+  }
+
+  for (var i = 0; i < text.length; i++) {
+    final ch = text[i];
+    if (quoted) {
+      if (ch == '"') {
+        if (i + 1 < text.length && text[i + 1] == '"') {
+          cell.write('"');
+          i++;
+        } else {
+          quoted = false;
+          afterQuote = true;
+        }
+      } else {
+        cell.write(ch);
+      }
+      continue;
+    }
+    if (ch == '"' && cell.isEmpty && !afterQuote) {
+      quoted = true;
+    } else if (ch == delimiter) {
+      finishCell();
+    } else if (ch == '\n' || ch == '\r') {
+      if (ch == '\r' && i + 1 < text.length && text[i + 1] == '\n') i++;
+      finishRow();
+    } else if (afterQuote && ch.trim().isNotEmpty) {
+      throw const FormatException('引号字段结束后出现非法字符');
+    } else if (!afterQuote) {
+      cell.write(ch);
+    }
+  }
+  if (quoted) throw const FormatException('CSV 引号字段未闭合');
+  if (cell.isNotEmpty || row.isNotEmpty) finishRow();
+  if (rows.isEmpty) return [];
   var width = 0;
   for (final r in rows) {
     if (r.length > width) width = r.length;
@@ -62,10 +87,24 @@ List<Column> parseDelimitedText(String text, [String delimiter = ',']) {
     final looksHeader = first.isNotEmpty && num.tryParse(first) == null;
     names.add(looksHeader ? first : '列${c + 1}');
   }
-  final hasHeader = rows[0].asMap().entries.any(
-    (e) =>
-        e.value.trim() == names[e.key] && num.tryParse(e.value.trim()) == null,
-  );
+  final firstAllText = List.generate(width, (c) {
+    final first = c < rows[0].length ? rows[0][c].trim() : '';
+    return first.isNotEmpty && num.tryParse(first) == null;
+  }).every((value) => value);
+  final laterHasNumeric = rows
+      .skip(1)
+      .any((r) => r.any((value) => num.tryParse(value.trim()) != null));
+  final autoHeader = rows.length > 1 && firstAllText && laterHasNumeric;
+  final hasHeader = switch (headerMode) {
+    HeaderMode.present => true,
+    HeaderMode.absent => false,
+    HeaderMode.auto => autoHeader,
+  };
+  if (!hasHeader) {
+    for (var c = 0; c < names.length; c++) {
+      names[c] = '列${c + 1}';
+    }
+  }
   final startRow = hasHeader ? 1 : 0;
 
   final columns = names
@@ -191,6 +230,14 @@ List<Column> xlsxBytesToColumns(List<int> bytes) {
     rows.add(line);
   }
   if (rows.isEmpty) return [];
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].length < maxW) {
+      rows[i] = [
+        ...rows[i],
+        ...List<dynamic>.filled(maxW - rows[i].length, ''),
+      ];
+    }
+  }
 
   // 5) 首行作列名(与 excel 包逻辑一致),其余为数据
   final names = <String>[];
@@ -229,27 +276,33 @@ String? _attrLocal(XmlElement e, String local) {
 String? _xlsxPart(Archive archive, String suffix) {
   for (final f in archive.files) {
     if (f.name.endsWith(suffix)) {
-      return utf8.decode(f.content, allowMalformed: true);
+      return utf8.decode(f.content, allowMalformed: false);
     }
   }
   return null;
 }
 
-/// 读取数据文件(csv/tsv/txt/xlsx/xls)并转为统一 CSV 文本。
-/// - 文本文件按 UTF-8 解码(容错),避免中文乱码;
+/// 读取数据文件(csv/tsv/txt/xlsx)并转为统一 CSV 文本。
+/// - 文本文件严格按 UTF-8 解码，损坏内容会明确报错;
 /// - Excel 取第一个工作表并序列化为 CSV 文本(自研 OOXML 解析器);
 /// 失败(不存在/损坏/不支持格式)时抛出异常。
-Future<String> dataFileToCsvText(String path) async {
+Future<String> dataFileToCsvText(
+  String path, {
+  bool strictEncoding = true,
+}) async {
   final lower = path.toLowerCase();
   final bytes = await File(path).readAsBytes();
-  if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+  if (lower.endsWith('.xls')) {
+    throw const FormatException('不支持传统二进制 .xls；请另存为 .xlsx 或 CSV');
+  }
+  if (lower.endsWith('.xlsx')) {
     try {
       return columnsToCsv(xlsxBytesToColumns(bytes));
     } catch (e) {
       throw Exception('无法解析 Excel 文件(仅支持 .xlsx):$e');
     }
   }
-  return utf8.decode(bytes, allowMalformed: true);
+  return utf8.decode(bytes, allowMalformed: !strictEncoding);
 }
 
 /// 表格列 → CSV 文本(带引号转义;列名/数值原样输出)
