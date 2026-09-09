@@ -47,6 +47,52 @@ void main() {
     }
   });
 
+  test('implicit equation syntax extracts a closed sphere', () {
+    final mesh = surface({
+      'mode': 'implicit',
+      'implicitExpr': 'x^2+y^2+z^2=1',
+      'xMin': -1.3,
+      'xMax': 1.3,
+      'yMin': -1.3,
+      'yMax': 1.3,
+      'zMin': -1.3,
+      'zMax': 1.3,
+      'rows': 17,
+      'columns': 17,
+      'depthSamples': 17,
+    });
+    expect(mesh.faces, isNotEmpty);
+    expect(
+      mesh.vertices.every((v) => v.x.isFinite && v.y.isFinite && v.z.isFinite),
+      isTrue,
+    );
+    for (final v in mesh.vertices.take(100)) {
+      expect(v.x * v.x + v.y * v.y + v.z * v.z, closeTo(1, 0.04));
+    }
+  });
+
+  test('surface display mode replaces contradictory style toggles', () {
+    final cfg = getConfig('surface_input')!;
+    expect(cfg.params.where((p) => p.key == 'displayMode'), hasLength(1));
+    expect(
+      cfg.params.any(
+        (p) =>
+            p.key == 'wireframe' || p.key == 'fillFaces' || p.key == 'showEdge',
+      ),
+      isFalse,
+    );
+    final wire = surface({
+      'mode': 'preset',
+      'preset': 'plane',
+      'rows': 3,
+      'columns': 3,
+      'displayMode': 'wireframe',
+    });
+    expect(wire.wireframe, isTrue);
+    expect(wire.fill, isFalse);
+    expect(wire.showEdge, isTrue);
+  });
+
   test('non-finite samples become holes and are never referenced by faces', () {
     final mesh = surface({
       'mode': 'explicit',

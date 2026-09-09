@@ -194,6 +194,9 @@ class SeriesData extends DataObject {
   final String name;
   final List<Pt> points;
 
+  /// 可选逐点 Z 坐标；为空时曲线位于 z=0。NaN 断点应在三列同步出现。
+  final List<double>? zValues;
+
   /// 线样式(由"表格转曲线"等源节点提供)
   final double? lineWidth;
   final String? lineColor;
@@ -205,6 +208,7 @@ class SeriesData extends DataObject {
   SeriesData({
     required this.name,
     required this.points,
+    this.zValues,
     this.lineWidth,
     this.lineColor,
     this.lineStyle,

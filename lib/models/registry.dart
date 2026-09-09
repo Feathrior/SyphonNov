@@ -642,8 +642,7 @@ final List<NodeConfig> kNodeConfigs = [
     id: 'surface_input',
     label: '曲面输入',
     category: Category.input,
-    description:
-        '生成显式曲面 z=f(x,y)、参数曲面 (x,y,z)(u,v)、规则表格网格或常用预设。非有限采样点形成孔洞，不跨越定义域间断连接。',
+    description: '生成显式、参数或隐式曲面，也可重建规则表格网格。隐式模式接受 F(x,y,z)=0 或 lhs=rhs。',
     inputs: [
       s('in0', '网格表格', SocketType.table),
       s('in1', '色带', SocketType.colorbar),
@@ -659,6 +658,7 @@ final List<NodeConfig> kNodeConfigs = [
         options: [
           {'value': 'explicit', 'label': '显式 z=f(x,y)'},
           {'value': 'parametric', 'label': '参数曲面'},
+          {'value': 'implicit', 'label': '隐式 F(x,y,z)=0'},
           {'value': 'grid', 'label': '表格网格'},
           {'value': 'preset', 'label': '预设曲面'},
         ],
@@ -700,6 +700,15 @@ final List<NodeConfig> kNodeConfigs = [
         visibleWhenValues: ['parametric'],
       ),
       param(
+        key: 'implicitExpr',
+        label: '隐式方程',
+        type: 'text',
+        defaultValue: 'x^2+y^2+z^2=1',
+        dependsOn: 'mode',
+        visibleWhenValues: ['implicit'],
+        help: '可输入 F(x,y,z)=0，也可直接输入等式，如 x^2+y^2+z^2=1。',
+      ),
+      param(
         key: 'exprY',
         label: 'y(u,v)',
         type: 'text',
@@ -736,6 +745,24 @@ final List<NodeConfig> kNodeConfigs = [
         step: 0.1,
       ),
       param(
+        key: 'zMin',
+        label: 'Z 最小值',
+        type: 'number',
+        defaultValue: -3,
+        step: 0.1,
+        dependsOn: 'mode',
+        visibleWhenValues: ['implicit'],
+      ),
+      param(
+        key: 'zMax',
+        label: 'Z 最大值',
+        type: 'number',
+        defaultValue: 3,
+        step: 0.1,
+        dependsOn: 'mode',
+        visibleWhenValues: ['implicit'],
+      ),
+      param(
         key: 'rows',
         label: 'U/X 采样数',
         type: 'number',
@@ -752,6 +779,17 @@ final List<NodeConfig> kNodeConfigs = [
         min: 2,
         max: 400,
         step: 1,
+      ),
+      param(
+        key: 'depthSamples',
+        label: 'Z 采样数',
+        type: 'number',
+        defaultValue: 41,
+        min: 2,
+        max: 100,
+        step: 1,
+        dependsOn: 'mode',
+        visibleWhenValues: ['implicit'],
       ),
       param(
         key: 'wrapRows',
@@ -880,23 +918,16 @@ final List<NodeConfig> kNodeConfigs = [
         step: 0.05,
       ),
       param(
-        key: 'wireframe',
-        label: '线框模式',
-        type: 'boolean',
-        defaultValue: false,
-        help: '仅绘制三角形的边线,不填充',
-      ),
-      param(
-        key: 'fillFaces',
-        label: '填充面',
-        type: 'boolean',
-        defaultValue: true,
-      ),
-      param(
-        key: 'showEdge',
-        label: '显示边缘线',
-        type: 'boolean',
-        defaultValue: true,
+        key: 'displayMode',
+        label: '显示方式',
+        type: 'select',
+        defaultValue: 'surfaceEdges',
+        options: [
+          {'value': 'surface', 'label': '实体曲面'},
+          {'value': 'surfaceEdges', 'label': '实体 + 网格线'},
+          {'value': 'wireframe', 'label': '仅网格线'},
+        ],
+        help: '合并原先互相冲突的线框、填充面和显示边缘线三个开关。',
       ),
       param(
         key: 'doubleSided',
@@ -1259,20 +1290,25 @@ final List<NodeConfig> kNodeConfigs = [
     exec: kExec['formula'],
   ),
   NodeConfig(
-    id: 'curve_intersect',
-    label: '曲线求交',
+    id: 'geometry_intersect',
+    label: '线面求交',
     category: Category.compute,
-    description: '输入两条曲线,求折线段相交点,输出为散点(点组)。平行/共线段忽略,交点自动去重。',
+    description: '支持曲线-曲线、曲线-曲面和曲面-曲面求交。交点由散点输出，面面交线由曲线输出。',
     inputs: [
-      s('in0', '曲线 A', SocketType.series),
-      s('in1', '曲线 B', SocketType.series),
+      s('in0', '曲线/曲面 A', SocketType.any),
+      s('in1', '曲线/曲面 B', SocketType.any),
     ],
-    outputs: [s('out0', '交点', SocketType.scatter)],
+    outputs: [
+      s('out0', '交点', SocketType.scatter),
+      s('out1', '交线', SocketType.series),
+    ],
     params: [
       param(key: 'name', label: '输出名称', type: 'text', defaultValue: '交点'),
       ...pointStyleParams(),
+      param(key: 'curveName', label: '交线名称', type: 'text', defaultValue: '交线'),
+      ...lineStyleParams(),
     ],
-    exec: kExec['curve_intersect'],
+    exec: kExec['geometry_intersect'],
   ),
 
   // ================= 数据转化节点 =================

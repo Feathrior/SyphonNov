@@ -853,9 +853,10 @@ class PrincipledPainter extends CustomPainter {
       final baseC = (sr.lineColor ?? '').isEmpty ? C.line : sr.lineColor!;
       final style = (sr.lineStyle ?? '').isEmpty ? 'solid' : sr.lineStyle!;
       final pts = sr.points;
+      final zs = sr.zValues;
       if (pts.isEmpty) continue;
       if (pts.length == 1) {
-        final sp = _project(d, mapP(Vec3(pts[0].x, pts[0].y, 0)));
+        final sp = _project(d, mapP(Vec3(pts[0].x, pts[0].y, zs?.first ?? 0)));
         final col = (sr.colors ?? const []).isNotEmpty ? sr.colors![0] : baseC;
         final sz = _mx(
           1.5,
@@ -884,8 +885,22 @@ class PrincipledPainter extends CustomPainter {
             (sr.colors ?? const []).isNotEmpty && i < (sr.colors?.length ?? 0)
             ? sr.colors![i]
             : baseC;
-        final a = _project(d, mapP(Vec3(pts[i].x, pts[i].y, 0)));
-        final b = _project(d, mapP(Vec3(pts[i + 1].x, pts[i + 1].y, 0)));
+        final a = _project(
+          d,
+          mapP(
+            Vec3(pts[i].x, pts[i].y, zs != null && i < zs.length ? zs[i] : 0),
+          ),
+        );
+        final b = _project(
+          d,
+          mapP(
+            Vec3(
+              pts[i + 1].x,
+              pts[i + 1].y,
+              zs != null && i + 1 < zs.length ? zs[i + 1] : 0,
+            ),
+          ),
+        );
         final pp = Paint()
           ..color = parseColor(c)
           ..strokeWidth = w
@@ -1532,9 +1547,11 @@ class _PrincipledCanvasState extends State<PrincipledCanvas> {
               ..translateByDouble(_pan.dx, _pan.dy, 0, 1)
               ..scaleByDouble(_zoom, _zoom, 1, 1),
             alignment: Alignment.topLeft,
-            child: CustomPaint(
-              size: Size.infinite,
-              painter: PrincipledPainter(params: params, result: result),
+            child: RepaintBoundary(
+              child: CustomPaint(
+                size: Size.infinite,
+                painter: PrincipledPainter(params: params, result: result),
+              ),
             ),
           ),
         ),

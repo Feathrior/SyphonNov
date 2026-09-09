@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart' show TextField;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 
 import 'package:syphon_nov/main.dart';
 import 'package:syphon_nov/models/presets.dart';
@@ -72,8 +73,18 @@ void main() {
     final countBefore = tester.widgetList<NodeCard>(cards).length;
     expect(countBefore, greaterThan(0));
 
-    // 点击第一个节点卡片(标题栏区域)选中
     final rect = tester.getRect(cards.first);
+    await tester.tapAt(Offset(rect.center.dx, rect.top + 12));
+    await tester.pump();
+
+    // 模拟先编辑属性：旧实现中 EditableText 会一直保留焦点，即使随后已经
+    // 点击并选中了节点，Delete 仍会被输入框吞掉。
+    final propertyFields = find.byType(fluent.TextBox);
+    expect(propertyFields, findsWidgets);
+    await tester.tap(propertyFields.last);
+    await tester.pump();
+
+    // 点击第一个节点卡片(标题栏区域)选中
     await tester.tapAt(Offset(rect.center.dx, rect.top + 12));
     await tester.pump();
 

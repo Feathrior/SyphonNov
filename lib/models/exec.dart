@@ -1041,6 +1041,27 @@ Map<String, ExecFn> _buildExec() {
       return {'out0': styledScatter(ctx, str(ctx.params['name'], '交点'), list)};
     },
 
+    /// 统一几何求交：保留成熟的二维曲线精确求交，并将含曲面的组合
+    /// 转交给三维 BVH + 线段/三角形窄相检测。
+    'geometry_intersect': (ctx) {
+      final a = ctx.inputs['in0'], b = ctx.inputs['in1'];
+      if (a == null || b == null) throw Exception('需要两个几何输入');
+      if (a is MeshData || b is MeshData) {
+        return _intersectWithSurface(ctx, a, b);
+      }
+      if (a is SeriesData && b is SeriesData) {
+        final result = kExec['curve_intersect']!(ctx);
+        return {
+          ...result,
+          'out1': SeriesData(
+            name: str(ctx.params['curveName'], '交线'),
+            points: const [],
+          ),
+        };
+      }
+      throw Exception('只支持曲线×曲线、曲线×曲面或曲面×曲面');
+    },
+
     // ---------- 数据转化 ----------
     'extract_columns': (ctx) {
       final cols = toTable(ctx.inputs['in0']);
@@ -1519,6 +1540,464 @@ List<Pt> _implicitCurve(
   return out;
 }
 
+String _implicitFormula(String raw) {
+  final parts = raw.split('=');
+  if (parts.length == 1) return raw;
+  if (parts.length != 2 || parts.any((part) => part.trim().isEmpty)) {
+    throw Exception('隐式方程只能包含一个等号');
+  }
+  return '(${parts[0]})-(${parts[1]})';
+}
+
+class _TriangleBox {
+  final Vec3 a, b, c;
+  final double minX, maxX, minY, maxY, minZ, maxZ;
+  _TriangleBox(this.a, this.b, this.c)
+    : minX = math.min(a.x, math.min(b.x, c.x)),
+      maxX = math.max(a.x, math.max(b.x, c.x)),
+      minY = math.min(a.y, math.min(b.y, c.y)),
+      maxY = math.max(a.y, math.max(b.y, c.y)),
+      minZ = math.min(a.z, math.min(b.z, c.z)),
+      maxZ = math.max(a.z, math.max(b.z, c.z));
+  bool overlaps(_Box3 q) =>
+      maxX >= q.minX &&
+      minX <= q.maxX &&
+      maxY >= q.minY &&
+      minY <= q.maxY &&
+      maxZ >= q.minZ &&
+      minZ <= q.maxZ;
+}
+
+class _Box3 {
+  final double minX, maxX, minY, maxY, minZ, maxZ;
+  const _Box3(this.minX, this.maxX, this.minY, this.maxY, this.minZ, this.maxZ);
+  factory _Box3.segment(Vec3 a, Vec3 b) => _Box3(
+    math.min(a.x, b.x),
+    math.max(a.x, b.x),
+    math.min(a.y, b.y),
+    math.max(a.y, b.y),
+    math.min(a.z, b.z),
+    math.max(a.z, b.z),
+  );
+  factory _Box3.triangle(_TriangleBox t) =>
+      _Box3(t.minX, t.maxX, t.minY, t.maxY, t.minZ, t.maxZ);
+  bool overlaps(_Box3 other) =>
+      maxX >= other.minX &&
+      minX <= other.maxX &&
+      maxY >= other.minY &&
+      minY <= other.maxY &&
+      maxZ >= other.minZ &&
+      minZ <= other.maxZ;
+}
+
+class _TriangleBvh {
+  final _Box3 box;
+  final _TriangleBvh? left, right;
+  final List<_TriangleBox> leaf;
+  _TriangleBvh._(this.box, this.left, this.right, this.leaf);
+  factory _TriangleBvh.build(List<_TriangleBox> triangles) {
+    final box = _Box3(
+      triangles.map((t) => t.minX).reduce(math.min),
+      triangles.map((t) => t.maxX).reduce(math.max),
+      triangles.map((t) => t.minY).reduce(math.min),
+      triangles.map((t) => t.maxY).reduce(math.max),
+      triangles.map((t) => t.minZ).reduce(math.min),
+      triangles.map((t) => t.maxZ).reduce(math.max),
+    );
+    if (triangles.length <= 8) {
+      return _TriangleBvh._(box, null, null, triangles);
+    }
+    final spans = [
+      box.maxX - box.minX,
+      box.maxY - box.minY,
+      box.maxZ - box.minZ,
+    ];
+    var axis = 0;
+    if (spans[1] > spans[axis]) axis = 1;
+    if (spans[2] > spans[axis]) axis = 2;
+    double center(_TriangleBox t) => axis == 0
+        ? t.minX + t.maxX
+        : axis == 1
+        ? t.minY + t.maxY
+        : t.minZ + t.maxZ;
+    triangles.sort((a, b) => center(a).compareTo(center(b)));
+    final mid = triangles.length ~/ 2;
+    return _TriangleBvh._(
+      box,
+      _TriangleBvh.build(triangles.sublist(0, mid)),
+      _TriangleBvh.build(triangles.sublist(mid)),
+      const [],
+    );
+  }
+  void query(_Box3 q, List<_TriangleBox> out) {
+    if (!box.overlaps(q)) return;
+    if (left == null) {
+      for (final t in leaf) {
+        if (t.overlaps(q)) out.add(t);
+      }
+      return;
+    }
+    left!.query(q, out);
+    right!.query(q, out);
+  }
+}
+
+List<_TriangleBox> _meshTriangles(MeshData mesh) {
+  final out = <_TriangleBox>[];
+  for (final face in mesh.faces) {
+    if (face.length < 3) continue;
+    final a = mesh.vertices[face[0]];
+    for (var i = 1; i < face.length - 1; i++) {
+      final b = mesh.vertices[face[i]], c = mesh.vertices[face[i + 1]];
+      if ([
+        a,
+        b,
+        c,
+      ].every((v) => v.x.isFinite && v.y.isFinite && v.z.isFinite)) {
+        out.add(_TriangleBox(a, b, c));
+      }
+    }
+  }
+  return out;
+}
+
+Vec3? _segmentTriangle(Vec3 p0, Vec3 p1, _TriangleBox tri, double eps) {
+  final d = p1 - p0, e1 = tri.b - tri.a, e2 = tri.c - tri.a;
+  final h = _cross3(d, e2), det = e1.x * h.x + e1.y * h.y + e1.z * h.z;
+  if (det.abs() <= eps) return null;
+  final inv = 1 / det, s = p0 - tri.a;
+  final u = inv * (s.x * h.x + s.y * h.y + s.z * h.z);
+  if (u < -eps || u > 1 + eps) return null;
+  final q = _cross3(s, e1);
+  final v = inv * (d.x * q.x + d.y * q.y + d.z * q.z);
+  if (v < -eps || u + v > 1 + eps) return null;
+  final t = inv * (e2.x * q.x + e2.y * q.y + e2.z * q.z);
+  return t < -eps || t > 1 + eps ? null : p0 + d.scale(t.clamp(0.0, 1.0));
+}
+
+Map<String, DataObject> _intersectWithSurface(
+  ExecContext ctx,
+  DataObject a,
+  DataObject b,
+) {
+  final points = <Vec3>[], segments = <({Vec3 a, Vec3 b})>[];
+  void addPoint(Vec3 q, double tol) {
+    if (!points.any((p) => _length3(p - q) <= tol)) points.add(q);
+    if (points.length > 10000) throw Exception('求交结果超过 10000 点的资源预算');
+  }
+
+  if (a is SeriesData && b is MeshData || a is MeshData && b is SeriesData) {
+    final curve = a is SeriesData ? a : b as SeriesData;
+    final mesh = a is MeshData ? a : b as MeshData;
+    final triangles = _meshTriangles(mesh);
+    if (triangles.isEmpty) throw Exception('曲面没有有效三角面');
+    final bvh = _TriangleBvh.build(triangles);
+    final scale = mesh.vertices.fold(
+      1.0,
+      (s, v) =>
+          math.max(s, math.max(v.x.abs(), math.max(v.y.abs(), v.z.abs()))),
+    );
+    final tol = scale * 1e-8, eps = scale * scale * 1e-12;
+    for (var i = 0; i < curve.points.length - 1; i++) {
+      final p = curve.points[i], q = curve.points[i + 1];
+      if (!p.x.isFinite || !p.y.isFinite || !q.x.isFinite || !q.y.isFinite) {
+        continue;
+      }
+      final z0 = curve.zValues != null && i < curve.zValues!.length
+          ? curve.zValues![i]
+          : 0.0;
+      final z1 = curve.zValues != null && i + 1 < curve.zValues!.length
+          ? curve.zValues![i + 1]
+          : 0.0;
+      if (!z0.isFinite || !z1.isFinite) continue;
+      final p3 = Vec3(p.x, p.y, z0),
+          q3 = Vec3(q.x, q.y, z1),
+          candidates = <_TriangleBox>[];
+      bvh.query(_Box3.segment(p3, q3), candidates);
+      for (final tri in candidates) {
+        final hit = _segmentTriangle(p3, q3, tri, eps);
+        if (hit != null) addPoint(hit, tol);
+      }
+    }
+  } else if (a is MeshData && b is MeshData) {
+    final ta = _meshTriangles(a), tb = _meshTriangles(b);
+    if (ta.isEmpty || tb.isEmpty) throw Exception('曲面没有有效三角面');
+    final bvh = _TriangleBvh.build(tb);
+    final all = [...a.vertices, ...b.vertices];
+    final scale = all.fold(
+      1.0,
+      (s, v) =>
+          math.max(s, math.max(v.x.abs(), math.max(v.y.abs(), v.z.abs()))),
+    );
+    final tol = scale * 1e-7, eps = scale * scale * 1e-12;
+    for (final x in ta) {
+      final candidates = <_TriangleBox>[];
+      bvh.query(_Box3.triangle(x), candidates);
+      for (final y in candidates) {
+        final hits = <Vec3>[];
+        void hit(Vec3 p, Vec3 q, _TriangleBox tri) {
+          final h = _segmentTriangle(p, q, tri, eps);
+          if (h != null && !hits.any((v) => _length3(v - h) <= tol)) {
+            hits.add(h);
+          }
+        }
+
+        hit(x.a, x.b, y);
+        hit(x.b, x.c, y);
+        hit(x.c, x.a, y);
+        hit(y.a, y.b, x);
+        hit(y.b, y.c, x);
+        hit(y.c, y.a, x);
+        if (hits.length >= 2) {
+          var p0 = hits[0], p1 = hits[1], best = _length3(p1 - p0);
+          for (var i = 0; i < hits.length; i++) {
+            for (var j = i + 1; j < hits.length; j++) {
+              final d = _length3(hits[j] - hits[i]);
+              if (d > best) {
+                best = d;
+                p0 = hits[i];
+                p1 = hits[j];
+              }
+            }
+          }
+          if (best > tol) {
+            segments.add((a: p0, b: p1));
+            addPoint(p0, tol);
+            addPoint(p1, tol);
+          }
+          if (segments.length > 10000) throw Exception('曲面求交超过 10000 条线段的资源预算');
+        }
+      }
+    }
+  } else {
+    throw Exception('线面求交只接受 曲线+曲面 或 曲面+曲面');
+  }
+  final pts = [for (final p in points) Pt3(p.x, p.y, p.z)];
+  final curvePts = <Pt>[], zs = <double>[];
+  for (final s in segments) {
+    if (curvePts.isNotEmpty) {
+      curvePts.add(const Pt(double.nan, double.nan));
+      zs.add(double.nan);
+    }
+    curvePts.add(Pt(s.a.x, s.a.y));
+    zs.add(s.a.z);
+    curvePts.add(Pt(s.b.x, s.b.y));
+    zs.add(s.b.z);
+  }
+  return {
+    'out0': styledScatter(ctx, str(ctx.params['name'], '交点'), pts),
+    'out1': SeriesData(
+      name: str(ctx.params['curveName'], '交线'),
+      points: curvePts,
+      zValues: zs,
+      lineColor: str(ctx.params['lineColor'], '#ef4444'),
+      lineWidth: num_(ctx.params['lineWidth'], 2),
+    ),
+  };
+}
+
+Vec3 _cross3(Vec3 a, Vec3 b) =>
+    Vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+
+double _length3(Vec3 a) => math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+
+Vec3 _unit3(Vec3 a) {
+  final length = _length3(a);
+  return length > 0 && length.isFinite
+      ? a.scale(1 / length)
+      : const Vec3(0, 0, 1);
+}
+
+/// Marching tetrahedra 提取 F(x,y,z)=0。每个立方体采用同一体对角线的
+/// 六四面体分解，避免相邻立方体在共享面上选择不同对角线而产生裂缝。
+MeshData _genImplicitSurface(ExecContext ctx, int nx, int ny) {
+  final p = ctx.params;
+  final nz = (toNum(p['depthSamples']) ?? 41).round();
+  final x0 = toNum(p['xMin']) ?? -3, x1 = toNum(p['xMax']) ?? 3;
+  final y0 = toNum(p['yMin']) ?? -3, y1 = toNum(p['yMax']) ?? 3;
+  final z0 = toNum(p['zMin']) ?? -3, z1 = toNum(p['zMax']) ?? 3;
+  if (nx < 2 || nx > 100 || ny < 2 || ny > 100 || nz < 2 || nz > 100) {
+    throw Exception('隐式曲面每个方向的采样数必须在 2 到 100 之间');
+  }
+  if (nx * ny * nz > 500000) throw Exception('隐式曲面超过 500000 个体采样点的资源预算');
+  if (![x0, x1, y0, y1, z0, z1].every((v) => v.isFinite) ||
+      x0 >= x1 ||
+      y0 >= y1 ||
+      z0 >= z1) {
+    throw Exception('隐式曲面 X/Y/Z 范围必须是递增的有限区间');
+  }
+  final f = compileFormula3(
+    _implicitFormula(str(p['implicitExpr'], 'x^2+y^2+z^2=1')),
+  );
+  if (f == null) throw Exception('无法解析隐式曲面方程');
+  final dx = (x1 - x0) / (nx - 1), dy = (y1 - y0) / (ny - 1);
+  final dz = (z1 - z0) / (nz - 1);
+  int index(int i, int j, int k) => (i * ny + j) * nz + k;
+  final field = List<double>.filled(nx * ny * nz, double.nan);
+  for (var i = 0; i < nx; i++) {
+    for (var j = 0; j < ny; j++) {
+      for (var k = 0; k < nz; k++) {
+        field[index(i, j, k)] = f(x0 + i * dx, y0 + j * dy, z0 + k * dz);
+      }
+    }
+  }
+  const tetrahedra = [
+    [0, 5, 1, 6],
+    [0, 1, 2, 6],
+    [0, 2, 3, 6],
+    [0, 3, 7, 6],
+    [0, 7, 4, 6],
+    [0, 4, 5, 6],
+  ];
+  const tetraEdges = [
+    [0, 1],
+    [0, 2],
+    [0, 3],
+    [1, 2],
+    [1, 3],
+    [2, 3],
+  ];
+  final vertices = <Vec3>[], faces = <List<int>>[];
+  final normals = <Vec3>[];
+  final values = <double>[];
+  final mergeTol = math.max(dx, math.max(dy, dz)) * 1e-8;
+  bool same(Vec3 a, Vec3 b) => _length3(a - b) <= mergeTol;
+  Vec3 gradient(Vec3 q) {
+    final hx = dx * 0.25, hy = dy * 0.25, hz = dz * 0.25;
+    return _unit3(
+      Vec3(
+        f(q.x + hx, q.y, q.z) - f(q.x - hx, q.y, q.z),
+        f(q.x, q.y + hy, q.z) - f(q.x, q.y - hy, q.z),
+        f(q.x, q.y, q.z + hz) - f(q.x, q.y, q.z - hz),
+      ),
+    );
+  }
+
+  void emit(List<Vec3> polygon) {
+    if (polygon.length < 3) return;
+    final center = polygon.reduce((a, b) => a + b).scale(1 / polygon.length);
+    final normal = gradient(center);
+    var basis = normal.x.abs() < 0.8
+        ? const Vec3(1, 0, 0)
+        : const Vec3(0, 1, 0);
+    basis = _unit3(_cross3(normal, basis));
+    final second = _cross3(normal, basis);
+    polygon.sort((a, b) {
+      final da = a - center, db = b - center;
+      return math
+          .atan2(
+            da.x * second.x + da.y * second.y + da.z * second.z,
+            da.x * basis.x + da.y * basis.y + da.z * basis.z,
+          )
+          .compareTo(
+            math.atan2(
+              db.x * second.x + db.y * second.y + db.z * second.z,
+              db.x * basis.x + db.y * basis.y + db.z * basis.z,
+            ),
+          );
+    });
+    for (var t = 1; t < polygon.length - 1; t++) {
+      final tri = [polygon[0], polygon[t], polygon[t + 1]];
+      if (_length3(_cross3(tri[1] - tri[0], tri[2] - tri[0])) <=
+          mergeTol * mergeTol) {
+        continue;
+      }
+      final start = vertices.length;
+      for (final q in tri) {
+        vertices.add(q);
+        normals.add(gradient(q));
+        values.add(q.z);
+      }
+      faces.add([start, start + 1, start + 2]);
+      if (faces.length > 500000) throw Exception('隐式曲面超过 500000 个三角面的资源预算');
+    }
+  }
+
+  for (var i = 0; i < nx - 1; i++) {
+    for (var j = 0; j < ny - 1; j++) {
+      for (var k = 0; k < nz - 1; k++) {
+        final cube = <Vec3>[
+          Vec3(x0 + i * dx, y0 + j * dy, z0 + k * dz),
+          Vec3(x0 + (i + 1) * dx, y0 + j * dy, z0 + k * dz),
+          Vec3(x0 + (i + 1) * dx, y0 + (j + 1) * dy, z0 + k * dz),
+          Vec3(x0 + i * dx, y0 + (j + 1) * dy, z0 + k * dz),
+          Vec3(x0 + i * dx, y0 + j * dy, z0 + (k + 1) * dz),
+          Vec3(x0 + (i + 1) * dx, y0 + j * dy, z0 + (k + 1) * dz),
+          Vec3(x0 + (i + 1) * dx, y0 + (j + 1) * dy, z0 + (k + 1) * dz),
+          Vec3(x0 + i * dx, y0 + (j + 1) * dy, z0 + (k + 1) * dz),
+        ];
+        final fv = [
+          field[index(i, j, k)],
+          field[index(i + 1, j, k)],
+          field[index(i + 1, j + 1, k)],
+          field[index(i, j + 1, k)],
+          field[index(i, j, k + 1)],
+          field[index(i + 1, j, k + 1)],
+          field[index(i + 1, j + 1, k + 1)],
+          field[index(i, j + 1, k + 1)],
+        ];
+        if (fv.any((v) => !v.isFinite)) continue;
+        for (final tet in tetrahedra) {
+          final points = <Vec3>[];
+          for (final edge in tetraEdges) {
+            final ia = tet[edge[0]],
+                ib = tet[edge[1]],
+                va = fv[ia],
+                vb = fv[ib];
+            Vec3? q;
+            if (va == 0) {
+              q = cube[ia];
+            } else if (vb == 0) {
+              q = cube[ib];
+            } else if ((va < 0) != (vb < 0)) {
+              q = cube[ia] + (cube[ib] - cube[ia]).scale(va / (va - vb));
+            }
+            if (q != null && !points.any((old) => same(old, q!))) points.add(q);
+          }
+          emit(points);
+        }
+      }
+    }
+  }
+  if (faces.isEmpty) throw Exception('当前范围内没有检测到隐式曲面，请调整方程或范围');
+  final cb = ctx.inputs['in1'];
+  final display = str(p['displayMode'], 'surfaceEdges');
+  return MeshData(
+    name: str(p['name'], '隐式曲面'),
+    vertices: vertices,
+    faces: faces,
+    normals: normals,
+    vertexValues: str(p['valueMode'], 'z') == 'none' ? null : values,
+    gradient: cb is ColorbarData
+        ? cb.stops.map((s) => s.copy()).toList()
+        : null,
+    valueMin: cb is ColorbarData && cb.min != null
+        ? cb.min
+        : values.reduce(math.min),
+    valueMax: cb is ColorbarData && cb.max != null
+        ? cb.max
+        : values.reduce(math.max),
+    valueLabel: cb is ColorbarData ? cb.label ?? 'Z' : 'Z',
+    previewFaceBudget: (toNum(p['previewFaceBudget']) ?? 12000).round().clamp(
+      100,
+      100000,
+    ),
+    sourceVertexCount: vertices.length,
+    sourceFaceCount: faces.length,
+    doubleSided: p['doubleSided'] != false,
+    color: p['color'] is String && '${p['color']}'.isNotEmpty
+        ? '${p['color']}'
+        : null,
+    opacity: num_(p['opacity'], .85).clamp(.05, 1),
+    showEdge: display != 'surface',
+    edgeColor: p['edgeColor'] is String && '${p['edgeColor']}'.isNotEmpty
+        ? '${p['edgeColor']}'
+        : null,
+    wireframe: display == 'wireframe',
+    fill: display != 'wireframe',
+  );
+}
+
 /// 统一曲面生成。规则网格保留非有限采样点作为孔洞标记，但面不会跨孔洞。
 MeshData genSurface(ExecContext ctx) {
   final p = ctx.params;
@@ -1536,6 +2015,7 @@ MeshData genSurface(ExecContext ctx) {
   var a1 = toNum(p['xMax']) ?? 3;
   var b0 = toNum(p['yMin']) ?? -3;
   var b1 = toNum(p['yMax']) ?? 3;
+  if (mode == 'implicit') return _genImplicitSurface(ctx, rows, columns);
   Vec3 Function(double, double)? sample;
   List<double>? externalValues;
   var valueLabel = str(p['valueMode'], 'z') == 'radius' ? '距原点距离' : 'Z';
@@ -1826,6 +2306,7 @@ MeshData genSurface(ExecContext ctx) {
   final finiteValues =
       values?.where((v) => v.isFinite).toList() ?? const <double>[];
   final cb = ctx.inputs['in1'];
+  final display = str(p['displayMode'], 'surfaceEdges');
   return MeshData(
     name: str(p['name'], '曲面'),
     vertices: vertices,
@@ -1861,12 +2342,12 @@ MeshData genSurface(ExecContext ctx) {
         ? '${p['color']}'
         : null,
     opacity: num_(p['opacity'], 0.85).clamp(0.05, 1.0),
-    showEdge: p['showEdge'] != false,
+    showEdge: display != 'surface',
     edgeColor: p['edgeColor'] is String && '${p['edgeColor']}'.isNotEmpty
         ? '${p['edgeColor']}'
         : null,
-    wireframe: p['wireframe'] == true,
-    fill: p['fillFaces'] != false,
+    wireframe: display == 'wireframe',
+    fill: display != 'wireframe',
   );
 }
 

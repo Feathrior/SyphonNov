@@ -318,6 +318,9 @@ typedef GraphSnapshot = ({
 });
 
 class GraphStore extends ChangeNotifier {
+  /// 仅描述节点/断点的几何位移。拖动期间使用独立通知，避免让所有
+  /// GraphStore 监听者（尤其三维预览）随每个指针事件重建。
+  final ValueNotifier<int> layoutRevision = ValueNotifier<int>(0);
   List<GraphNode> nodes = [];
   List<GraphEdge> edges = [];
   List<NodeGroup> groups = []; // 节点分组(Blender 风格,成员整体拖动)
@@ -431,6 +434,9 @@ class GraphStore extends ChangeNotifier {
     structureVersion++;
     notifyListeners();
   }
+
+  /// 一次拖动结束后提交布局变化，让保存、缩略图之外的状态只刷新一次。
+  void finishLayoutChange() => notifyListeners();
 
   void removeNodes(List<String> ids) {
     if (ids.isEmpty) return;
@@ -762,7 +768,7 @@ class GraphStore extends ChangeNotifier {
       edgesChanged = true;
     }
     if (edgesChanged) edges = newEdges;
-    notifyListeners();
+    layoutRevision.value++;
   }
 
   // ---------- 节点分组(Blender 风格) ----------
@@ -1182,6 +1188,7 @@ class GraphStore extends ChangeNotifier {
             '该工作流含已在 v0.4.1 删除的平面节点；请用曲面输入的平面预设重新建立该节点',
           );
         }
+        if (configId == 'curve_intersect') configId = 'geometry_intersect';
         if (configId == 'viz_preset') {
           final p = n['params'] is Map ? n['params'] as Map : const {};
           configId = vizMap['${p['chartType'] ?? 'scatter'}'] ?? 'viz_scatter';

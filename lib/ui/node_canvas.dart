@@ -837,6 +837,9 @@ class NodeCanvasState extends State<NodeCanvas>
   /// - 非 Shift:点击已选节点保持多选(Blender 语义),点击未选节点重置单选
   /// - Shift:down 已新加入多选的节点,此处跳过(防 down 加选 → tap 再切换互相抵消)
   void _onSelect(String id) {
+    // onTap 在手势竞技场结束后执行；此处再次收回焦点，覆盖属性输入框在
+    // pointer-down 之后完成的延迟聚焦，保证随后 Delete 到达画布。
+    _focusNode.requestFocus();
     if (_shift) {
       if (_downAddedNode) return; // down 已加入多选,点击/拖动共用,不重复处理
       final sel = store.multiSelected;
@@ -894,6 +897,7 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   void _onNodeDragEnd(String id, {required bool single}) {
+    final moved = _dragSnapshotted;
     _draggingId = null;
     _dragIds = {};
     _dragOrigins = {};
@@ -903,6 +907,7 @@ class NodeCanvasState extends State<NodeCanvas>
     }
     _insertPreviewEdge = null;
     _insertPreviewPoint = null;
+    if (moved) store.finishLayoutChange();
     _bump();
   }
 
@@ -1471,6 +1476,9 @@ class NodeCanvasState extends State<NodeCanvas>
     if (_inMiniMap(e.position)) return;
     // 缩放控制按钮组内:指针事件由按钮自身处理,画布层一律忽略
     if (_inZoomControl(e.position)) return;
+    // 从属性输入框等控件返回画布时立即收回键盘焦点，确保 Delete/Backspace
+    // 由画布快捷键处理。此前节点虽然已选中，EditableText 仍会吞掉删除键。
+    if (e.buttons & kPrimaryButton != 0) _focusNode.requestFocus();
     _downButtons = e.buttons;
     _downPosScreen = e.localPosition;
     // 按下即结束实时预览:点击生成断点/命中节点/断点圆点等任何操作时,
@@ -2407,10 +2415,13 @@ class NodeCanvasState extends State<NodeCanvas>
     List<GraphEdge> edges,
   ) {
     return Positioned.fill(
-      child: RepaintBoundary(
-        child: CustomPaint(
-          painter: _buildEdgePainter(t, nodes, edges),
-          size: Size.infinite,
+      child: AnimatedBuilder(
+        animation: store.layoutRevision,
+        builder: (context, _) => RepaintBoundary(
+          child: CustomPaint(
+            painter: _buildEdgePainter(t, store.nodes, store.edges),
+            size: Size.infinite,
+          ),
         ),
       ),
     );
@@ -2467,15 +2478,21 @@ class NodeCanvasState extends State<NodeCanvas>
 
   /// 单节点卡片层(独立 RepaintBoundary:hover/拖拽只重绘该卡片层)
   Widget _buildNodeLayer(GraphNode n) {
-    return Positioned(
-      left: n.position.dx,
-      top: n.position.dy,
+    return AnimatedBuilder(
+      animation: store.layoutRevision,
       child: CanvasZoom(
         notifier: _zoomNotifier,
         child: RepaintBoundary(
           child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
         ),
       ),
+      builder: (context, child) {
+        final current = store.nodes
+            .where((node) => node.id == n.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        return Transform.translate(offset: current.position, child: child);
+      },
     );
   }
 
@@ -2504,7 +2521,7 @@ class NodeCanvasState extends State<NodeCanvas>
       right: 14,
       bottom: 14,
       child: AnimatedBuilder(
-        animation: store,
+        animation: Listenable.merge([store, store.layoutRevision]),
         builder: (context, _) => MiniMapView(
           key: _miniMapKey,
           nodes: store.nodes,

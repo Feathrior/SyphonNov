@@ -533,6 +533,8 @@ class Frac {
   return (x: (p1 + t * r).toDouble(), y: (p1Y + t * rY).toDouble());
 }
 
+typedef _Scalar3 = double Function(double x, double y, double z);
+
 /// 简单数学表达式求值(支持 x/y/pi/e/sin/cos/tan/exp/log/sqrt/abs/^)
 /// 返回 null 表示表达式非法
 double Function(double x, double y)? compileFormula(String src) {
@@ -547,8 +549,25 @@ double Function(double x, double y)? compileFormula(String src) {
     final parser = _ExprParser(normalized);
     final fn = parser.parse();
     return (x, y) {
-      final v = fn(x, y);
+      final v = fn(x, y, 0);
       return v.isFinite ? v : double.nan;
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 三变量表达式，供隐式曲面 F(x,y,z)=0 使用。
+double Function(double x, double y, double z)? compileFormula3(String src) {
+  try {
+    final normalized = src.replaceAllMapped(
+      RegExp(r'(\d(?:\.\d*)?)(?=(?:sin|cos|tan|exp|log|sqrt|abs)\s*\()'),
+      (match) => '${match.group(1)}*',
+    );
+    final fn = _ExprParser(normalized).parse();
+    return (x, y, z) {
+      final value = fn(x, y, z);
+      return value.isFinite ? value : double.nan;
     };
   } catch (_) {
     return null;
@@ -561,7 +580,7 @@ class _ExprParser {
   int _pos = 0;
   _ExprParser(this.src);
 
-  double Function(double, double) parse() {
+  _Scalar3 parse() {
     final e = _parseExpr();
     _skipWs();
     if (_pos != src.length) {
@@ -570,7 +589,7 @@ class _ExprParser {
     return e;
   }
 
-  double Function(double, double) _parseExpr() {
+  _Scalar3 _parseExpr() {
     var left = _parseTerm();
     while (true) {
       _skipWs(); // 运算符前允许空格(修复 '4 - x' 被解析成常数 4 的问题)
@@ -581,9 +600,9 @@ class _ExprParser {
         final right = _parseTerm();
         final l = left;
         if (ch == '+') {
-          left = (x, y) => l(x, y) + right(x, y);
+          left = (x, y, z) => l(x, y, z) + right(x, y, z);
         } else {
-          left = (x, y) => l(x, y) - right(x, y);
+          left = (x, y, z) => l(x, y, z) - right(x, y, z);
         }
       } else {
         break;
@@ -592,7 +611,7 @@ class _ExprParser {
     return left;
   }
 
-  double Function(double, double) _parseTerm() {
+  _Scalar3 _parseTerm() {
     var left = _parseUnary();
     while (true) {
       _skipWs(); // 运算符前允许空格
@@ -603,9 +622,9 @@ class _ExprParser {
         final right = _parseUnary();
         final l = left;
         if (ch == '*') {
-          left = (x, y) => l(x, y) * right(x, y);
+          left = (x, y, z) => l(x, y, z) * right(x, y, z);
         } else {
-          left = (x, y) => l(x, y) / right(x, y);
+          left = (x, y, z) => l(x, y, z) / right(x, y, z);
         }
       } else {
         break;
@@ -617,17 +636,17 @@ class _ExprParser {
   // unary := ('+' | '-') unary | power
   // power := primary (('^' | '**') unary)?
   // 幂右结合且高于前置负号，同时允许 2^-3。
-  double Function(double, double) _parseUnary() {
+  _Scalar3 _parseUnary() {
     _skipWs();
     if (_pos < src.length && (src[_pos] == '+' || src[_pos] == '-')) {
       final negative = src[_pos++] == '-';
       final inner = _parseUnary();
-      return negative ? (x, y) => -inner(x, y) : inner;
+      return negative ? (x, y, z) => -inner(x, y, z) : inner;
     }
     return _parsePower();
   }
 
-  double Function(double, double) _parsePower() {
+  _Scalar3 _parsePower() {
     final left = _parseFactor();
     _skipWs();
     if (_pos < src.length && src[_pos] == '^') {
@@ -638,7 +657,7 @@ class _ExprParser {
       return left;
     }
     final right = _parseUnary();
-    return (x, y) => math.pow(left(x, y), right(x, y)).toDouble();
+    return (x, y, z) => math.pow(left(x, y, z), right(x, y, z)).toDouble();
   }
 
   void _closeParen() {
@@ -649,7 +668,7 @@ class _ExprParser {
     _pos++;
   }
 
-  double Function(double, double) _parseFactor() {
+  _Scalar3 _parseFactor() {
     _skipWs();
     if (_pos >= src.length) throw const FormatException('unexpected end');
     final ch = src[_pos];
@@ -670,7 +689,7 @@ class _ExprParser {
       _pos = token.end;
       final v = double.tryParse(numStr);
       if (v == null || !v.isFinite) throw const FormatException('bad number');
-      return (x, y) => v;
+      return (x, y, z) => v;
     }
     // 标识符:函数 / 常量 / 变量
     if (RegExp(r'[a-zA-Z]').hasMatch(ch)) {
@@ -686,37 +705,39 @@ class _ExprParser {
         _closeParen();
         switch (id) {
           case 'SIN':
-            return (x, y) => math.sin(inner(x, y));
+            return (x, y, z) => math.sin(inner(x, y, z));
           case 'COS':
-            return (x, y) => math.cos(inner(x, y));
+            return (x, y, z) => math.cos(inner(x, y, z));
           case 'TAN':
-            return (x, y) => math.tan(inner(x, y));
+            return (x, y, z) => math.tan(inner(x, y, z));
           case 'EXP':
-            return (x, y) => math.exp(inner(x, y));
+            return (x, y, z) => math.exp(inner(x, y, z));
           case 'LOG10':
-            return (x, y) => math.log(inner(x, y)) / math.ln10;
+            return (x, y, z) => math.log(inner(x, y, z)) / math.ln10;
           case 'LOG':
-            return (x, y) => math.log(inner(x, y));
+            return (x, y, z) => math.log(inner(x, y, z));
           case 'SQRT':
-            return (x, y) => math.sqrt(inner(x, y));
+            return (x, y, z) => math.sqrt(inner(x, y, z));
           case 'ABS':
-            return (x, y) => inner(x, y).abs();
+            return (x, y, z) => inner(x, y, z).abs();
           case 'PI':
-            return (x, y) => math.pi * inner(x, y);
+            return (x, y, z) => math.pi * inner(x, y, z);
           default:
             throw const FormatException('unknown function');
         }
       }
       switch (id) {
         case 'PI':
-          return (x, y) => math.pi;
+          return (x, y, z) => math.pi;
         case 'E':
-          return (x, y) => math.e;
+          return (x, y, z) => math.e;
         case 'X':
         case 'T':
-          return (x, y) => x;
+          return (x, y, z) => x;
         case 'Y':
-          return (x, y) => y;
+          return (x, y, z) => y;
+        case 'Z':
+          return (x, y, z) => z;
         default:
           throw const FormatException('unknown identifier');
       }

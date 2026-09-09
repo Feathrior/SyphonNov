@@ -282,7 +282,7 @@ String _buildDemoGraph() {
         'name': '正弦函数',
         'expression': 'sin(x)',
       }),
-      node('ci', 'curve_intersect', 900, 1940),
+      node('ci', 'geometry_intersect', 900, 1940),
       node('ct', 'series_to_scatter', 1180, 1940),
 
       // ---- 区域 5:点/线/面/文本/坐标系 → 原理化输出 ----
