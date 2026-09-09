@@ -167,7 +167,7 @@ class _ShortcutsPanelState extends State<ShortcutsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
       child: Row(
         children: [
-          Text('Syphon v0.2.0',
+          Text('SyphonNov v0.4.0',
               style: TextStyle(fontSize: 11, color: t.textFaint)),
           const Spacer(),
           _PrimaryButton(

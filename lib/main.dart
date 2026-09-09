@@ -202,7 +202,7 @@ class _AppShellState extends State<_AppShell> {
       ((args['y'] as num?)?.toDouble() ?? 0) / dpr,
     );
     // 取第一个受支持的数据文件;全部不识别也尝试读取第一个
-    const exts = {'.csv', '.tsv', '.txt', '.xlsx', '.xls'};
+    const exts = {'.csv', '.tsv', '.txt', '.xlsx'};
     final path = paths.firstWhere(
       (p) => exts.any((e) => p.toLowerCase().endsWith(e)),
       orElse: () => paths.first,

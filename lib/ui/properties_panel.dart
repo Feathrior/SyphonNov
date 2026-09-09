@@ -1226,7 +1226,7 @@ class _ParamControl extends StatelessWidget {
   Future<void> _pickDataFile(BuildContext context) async {
     const group = XTypeGroup(
       label: '数据文件',
-      extensions: ['csv', 'tsv', 'txt', 'xlsx', 'xls'],
+      extensions: ['csv', 'tsv', 'txt', 'xlsx'],
     );
     final file = await openFile(acceptedTypeGroups: const [group]);
     if (file == null) return;
@@ -1234,7 +1234,11 @@ class _ParamControl extends StatelessWidget {
     if (path.isEmpty) return;
     try {
       // UTF-8 解码文本文件;Excel 取第一个工作表转 CSV(GraphStore 自动执行会刷新图)
-      final text = await dataFileToCsvText(path);
+      final node = GraphStore.instance.nodeOf(nodeId);
+      final text = await dataFileToCsvText(
+        path,
+        strictEncoding: node?.params['encodingMode'] != 'replace',
+      );
       if (!context.mounted) return;
       _applyImportedTable(path, text);
     } catch (e) {
