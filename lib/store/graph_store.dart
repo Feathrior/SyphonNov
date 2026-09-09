@@ -1131,7 +1131,7 @@ class GraphStore extends ChangeNotifier {
       'version': workflowFormatVersion,
       'provenance': {
         'application': 'SyphonNov',
-        'applicationVersion': '0.4.1',
+        'applicationVersion': '0.4.2',
         'numericSemantics': 'full-precision',
       },
       'nodes': nodes.map((n) => n.toJson()).toList(),

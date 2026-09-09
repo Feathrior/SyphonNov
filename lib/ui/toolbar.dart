@@ -435,7 +435,7 @@ class Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Text('SyphonNov v0.4.1', style: const TextStyle(fontSize: 15)),
+            Text('SyphonNov v0.4.2', style: const TextStyle(fontSize: 15)),
           ],
         ),
         content: Text(
