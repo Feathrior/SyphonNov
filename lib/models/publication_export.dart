@@ -111,6 +111,17 @@ Vec3 _rotateForExport(Vec3 p, double rotX, double rotY, double rotZ) {
 
 ScientificScene buildScientificScene(AxesData axes) {
   final width = axes.canvasPxW, height = axes.canvasPxH;
+  final effectiveLengths = axes.aspectMode == 'equal'
+      ? equalAspectLengths(
+          dim: axes.dim,
+          xLength: axes.xLen,
+          yLength: axes.yLen,
+          zLength: axes.zLen,
+          xSpan: axes.xMax - axes.xMin,
+          ySpan: axes.yMax - axes.yMin,
+          zSpan: axes.zMax - axes.zMin,
+        )
+      : (x: axes.xLen, y: axes.yLen, z: axes.zLen);
   final left = 72.0,
       right = axes.legendMode == 'hidden' ? 28.0 : 175.0,
       top = 35.0,
@@ -141,9 +152,9 @@ ScientificScene buildScientificScene(AxesData axes) {
       return null;
     }
     return Vec3(
-      (tx - .5) * axes.xLen,
-      (ty - .5) * axes.yLen,
-      axes.dim == 3 ? (tz - .5) * axes.zLen : 0,
+      (tx - .5) * effectiveLengths.x,
+      (ty - .5) * effectiveLengths.y,
+      axes.dim == 3 ? (tz - .5) * effectiveLengths.z : 0,
     );
   }
 
@@ -153,9 +164,9 @@ ScientificScene buildScientificScene(AxesData axes) {
       projectionMaxY;
   if (axes.dim == 3) {
     final corners = <Vec3>[
-      for (final x in [-axes.xLen / 2, axes.xLen / 2])
-        for (final y in [-axes.yLen / 2, axes.yLen / 2])
-          for (final z in [-axes.zLen / 2, axes.zLen / 2])
+      for (final x in [-effectiveLengths.x / 2, effectiveLengths.x / 2])
+        for (final y in [-effectiveLengths.y / 2, effectiveLengths.y / 2])
+          for (final z in [-effectiveLengths.z / 2, effectiveLengths.z / 2])
             _rotateForExport(Vec3(x, y, z), axes.rotX, axes.rotY, axes.rotZ),
     ];
     projectionMinX = corners.map((p) => p.x).reduce(math.min);
@@ -163,20 +174,28 @@ ScientificScene buildScientificScene(AxesData axes) {
     projectionMinY = corners.map((p) => p.y).reduce(math.min);
     projectionMaxY = corners.map((p) => p.y).reduce(math.max);
   } else {
-    projectionMinX = -axes.xLen / 2;
-    projectionMaxX = axes.xLen / 2;
-    projectionMinY = -axes.yLen / 2;
-    projectionMaxY = axes.yLen / 2;
+    projectionMinX = -effectiveLengths.x / 2;
+    projectionMaxX = effectiveLengths.x / 2;
+    projectionMinY = -effectiveLengths.y / 2;
+    projectionMaxY = effectiveLengths.y / 2;
   }
+  final projectionW = projectionMaxX - projectionMinX;
+  final projectionH = projectionMaxY - projectionMinY;
+  final equalScale = math.min(plotW / projectionW, plotH / projectionH);
+  final scaleX = axes.aspectMode == 'equal' ? equalScale : plotW / projectionW;
+  final scaleY = axes.aspectMode == 'equal' ? equalScale : plotH / projectionH;
+  final mapLeft = left + (plotW - projectionW * scaleX) / 2;
+  final mapTop = top + (plotH - projectionH * scaleY) / 2;
   (double, double)? map(double x, double y, [double z = 0]) {
     var p = local(x, y, z);
     if (p == null) return null;
     if (axes.dim == 3) {
       p = _rotateForExport(p, axes.rotX, axes.rotY, axes.rotZ);
     }
-    final tx = (p.x - projectionMinX) / (projectionMaxX - projectionMinX);
-    final ty = (p.y - projectionMinY) / (projectionMaxY - projectionMinY);
-    return (left + tx * plotW, top + (1 - ty) * plotH);
+    return (
+      mapLeft + (p.x - projectionMinX) * scaleX,
+      mapTop + (projectionMaxY - p.y) * scaleY,
+    );
   }
 
   final c = <SceneCommand>[];
@@ -200,30 +219,187 @@ ScientificScene buildScientificScene(AxesData axes) {
       (5, 7),
       (6, 7),
     ];
-    for (final edge in edges) {
-      final a = corners[edge.$1], b = corners[edge.$2];
+    void addLine(
+      (double, double, double) a,
+      (double, double, double) b,
+      String color, {
+      double width = .7,
+    }) {
       final p = map(a.$1, a.$2, a.$3), q = map(b.$1, b.$2, b.$3);
       if (p != null && q != null) {
-        c.add(SceneLine(p.$1, p.$2, q.$1, q.$2, '#777777', width: .7));
+        c.add(SceneLine(p.$1, p.$2, q.$1, q.$2, color, width: width));
       }
     }
+
+    if (axes.showBorder) {
+      for (final edge in edges) {
+        addLine(corners[edge.$1], corners[edge.$2], '#777777');
+      }
+    }
+
+    if (axes.grid) {
+      if (axes.gridX) {
+        for (final tick in xs.ticks()) {
+          addLine(
+            (tick.value, axes.yMin, axes.zMin),
+            (tick.value, axes.yMin, axes.zMax),
+            '#dddddd',
+          );
+          addLine(
+            (tick.value, axes.yMin, axes.zMin),
+            (tick.value, axes.yMax, axes.zMin),
+            '#dddddd',
+          );
+        }
+      }
+      if (axes.gridY) {
+        for (final tick in ys.ticks()) {
+          addLine(
+            (axes.xMin, tick.value, axes.zMin),
+            (axes.xMax, tick.value, axes.zMin),
+            '#dddddd',
+          );
+          addLine(
+            (axes.xMin, tick.value, axes.zMin),
+            (axes.xMin, tick.value, axes.zMax),
+            '#dddddd',
+          );
+        }
+      }
+      if (axes.gridZ) {
+        for (final tick in zs.ticks()) {
+          addLine(
+            (axes.xMin, axes.yMin, tick.value),
+            (axes.xMax, axes.yMin, tick.value),
+            '#dddddd',
+          );
+          addLine(
+            (axes.xMin, axes.yMin, tick.value),
+            (axes.xMin, axes.yMax, tick.value),
+            '#dddddd',
+          );
+        }
+      }
+    }
+
+    final atOrigin = axes.axisOrigin == 'origin';
+    final ox = axisCrossingValue(axes.xMin, axes.xMax, atOrigin: atOrigin);
+    final oy = axisCrossingValue(axes.yMin, axes.yMax, atOrigin: atOrigin);
+    final oz = axisCrossingValue(axes.zMin, axes.zMax, atOrigin: atOrigin);
+    addLine(
+      (axes.xMin, oy, oz),
+      (axes.xMax, oy, oz),
+      axes.axisColors?.x ?? '#333333',
+      width: axes.axisWidths?.x ?? .7,
+    );
+    addLine(
+      (ox, axes.yMin, oz),
+      (ox, axes.yMax, oz),
+      axes.axisColors?.y ?? '#333333',
+      width: axes.axisWidths?.y ?? .7,
+    );
+    addLine(
+      (ox, oy, axes.zMin),
+      (ox, oy, axes.zMax),
+      axes.axisColors?.z ?? '#333333',
+      width: axes.axisWidths?.z ?? .7,
+    );
   } else {
-    c.add(SceneLine(left, top, left, top + plotH, '#333333'));
-    c.add(SceneLine(left, top + plotH, left + plotW, top + plotH, '#333333'));
+    if (axes.showBorder) {
+      final lowerLeft = map(axes.xMin, axes.yMin);
+      final lowerRight = map(axes.xMax, axes.yMin);
+      final upperLeft = map(axes.xMin, axes.yMax);
+      if (lowerLeft != null && lowerRight != null && upperLeft != null) {
+        c.add(
+          SceneLine(
+            lowerLeft.$1,
+            upperLeft.$2,
+            lowerLeft.$1,
+            lowerLeft.$2,
+            '#333333',
+          ),
+        );
+        c.add(
+          SceneLine(
+            lowerLeft.$1,
+            lowerLeft.$2,
+            lowerRight.$1,
+            lowerRight.$2,
+            '#333333',
+          ),
+        );
+      }
+    }
+    final atOrigin = axes.axisOrigin == 'origin';
+    final ox = axisCrossingValue(axes.xMin, axes.xMax, atOrigin: atOrigin);
+    final oy = axisCrossingValue(axes.yMin, axes.yMax, atOrigin: atOrigin);
+    final x0 = map(axes.xMin, oy), x1 = map(axes.xMax, oy);
+    final y0 = map(ox, axes.yMin), y1 = map(ox, axes.yMax);
+    if (x0 != null && x1 != null) {
+      c.add(
+        SceneLine(
+          x0.$1,
+          x0.$2,
+          x1.$1,
+          x1.$2,
+          axes.axisColors?.x ?? '#333333',
+          width: axes.axisWidths?.x ?? .7,
+        ),
+      );
+    }
+    if (y0 != null && y1 != null) {
+      c.add(
+        SceneLine(
+          y0.$1,
+          y0.$2,
+          y1.$1,
+          y1.$2,
+          axes.axisColors?.y ?? '#333333',
+          width: axes.axisWidths?.y ?? .7,
+        ),
+      );
+    }
   }
+  final atOrigin = axes.axisOrigin == 'origin';
+  final tickCrossX = axisCrossingValue(
+    axes.xMin,
+    axes.xMax,
+    atOrigin: atOrigin,
+  );
+  final tickCrossY = axisCrossingValue(
+    axes.yMin,
+    axes.yMax,
+    atOrigin: atOrigin,
+  );
   for (final tick in xs.ticks()) {
-    final p = map(tick.value, axes.yMin, axes.dim == 3 ? axes.zMin : 0);
+    final p = map(
+      tick.value,
+      axes.dim == 3 ? axes.yMin : tickCrossY,
+      axes.dim == 3 ? axes.zMin : 0,
+    );
     if (p == null) continue;
     if (axes.dim == 2 && axes.grid && axes.gridX) {
-      c.add(SceneLine(p.$1, top, p.$1, top + plotH, '#dddddd'));
+      final q = map(tick.value, axes.yMax);
+      final r = map(tick.value, axes.yMin);
+      if (q != null && r != null) {
+        c.add(SceneLine(q.$1, q.$2, r.$1, r.$2, '#dddddd'));
+      }
     }
     c.add(SceneText(p.$1 - 12, p.$2 + 22, tick.label, '#333333'));
   }
   for (final tick in ys.ticks()) {
-    final p = map(axes.xMin, tick.value, axes.dim == 3 ? axes.zMin : 0);
+    final p = map(
+      axes.dim == 3 ? axes.xMin : tickCrossX,
+      tick.value,
+      axes.dim == 3 ? axes.zMin : 0,
+    );
     if (p == null) continue;
     if (axes.dim == 2 && axes.grid && axes.gridY) {
-      c.add(SceneLine(left, p.$2, left + plotW, p.$2, '#dddddd'));
+      final q = map(axes.xMin, tick.value);
+      final r = map(axes.xMax, tick.value);
+      if (q != null && r != null) {
+        c.add(SceneLine(q.$1, q.$2, r.$1, r.$2, '#dddddd'));
+      }
     }
     c.add(SceneText(p.$1 - 52, p.$2 + 4, tick.label, '#333333'));
   }
@@ -457,7 +633,10 @@ ScientificScene buildScientificScene(AxesData axes) {
     }
   }
   for (final item in axes.texts) {
-    final fontPx = math.max(6.0, item.fontSize * plotW / axes.xLen * .62);
+    final fontPx = math.max(
+      6.0,
+      item.fontSize * plotW / effectiveLengths.x * .62,
+    );
     final estimatedWidth = item.text.runes.length * fontPx * .58;
     final x = item.halign == 'left'
         ? left + 4

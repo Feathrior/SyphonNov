@@ -475,7 +475,7 @@ class AxesData extends DataObject {
     required this.fontSize,
     required this.fontFamily,
     this.axisPreset,
-    this.aspectMode = 'free',
+    this.aspectMode = 'equal',
     this.xScale = 'linear',
     this.yScale = 'linear',
     this.zScale = 'linear',

@@ -162,19 +162,15 @@ class _AxesInfo {
 
 /// 在给定坐标盒内保持每个数据单位的物理长度一致。
 ({double x, double y, double z}) equalDataAspectLengths(AxesData input) {
-  final xSpan = input.xMax - input.xMin;
-  final ySpan = input.yMax - input.yMin;
-  final zSpan = input.zMax - input.zMin;
-  if (![xSpan, ySpan, zSpan].every((v) => v.isFinite && v > 0)) {
-    return (x: input.xLen, y: input.yLen, z: input.zLen);
-  }
-  final sx = input.xLen / xSpan;
-  final sy = input.yLen / ySpan;
-  final sz = input.zLen / zSpan;
-  final common = input.dim == 2
-      ? math.min(sx, sy)
-      : math.min(sx, math.min(sy, sz));
-  return (x: xSpan * common, y: ySpan * common, z: zSpan * common);
+  return equalAspectLengths(
+    dim: input.dim,
+    xLength: input.xLen,
+    yLength: input.yLen,
+    zLength: input.zLen,
+    xSpan: input.xMax - input.xMin,
+    ySpan: input.yMax - input.yMin,
+    zSpan: input.zMax - input.zMin,
+  );
 }
 
 _AxesInfo _resolveAxes(DataObject? input) {
@@ -767,20 +763,60 @@ class PrincipledPainter extends CustomPainter {
         axes.zLen,
         axes.symlogThreshold,
       );
+      final yt = _ticks(
+        axes.yScale,
+        axes.yMin,
+        axes.yMax,
+        axes.yLen,
+        axes.symlogThreshold,
+      );
+      void add(Vec3 a, Vec3 b) {
+        final pa = _project(d, mapP(a));
+        final pb = _project(d, mapP(b));
+        if (!pa.dx.isFinite ||
+            !pa.dy.isFinite ||
+            !pb.dx.isFinite ||
+            !pb.dy.isFinite) {
+          return;
+        }
+        path.moveTo(pa.dx, pa.dy);
+        path.lineTo(pb.dx, pb.dy);
+      }
+
       if (axes.gridX) {
         for (final t in xt) {
-          final a = _project(d, mapP(Vec3(t.value, axes.yMin, axes.zMin)));
-          final b = _project(d, mapP(Vec3(t.value, axes.yMin, axes.zMax)));
-          path.moveTo(a.dx, a.dy);
-          path.lineTo(b.dx, b.dy);
+          add(
+            Vec3(t.value, axes.yMin, axes.zMin),
+            Vec3(t.value, axes.yMin, axes.zMax),
+          );
+          add(
+            Vec3(t.value, axes.yMin, axes.zMin),
+            Vec3(t.value, axes.yMax, axes.zMin),
+          );
+        }
+      }
+      if (axes.gridY) {
+        for (final t in yt) {
+          add(
+            Vec3(axes.xMin, t.value, axes.zMin),
+            Vec3(axes.xMax, t.value, axes.zMin),
+          );
+          add(
+            Vec3(axes.xMin, t.value, axes.zMin),
+            Vec3(axes.xMin, t.value, axes.zMax),
+          );
         }
       }
       if (axes.gridZ) {
         for (final t in zt) {
-          final a = _project(d, mapP(Vec3(axes.xMin, axes.yMin, t.value)));
-          final b = _project(d, mapP(Vec3(axes.xMax, axes.yMin, t.value)));
-          path.moveTo(a.dx, a.dy);
-          path.lineTo(b.dx, b.dy);
+          add(
+            Vec3(axes.xMin, axes.yMin, t.value),
+            Vec3(axes.xMax, axes.yMin, t.value),
+          );
+          add(
+            Vec3(axes.xMin, axes.yMin, t.value),
+            Vec3(axes.xMin, axes.yMax, t.value),
+          );
         }
       }
     } else {
@@ -1522,142 +1558,84 @@ class PrincipledPainter extends CustomPainter {
     final fz = _fzFor(d);
     double fontPx(double base) => _mx(6, (base * fz).roundToDouble());
     double aw(double cm) => _mx(0.5, cm * d.scale);
-    final hx = axes.xLen / 2;
-    final hy = axes.yLen / 2;
-    final hz = axes.zLen / 2;
-    final off = (0.05 * _mn(axes.xLen, _mn(axes.yLen, axes.zLen))) / 2;
-    final ends = <(Vec3, String, int)>[
-      (Vec3(hx + off, 0, 0), axes.labelX, 0),
-      (Vec3(0, hy + off, 0), axes.labelY, 1),
-      (Vec3(0, 0, hz + off), axes.labelZ, 2),
-    ];
+    final atOrigin = axes.axisOrigin == 'origin';
+    final crossX = axisCrossingValue(axes.xMin, axes.xMax, atOrigin: atOrigin);
+    final crossY = axisCrossingValue(axes.yMin, axes.yMax, atOrigin: atOrigin);
+    final crossZ = axisCrossingValue(axes.zMin, axes.zMax, atOrigin: atOrigin);
     final ranges = <(double, double)>[
       (axes.xMin, axes.xMax),
       (axes.yMin, axes.yMax),
       (axes.zMin, axes.zMax),
     ];
-    final scales = <double>[
-      axes.xLen / _mx(axes.xMax - axes.xMin, 1e-9),
-      axes.yLen / _mx(axes.yMax - axes.yMin, 1e-9),
-      axes.zLen / _mx(axes.zMax - axes.zMin, 1e-9),
-    ];
     final scaleKinds = <String>[axes.xScale, axes.yScale, axes.zScale];
     final lengths = <double>[axes.xLen, axes.yLen, axes.zLen];
+    final labels = <String>[axes.labelX, axes.labelY, axes.labelZ];
     final axisColors = <String>[cx, cy, cz];
     final axisWidthsCm = <double>[axes.widthX, axes.widthY, axes.widthZ];
-    for (final e in ends) {
-      _drawAxisEnd3D(
-        canvas,
-        d,
-        axes,
-        e,
-        fz,
-        fontPx,
-        aw,
-        axisColors,
-        axisWidthsCm,
-        scales,
-        lengths,
-        ranges,
-        scaleKinds,
-      );
-    }
-  }
+    Vec3 point(int axis, double value) => axis == 0
+        ? Vec3(value, crossY, crossZ)
+        : axis == 1
+        ? Vec3(crossX, value, crossZ)
+        : Vec3(crossX, crossY, value);
 
-  /// 单条 3D 轴:正负半轴 + 刻度数字 + 标签 + 箭头
-  void _drawAxisEnd3D(
-    Canvas canvas,
-    _DrawCtx d,
-    _AxesInfo axes,
-    (Vec3, String, int) e,
-    double fz,
-    double Function(double) fontPx,
-    double Function(double) aw,
-    List<String> axisColors,
-    List<double> axisWidthsCm,
-    List<double> scales,
-    List<double> lengths,
-    List<(double, double)> ranges,
-    List<String> scaleKinds,
-  ) {
-    final end = e.$1;
-    final label = e.$2;
-    final axisIdx = e.$3;
-    final o = _project(d, Vec3(0, 0, 0));
-    final ep = _project(d, end);
-    canvas.drawLine(
-      o,
-      ep,
-      Paint()
-        ..color = parseColor(axisColors[axisIdx])
-        ..strokeWidth = aw(axisWidthsCm[axisIdx]),
-    );
-    // 负半轴
-    final np = _project(d, Vec3(-end.x, -end.y, -end.z));
-    canvas.drawLine(
-      o,
-      np,
-      Paint()
-        ..color = parseColor(axisColors[axisIdx]).withValues(alpha: 0.35)
-        ..strokeWidth = _mx(0.5, aw(axisWidthsCm[axisIdx]) * 0.5),
-    );
-    // 刻度 + 数字
-    final rMin = ranges[axisIdx].$1;
-    final rMax = ranges[axisIdx].$2;
-    final axisScale = AxisScale.named(
-      scaleKinds[axisIdx],
-      rMin,
-      rMax,
-      linearThreshold: axes.symlogThreshold,
-    );
-    final tk = axisScale.ticks(_targetCount(lengths[axisIdx]));
-    final dx = ep.dx - o.dx;
-    final dy = ep.dy - o.dy;
-    final L = math.sqrt(dx * dx + dy * dy);
-    if (L > 1e-9) {
-      final px = -dy / L;
-      final py = dx / L;
-      final tickPaint = Paint()
-        ..color = parseColor(axisColors[axisIdx]).withValues(alpha: 0.7)
-        ..strokeWidth = _mx(1, fz);
-      for (final t in tk) {
-        final loc =
-            axisScale.transform(t.value) * lengths[axisIdx] -
-            lengths[axisIdx] / 2;
-        final tickVec = axisIdx == 0
-            ? Vec3(loc, 0, 0)
-            : axisIdx == 1
-            ? Vec3(0, loc, 0)
-            : Vec3(0, 0, loc);
-        final tp = _project(d, tickVec);
-        canvas.drawLine(
-          Offset(tp.dx - px * 3.5 * fz, tp.dy - py * 3.5 * fz),
-          Offset(tp.dx + px * 3.5 * fz, tp.dy + py * 3.5 * fz),
-          tickPaint,
-        );
-        _pText(
-          canvas,
-          t.label,
-          Offset(
-            tp.dx + (dx / L) * 12 * fz,
-            tp.dy + (dy / L) * 12 * fz - 2 * fz,
-          ),
-          color: parseColor(axisColors[axisIdx]),
-          size: fontPx(axes.fontSize - 1),
-        );
+    for (var axisIdx = 0; axisIdx < 3; axisIdx++) {
+      final rMin = ranges[axisIdx].$1;
+      final rMax = ranges[axisIdx].$2;
+      final start = _project(d, mapP(point(axisIdx, rMin)));
+      final end = _project(d, mapP(point(axisIdx, rMax)));
+      final color = parseColor(axisColors[axisIdx]);
+      canvas.drawLine(
+        start,
+        end,
+        Paint()
+          ..color = color
+          ..strokeWidth = aw(axisWidthsCm[axisIdx]),
+      );
+      final axisScale = AxisScale.named(
+        scaleKinds[axisIdx],
+        rMin,
+        rMax,
+        linearThreshold: axes.symlogThreshold,
+      );
+      final tk = axisScale.ticks(_targetCount(lengths[axisIdx]));
+      final dx = end.dx - start.dx;
+      final dy = end.dy - start.dy;
+      final L = math.sqrt(dx * dx + dy * dy);
+      if (L > 1e-9) {
+        final px = -dy / L;
+        final py = dx / L;
+        final tickPaint = Paint()
+          ..color = color.withValues(alpha: 0.7)
+          ..strokeWidth = _mx(1, fz);
+        for (final t in tk) {
+          final tp = _project(d, mapP(point(axisIdx, t.value)));
+          canvas.drawLine(
+            Offset(tp.dx - px * 3.5 * fz, tp.dy - py * 3.5 * fz),
+            Offset(tp.dx + px * 3.5 * fz, tp.dy + py * 3.5 * fz),
+            tickPaint,
+          );
+          _pText(
+            canvas,
+            t.label,
+            Offset(
+              tp.dx + (dx / L) * 12 * fz,
+              tp.dy + (dy / L) * 12 * fz - 2 * fz,
+            ),
+            color: color,
+            size: fontPx(axes.fontSize - 1),
+          );
+        }
       }
-    }
-    // 标签
-    _pText(
-      canvas,
-      label,
-      Offset(ep.dx, ep.dy - 6 * fz),
-      color: parseColor(axisColors[axisIdx]),
-      size: fontPx(axes.fontSize + 2),
-    );
-    // 末端箭头(X/Y)
-    if ((axisIdx == 0 && axes.arrowX) || (axisIdx == 1 && axes.arrowY)) {
-      _drawArrow(canvas, o, ep, 8 * fz, parseColor(axisColors[axisIdx]));
+      _pText(
+        canvas,
+        labels[axisIdx],
+        Offset(end.dx, end.dy - 6 * fz),
+        color: color,
+        size: fontPx(axes.fontSize + 2),
+      );
+      if ((axisIdx == 0 && axes.arrowX) || (axisIdx == 1 && axes.arrowY)) {
+        _drawArrow(canvas, start, end, 8 * fz, color);
+      }
     }
   }
 

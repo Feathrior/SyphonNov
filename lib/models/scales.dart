@@ -10,6 +10,31 @@ class ScaleTick {
   const ScaleTick(this.value, this.label);
 }
 
+/// 坐标轴在另一坐标方向上的交点。原点落在范围内时取 0；否则退到范围边缘。
+double axisCrossingValue(double min, double max, {bool atOrigin = true}) {
+  if (atOrigin && min <= 0 && max >= 0) return 0;
+  return min;
+}
+
+/// 在现有坐标盒内选择统一的数据单位长度，返回不会超出盒子的等比例轴长。
+({double x, double y, double z}) equalAspectLengths({
+  required int dim,
+  required double xLength,
+  required double yLength,
+  required double zLength,
+  required double xSpan,
+  required double ySpan,
+  required double zSpan,
+}) {
+  if (![xSpan, ySpan, zSpan].every((v) => v.isFinite && v > 0)) {
+    return (x: xLength, y: yLength, z: zLength);
+  }
+  final common = dim == 2
+      ? math.min(xLength / xSpan, yLength / ySpan)
+      : math.min(xLength / xSpan, math.min(yLength / ySpan, zLength / zSpan));
+  return (x: xSpan * common, y: ySpan * common, z: zSpan * common);
+}
+
 /// 坐标尺度的唯一实现：预览、命中测试与导出均通过同一 transform/inverse。
 class AxisScale {
   final ScaleKind kind;

@@ -6,7 +6,7 @@ import 'dart:math' as math;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
-import 'package:flutter/gestures.dart' show PointerScrollEvent;
+import 'package:flutter/gestures.dart' show GestureBinding, PointerScrollEvent;
 import 'package:flutter/material.dart';
 
 import '../i18n.dart';
@@ -51,6 +51,85 @@ String _describeOutput(md.DataObject? obj) {
   }
   return '';
 }
+
+/// 数值属性的滚轮步进。上滚增大、下滚减小，缺少任一边界时仍可工作。
+double numericWheelValue(
+  md.ParamSpec spec,
+  double current,
+  double scrollDelta, {
+  double? maxOverride,
+}) {
+  final count = (scrollDelta.abs() / 24).ceil().clamp(1, 12);
+  final direction = scrollDelta < 0 ? 1 : -1;
+  final step = spec.step != null && spec.step! > 0
+      ? spec.step!
+      : _numericWheelUnit(current);
+  var next = current + direction * count * step;
+  if (spec.step != null && spec.step! > 0) {
+    next = (next / spec.step!).round() * spec.step!;
+  }
+  if (spec.min != null) next = math.max(spec.min!, next);
+  final max = maxOverride ?? spec.max;
+  if (max != null) next = math.min(max, next);
+  return next;
+}
+
+double _numericWheelUnit(double current) {
+  final magnitude = current.abs();
+  if (magnitude < 1e-12) return 1;
+  return math.pow(10, (math.log(magnitude) / math.ln10).floor()).toDouble();
+}
+
+const Map<String, Set<String>> kAxisPropertyGroups = {
+  '基础': {'name', 'dim', 'axisVisibility', 'axisOrigin'},
+  '尺寸与比例': {'xLen', 'yLen', 'zLen', 'aspectMode'},
+  '范围与尺度': {
+    'xScale',
+    'yScale',
+    'zScale',
+    'symlogThreshold',
+    'xStart',
+    'xEnd',
+    'yStart',
+    'yEnd',
+    'zStart',
+    'zEnd',
+  },
+  '坐标轴与网格': {
+    'showBorder',
+    'axisColorX',
+    'axisColorY',
+    'axisColorZ',
+    'axisWidthX',
+    'axisWidthY',
+    'axisWidthZ',
+    'gridX',
+    'gridY',
+    'gridZ',
+    'labelX',
+    'labelY',
+    'labelZ',
+    'arrowX',
+    'arrowY',
+  },
+  '三维视角': {'rotX', 'rotY', 'rotZ'},
+  '场景外观': {'fontSize', 'fontFamily', 'colorPreset', 'bgColor'},
+  '图例': {
+    'legendMode',
+    'legendPosition',
+    'legendGrouping',
+    'legendOrder',
+    'legendHidden',
+  },
+  '论文导出': {
+    'exportPreset',
+    'exportUnit',
+    'exportWidth',
+    'exportHeight',
+    'exportDpi',
+    'fontExportStrategy',
+  },
+};
 
 Color _catColor(md.Category c) {
   final info = md.kCategoryInfo[c];
@@ -1140,7 +1219,7 @@ class _ParamControl extends StatelessWidget {
   /// 数字参数控件:
   /// - 有明确 min/max → 输入框 + 拉杆(滑块按 step 取整,输入框自由输入,
   ///   输入框内滚轮可步进);
-  /// - 无界(实数域 / 0~∞)→ 仅输入框占满整行,不提供滚轮增减。
+  /// - 无界(实数域 / 0~∞)→ 仅输入框占满整行，仍支持滚轮增减。
   Widget _buildNumControl(md.ParamSpec spec, dynamic v) {
     final cv = v is num
         ? v.toDouble()
@@ -1173,54 +1252,49 @@ class _ParamControl extends StatelessWidget {
       },
     );
 
-    // 无界参数:仅输入框(整行宽度),无拉杆、无滚轮步进
-    if (!bounded) return field;
-
-    // 有界参数:拉杆 + 输入框;输入框内滚轮上滑/下滑按数量级步进
-    final wheelField = Listener(
+    Widget withWheel(Widget child) => Listener(
       behavior: HitTestBehavior.translucent,
       onPointerSignal: (e) {
         if (e is! PointerScrollEvent) return;
-        // 上滑(scrollDelta.dy<0)递增,下滑递减;幅度按滚动量折算 1~12 步
-        final count = (e.scrollDelta.dy.abs() / 24).ceil().clamp(1, 12);
-        final dir = e.scrollDelta.dy < 0 ? 1 : -1;
-        var nv = cv + dir * count * _wheelUnit(spec, cv);
-        nv = nv.clamp(spec.min!, max);
-        if (step != null && step > 0) nv = (nv / step).round() * step;
-        onChanged(nv);
+        GestureBinding.instance.pointerSignalResolver.register(e, (event) {
+          final scroll = event as PointerScrollEvent;
+          onChanged(
+            numericWheelValue(
+              spec,
+              cv,
+              scroll.scrollDelta.dy,
+              maxOverride: spec.key == 'maxRows' ? max : null,
+            ),
+          );
+        });
       },
-      child: field,
+      child: child,
     );
+
+    // 无界参数:仅输入框(整行宽度)，滚轮按 step 或当前数量级调整。
+    if (!bounded) return withWheel(field);
 
     final min = spec.min ?? 0.0;
     final snapped = step != null && step > 0 ? (cv / step).round() * step : cv;
-    return Row(
-      children: [
-        Expanded(
-          child: fluent.Slider(
-            value: snapped.clamp(min, max),
-            min: min,
-            max: max,
-            divisions: step != null && step > 0
-                ? ((max - min) / step).round().clamp(1, 1000)
-                : null,
-            onChanged: (d) =>
-                onChanged(step != null ? (d / step).round() * step : d),
+    return withWheel(
+      Row(
+        children: [
+          Expanded(
+            child: fluent.Slider(
+              value: snapped.clamp(min, max),
+              min: min,
+              max: max,
+              divisions: step != null && step > 0
+                  ? ((max - min) / step).round().clamp(1, 1000)
+                  : null,
+              onChanged: (d) =>
+                  onChanged(step != null ? (d / step).round() * step : d),
+            ),
           ),
-        ),
-        SizedBox(width: 64, child: wheelField),
-      ],
+          SizedBox(width: 64, child: field),
+        ],
+      ),
     );
-  }
-
-  /// 滚轮步进步长:参数定义了 step 用之;否则按当前值数量级取整
-  /// (1/0.1/0.01… 与 1/10/100…),保证任意量级都能"合适地"步进。
-  double _wheelUnit(md.ParamSpec spec, double cv) {
-    final s = spec.step;
-    if (s != null && s > 0) return s;
-    final a = cv.abs();
-    if (a < 1e-12) return 1.0;
-    return math.pow(10, (math.log(a) / math.ln10).floor()).toDouble();
   }
 
   Future<void> _pickDataFile(BuildContext context) async {
@@ -1468,11 +1542,7 @@ class PropertiesPanel extends StatelessWidget {
 
               // 参数
               if (cfg.params.isNotEmpty)
-                _section(t, '参数', [
-                  for (final p in cfg.params)
-                    if (_paramVisible(cfg, node, p))
-                      _paramRow(context, t, p, node, exposedKeys),
-                ]),
+                ..._parameterSections(context, t, cfg, node, exposedKeys),
 
               // 输出状态
               if (cfg.outputs.isNotEmpty)
@@ -1603,6 +1673,78 @@ class PropertiesPanel extends StatelessWidget {
           ),
           ...children,
         ],
+      ),
+    );
+  }
+
+  List<Widget> _parameterSections(
+    BuildContext context,
+    SyphonTheme t,
+    md.NodeConfig cfg,
+    GraphNode node,
+    List<String> exposedKeys,
+  ) {
+    if (cfg.id != 'axis_input') {
+      return [
+        _section(t, '参数', [
+          for (final p in cfg.params)
+            if (_paramVisible(cfg, node, p))
+              _paramRow(context, t, p, node, exposedKeys),
+        ]),
+      ];
+    }
+
+    final assigned = kAxisPropertyGroups.values.expand((keys) => keys).toSet();
+    final allGroups = <String, Set<String>>{
+      ...kAxisPropertyGroups,
+      if (cfg.params.any((p) => !assigned.contains(p.key)))
+        '其他': {
+          for (final p in cfg.params)
+            if (!assigned.contains(p.key)) p.key,
+        },
+    };
+    return [
+      for (final entry in allGroups.entries)
+        if (cfg.params.any(
+          (p) => entry.value.contains(p.key) && _paramVisible(cfg, node, p),
+        ))
+          _collapsibleSection(t, '${node.id}:axis:${entry.key}', entry.key, [
+            for (final p in cfg.params)
+              if (entry.value.contains(p.key) && _paramVisible(cfg, node, p))
+                _paramRow(context, t, p, node, exposedKeys),
+          ], initiallyExpanded: entry.key == '基础'),
+    ];
+  }
+
+  Widget _collapsibleSection(
+    SyphonTheme t,
+    String storageKey,
+    String title,
+    List<Widget> children, {
+    bool initiallyExpanded = false,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: t.bgSurface,
+        border: Border.all(color: t.stroke),
+        borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+      ),
+      child: ExpansionTile(
+        key: PageStorageKey<String>(storageKey),
+        initiallyExpanded: initiallyExpanded,
+        dense: true,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+        childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+        iconColor: t.textDim,
+        collapsedIconColor: t.textFaint,
+        shape: const Border(),
+        collapsedShape: const Border(),
+        title: Text(
+          title,
+          style: TextStyle(fontSize: 11, color: t.textFaint, letterSpacing: .8),
+        ),
+        children: children,
       ),
     );
   }

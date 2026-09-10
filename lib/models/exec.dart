@@ -190,105 +190,6 @@ List<Pt> makeSeries(ExecContext ctx, String inId) {
   return pts;
 }
 
-// ---------- 坐标系预设 ----------
-class AxisPreset {
-  final String colorX, colorY, colorZ;
-  final double widthX, widthY, widthZ;
-  final bool gridX, gridY, gridZ, border;
-
-  /// 隐藏坐标系:完全不绘制坐标轴/网格/刻度/标签
-  final bool hidden;
-  const AxisPreset(
-    this.colorX,
-    this.colorY,
-    this.colorZ,
-    this.widthX,
-    this.widthY,
-    this.widthZ,
-    this.gridX,
-    this.gridY,
-    this.gridZ,
-    this.border, {
-    this.hidden = false,
-  });
-}
-
-const Map<String, AxisPreset> kAxisPresets = {
-  'default': AxisPreset(
-    '#333333',
-    '#333333',
-    '#333333',
-    0.12,
-    0.12,
-    0.12,
-    true,
-    true,
-    true,
-    true,
-  ),
-  'math': AxisPreset(
-    '#111111',
-    '#111111',
-    '#111111',
-    0.08,
-    0.08,
-    0.08,
-    true,
-    true,
-    true,
-    true,
-  ),
-  'engineering': AxisPreset(
-    '#1f77b4',
-    '#2ca02c',
-    '#d62728',
-    0.16,
-    0.16,
-    0.16,
-    true,
-    true,
-    true,
-    true,
-  ),
-  'minimal': AxisPreset(
-    '#666666',
-    '#666666',
-    '#666666',
-    0.08,
-    0.08,
-    0.08,
-    false,
-    false,
-    false,
-    true,
-  ),
-  'borderless': AxisPreset(
-    '#333333',
-    '#333333',
-    '#333333',
-    0.12,
-    0.12,
-    0.12,
-    true,
-    true,
-    true,
-    false,
-  ),
-  'hidden': AxisPreset(
-    '#00000000',
-    '#00000000',
-    '#00000000',
-    0.01,
-    0.01,
-    0.01,
-    false,
-    false,
-    false,
-    false,
-    hidden: true,
-  ),
-};
-
 final Map<String, ExecFn> kExec = _buildExec();
 
 Map<String, ExecFn> _buildExec() {
@@ -326,11 +227,11 @@ Map<String, ExecFn> _buildExec() {
       final xLen = math.max(0.5, num_(p['xLen'], 16));
       final yLen = math.max(0.5, num_(p['yLen'], 10));
       final zLen = math.max(0.5, num_(p['zLen'], 8));
-      final grid = p['grid'] != false;
-      var xMin = num_(p['xStart'], 0);
-      var xMax = num_(p['xEnd'], 10);
-      var yMin = num_(p['yStart'], 0);
-      var yMax = num_(p['yEnd'], 10);
+      final grid = p['grid'] != false; // 兼容旧文件中的总开关
+      var xMin = num_(p['xStart'], -5);
+      var xMax = num_(p['xEnd'], 5);
+      var yMin = num_(p['yStart'], -5);
+      var yMax = num_(p['yEnd'], 5);
       var zMin = num_(p['zStart'], -5);
       var zMax = num_(p['zEnd'], 5);
       if (xMax < xMin || yMax < yMin || zMax < zMin) {
@@ -346,43 +247,27 @@ Map<String, ExecFn> _buildExec() {
       final labelY = str(p['labelY'], 'Y').isEmpty ? 'Y' : str(p['labelY']);
       final labelZ = str(p['labelZ'], 'Z').isEmpty ? 'Z' : str(p['labelZ']);
 
-      final base =
-          kAxisPresets[str(p['axisPreset'], 'default')] ??
-          kAxisPresets['default']!;
-      final def = kAxisPresets['default']!;
-      // 与"默认"预设不同即视为已自定义,覆盖预设
-      dynamic pick(dynamic v, dynamic defVal, dynamic baseVal) {
-        if (v != null && v != defVal) return v;
-        return baseVal;
-      }
-
-      final showBorder =
-          pick(p['showBorder'], def.border, base.border) != false;
-      final colorX = '${pick(p['axisColorX'], def.colorX, base.colorX)}';
-      final colorY = '${pick(p['axisColorY'], def.colorY, base.colorY)}';
-      final colorZ = '${pick(p['axisColorZ'], def.colorZ, base.colorZ)}';
-      final widthX = math.max(
-        0.02,
-        num_(pick(p['axisWidthX'], def.widthX, base.widthX), 0.12),
-      );
-      final widthY = math.max(
-        0.02,
-        num_(pick(p['axisWidthY'], def.widthY, base.widthY), 0.12),
-      );
-      final widthZ = math.max(
-        0.02,
-        num_(pick(p['axisWidthZ'], def.widthZ, base.widthZ), 0.12),
-      );
-      final gridX = pick(p['gridX'], def.gridX, base.gridX) != false;
-      final gridY = pick(p['gridY'], def.gridY, base.gridY) != false;
-      final gridZ = pick(p['gridZ'], def.gridZ, base.gridZ) != false;
+      final showBorder = p['showBorder'] is bool
+          ? p['showBorder'] as bool
+          : true;
+      final colorX = '${p['axisColorX'] ?? '#333333'}';
+      final colorY = '${p['axisColorY'] ?? '#333333'}';
+      final colorZ = '${p['axisColorZ'] ?? '#333333'}';
+      final widthX = math.max(0.02, num_(p['axisWidthX'], 0.12));
+      final widthY = math.max(0.02, num_(p['axisWidthY'], 0.12));
+      final widthZ = math.max(0.02, num_(p['axisWidthZ'], 0.12));
+      final gridX = p['gridX'] is bool ? p['gridX'] as bool : true;
+      final gridY = p['gridY'] is bool ? p['gridY'] as bool : true;
+      final gridZ = p['gridZ'] is bool ? p['gridZ'] as bool : true;
 
       final fontSize = math.max(6.0, math.min(24.0, num_(p['fontSize'], 10)));
       final fontFamily = str(p['fontFamily'], 'sans-serif');
       final arrowX = p['arrowX'] != false;
       final arrowY = p['arrowY'] != false;
       // 隐藏坐标系预设:完全不绘制坐标轴/网格/刻度/标签
-      final hidden = str(p['axisPreset'], 'default') == 'hidden';
+      final hidden =
+          str(p['axisVisibility'], 'visible') == 'hidden' ||
+          str(p['axisPreset'], 'default') == 'hidden';
 
       // 收集输入口的图元(点/线/面/分布/文本,均可多连):
       // 端口未接时 inputs 为空,multiInputs 也为空 → 空列表。
@@ -486,7 +371,7 @@ Map<String, ExecFn> _buildExec() {
           fontSize: fontSize,
           fontFamily: fontFamily,
           axisPreset: str(p['axisPreset'], 'default'),
-          aspectMode: str(p['aspectMode'], 'free'),
+          aspectMode: str(p['aspectMode'], 'equal'),
           xScale: xScale,
           yScale: yScale,
           zScale: zScale,
