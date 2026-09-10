@@ -205,6 +205,10 @@ void main() {
       ),
     );
     expect(proxy, findsOneWidget);
+    expect(
+      find.byKey(ValueKey('package-glass-overview-$packageId')),
+      findsOneWidget,
+    );
     expect(find.byType(NodeCard), findsNWidgets(2));
     expect(memberPointer(first).ignoring, isTrue);
     expect(memberPointer(second).ignoring, isTrue);

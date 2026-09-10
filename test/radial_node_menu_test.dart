@@ -43,11 +43,14 @@ void main() {
     expect(radialSectionIndex(const Offset(-60, -20)), 5);
   });
 
-  test('detail hit testing requires the outer ring and clamps its item', () {
-    expect(radialDetailIndex(const Offset(0, -90), 0, 5), isNull);
-    expect(radialDetailIndex(const Offset(0, -120), 0, 5), 2);
-    expect(radialDetailIndex(const Offset(0, -120), 0, 0), isNull);
-  });
+  test(
+    'detail hit testing activates at the color ring and clamps its item',
+    () {
+      expect(radialDetailIndex(const Offset(0, -30), 0, 5), isNull);
+      expect(radialDetailIndex(const Offset(0, -60), 0, 5), 2);
+      expect(radialDetailIndex(const Offset(0, -120), 0, 0), isNull);
+    },
+  );
 
   testWidgets('quick secondary click uses the traditional node menu', (
     tester,
@@ -71,6 +74,11 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 180));
     expect(find.byKey(const Key('radial-node-menu')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(
+      tester.getRect(find.byKey(const Key('radial-node-menu'))).center,
+      within(distance: 1, from: center),
+    );
     await gesture.up();
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('radial-node-menu')), findsNothing);
@@ -94,6 +102,32 @@ void main() {
     await tester.pumpAndSettle();
     expect(GraphStore.instance.nodes, hasLength(1));
     expect(find.byKey(const Key('radial-node-menu')), findsNothing);
+  });
+
+  testWidgets('node type locks at the ring detachment point', (tester) async {
+    await pumpApp(tester);
+    final center = tester.getCenter(find.byType(NodeCanvas));
+    final inputItems = radialItemsFor(RadialNodeSection.input, const []);
+    final initialDelta = const Offset(0, -100);
+    final expectedIndex = radialDetailIndex(
+      initialDelta,
+      0,
+      inputItems.length,
+    )!;
+    final gesture = await tester.startGesture(
+      center,
+      buttons: kSecondaryButton,
+    );
+    await gesture.moveBy(initialDelta);
+    await tester.pump();
+    await gesture.moveBy(const Offset(200, 100));
+    await tester.pump(const Duration(milliseconds: 400));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(
+      GraphStore.instance.nodes.single.configId,
+      inputItems[expectedIndex].id,
+    );
   });
 
   testWidgets('node shelf can be hidden independently', (tester) async {

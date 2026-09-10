@@ -114,6 +114,15 @@ void main() {
     final after = tester.getSize(card);
     expect(after.width, greaterThan(before.width));
     expect(after.height, greaterThan(before.height));
+
+    await tester.drag(
+      find.byKey(ValueKey('viewer-resize-$id')),
+      const Offset(50, 40),
+    );
+    await tester.pump();
+    final afterSecondResize = tester.getSize(card);
+    expect(afterSecondResize.width, greaterThan(after.width));
+    expect(afterSecondResize.height, greaterThan(after.height));
   });
 
   testWidgets('shortcut panel records a replacement chord', (tester) async {

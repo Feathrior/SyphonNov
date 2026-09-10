@@ -179,10 +179,6 @@ class NodeCard extends StatelessWidget {
                     key: ValueKey('viewer-resize-$nodeId'),
                     behavior: HitTestBehavior.opaque,
                     onPointerDown: (_) => callbacks.onResizeStart?.call(nodeId),
-                    onPointerMove: (event) =>
-                        callbacks.onResizeUpdate?.call(nodeId, event.delta),
-                    onPointerUp: (_) => callbacks.onResizeEnd?.call(nodeId),
-                    onPointerCancel: (_) => callbacks.onResizeEnd?.call(nodeId),
                     child: Padding(
                       padding: const EdgeInsets.all(5),
                       child: Icon(

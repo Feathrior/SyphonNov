@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show
@@ -120,6 +121,89 @@ class _PackageRegionPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _PackageRegionPainter oldDelegate) =>
       oldDelegate.color != color || oldDelegate.zoom != zoom;
+}
+
+class _PackageOverviewPainter extends CustomPainter {
+  final List<GraphNode> nodes;
+  final List<GraphEdge> edges;
+  final Color color;
+  final int revision;
+
+  const _PackageOverviewPainter({
+    required this.nodes,
+    required this.edges,
+    required this.color,
+    required this.revision,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (nodes.isEmpty || size.isEmpty) return;
+    final nodeRects = <String, Rect>{
+      for (final node in nodes) node.id: node.position & nodeSize(node, edges),
+    };
+    Rect? world;
+    for (final rect in nodeRects.values) {
+      world = world == null ? rect : world.expandToInclude(rect);
+    }
+    if (world == null || world.width <= 0 || world.height <= 0) return;
+    final scale = math.min(
+      (size.width - 12) / world.width,
+      (size.height - 10) / world.height,
+    );
+    final fitted = Size(world.width * scale, world.height * scale);
+    final origin = Offset(
+      (size.width - fitted.width) / 2 - world.left * scale,
+      (size.height - fitted.height) / 2 - world.top * scale,
+    );
+    Offset map(Offset point) => origin + point * scale;
+
+    final ids = nodeRects.keys.toSet();
+    final edgePaint = Paint()
+      ..color = color.withValues(alpha: .42)
+      ..strokeWidth = 1.15
+      ..strokeCap = StrokeCap.round;
+    for (final edge in edges) {
+      if (!ids.contains(edge.source) || !ids.contains(edge.target)) continue;
+      final source = nodeRects[edge.source]!;
+      final target = nodeRects[edge.target]!;
+      final a = map(source.centerRight);
+      final b = map(target.centerLeft);
+      final path = Path()
+        ..moveTo(a.dx, a.dy)
+        ..cubicTo((a.dx + b.dx) / 2, a.dy, (a.dx + b.dx) / 2, b.dy, b.dx, b.dy);
+      canvas.drawPath(path, edgePaint);
+    }
+    for (final rect in nodeRects.values) {
+      final mapped = Rect.fromPoints(map(rect.topLeft), map(rect.bottomRight));
+      final compact = Rect.fromCenter(
+        center: mapped.center,
+        width: mapped.width.clamp(12, 34),
+        height: mapped.height.clamp(7, 19),
+      );
+      final rrect = RRect.fromRectAndRadius(compact, const Radius.circular(3));
+      canvas.drawRRect(
+        rrect,
+        Paint()
+          ..color = Colors.white.withValues(alpha: .3)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.3),
+      );
+      canvas.drawRRect(
+        rrect,
+        Paint()
+          ..color = color.withValues(alpha: .34)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .8,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PackageOverviewPainter oldDelegate) =>
+      oldDelegate.revision != revision ||
+      oldDelegate.color != color ||
+      oldDelegate.nodes.length != nodes.length ||
+      oldDelegate.edges.length != edges.length;
 }
 
 // ==================== 连线绘制 ====================
@@ -906,7 +990,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   int? _radialSection;
   int? _radialDetail;
   List<RadialNodeItem> _radialItems = const [];
-  bool _radialArmed = false;
+  RadialNodeItem? _radialLockedItem;
+  Offset? _radialDetachAnchor;
 
   // 分组标签双击重命名检测(双击 = 两次快速按下标签)
   DateTime? _lastGroupLabelDownAt;
@@ -1924,6 +2009,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   void _onBackgroundDown(PointerDownEvent e) {
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
+    // 缩放手柄先在子 Listener 中开启状态；祖先 Listener 收到同一个 down 时
+    // 不得再把它解释为节点拖动，否则缩放结束后会残留拖动态。
+    if (_resizingViewerId != null) return;
     // 预览窗面板内:指针事件由预览窗自身处理,画布层一律忽略
     // (防误触发清空多选/框选/Alt 划线等画布逻辑)
     if (_inMiniMap(e.position)) return;
@@ -2071,7 +2159,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundMove(PointerMoveEvent e) {
-    if (_resizingViewerId != null) return;
+    final resizingViewerId = _resizingViewerId;
+    if (resizingViewerId != null) {
+      _onViewerResizeUpdate(resizingViewerId, e.delta);
+      return;
+    }
     if (_rightPressScreen != null) {
       _updateRadialGesture(e.localPosition);
       return;
@@ -2185,7 +2277,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundUp(PointerUpEvent e) {
-    if (_resizingViewerId != null) return;
+    final resizingViewerId = _resizingViewerId;
+    if (resizingViewerId != null) {
+      _onViewerResizeEnd(resizingViewerId);
+      _downPosScreen = null;
+      return;
+    }
     if (_rightPressScreen != null) {
       _finishRadialGesture(e.localPosition);
       _downPosScreen = null;
@@ -2462,7 +2559,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _radialSection = null;
     _radialDetail = null;
     _radialItems = const [];
-    _radialArmed = false;
+    _radialLockedItem = null;
+    _radialDetachAnchor = null;
     _radialHoldTimer?.cancel();
     _radialHoldTimer = Timer(const Duration(milliseconds: 170), () {
       if (!mounted || _rightPressScreen == null) return;
@@ -2481,6 +2579,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _radialVisible = true;
     }
     if (!_radialVisible) return;
+    if (_radialLockedItem != null) {
+      _bump();
+      return;
+    }
     final section = radialSectionIndex(delta);
     final items = section == null
         ? const <RadialNodeItem>[]
@@ -2494,10 +2596,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _radialSection = section;
     _radialItems = items;
     _radialDetail = detail;
-    _radialArmed =
-        delta.distance >= radialCommitRadius &&
+    if (delta.distance >= radialDetachRadius &&
         detail != null &&
-        detail < items.length;
+        detail < items.length) {
+      _radialLockedItem = items[detail];
+      _radialDetachAnchor = radialAttachmentPoint(center, localPosition);
+    }
     _bump();
   }
 
@@ -2507,15 +2611,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _radialHoldTimer?.cancel();
     final wasVisible = _radialVisible;
     if (wasVisible) _updateRadialGesture(localPosition);
-    final item = _radialArmed && _radialDetail != null
-        ? _radialItems[_radialDetail!]
-        : null;
+    final item = _radialLockedItem;
     _rightPressScreen = null;
     _radialVisible = false;
     _radialSection = null;
     _radialDetail = null;
     _radialItems = const [];
-    _radialArmed = false;
+    _radialLockedItem = null;
+    _radialDetachAnchor = null;
     if (item != null) {
       if (item.isPackage) {
         final value = SettingsStore.instance.packageLibrary
@@ -2548,7 +2651,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _radialSection = null;
     _radialDetail = null;
     _radialItems = const [];
-    _radialArmed = false;
+    _radialLockedItem = null;
+    _radialDetachAnchor = null;
   }
 
   void _closeMenu() {
@@ -3025,7 +3129,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                       sectionIndex: _radialSection,
                       detailIndex: _radialDetail,
                       detailItems: _radialItems,
-                      armed: _radialArmed,
+                      lockedItem: _radialLockedItem,
+                      detachAnchor: _radialDetachAnchor,
                     ),
             ),
           ),
@@ -3470,6 +3575,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         final selected = current.nodeIds.every(store.multiSelected.contains);
         final inputs = packageInputPorts(current, store.nodes, store.edges);
         final outputs = packageOutputPorts(current, store.nodes, store.edges);
+        final members = [
+          for (final node in store.nodes)
+            if (current.nodeIds.contains(node.id)) node,
+        ];
         return Positioned(
           key: ValueKey('package-node-${group.id}'),
           left: rect.left,
@@ -3541,40 +3650,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                               ),
                             ),
                           ),
-                          Positioned.fill(
-                            left: 78,
-                            right: 78,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(
-                                  Icons.inventory_2_outlined,
-                                  size: 24,
-                                  color: Color(0xFF8A9099),
-                                ),
-                                const SizedBox(height: 5),
-                                Text(
-                                  current.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: t.text,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  '${current.nodeIds.length} 节点',
-                                  style: TextStyle(
-                                    color: t.textFaint,
-                                    fontSize: 9,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                           for (var index = 0; index < inputs.length; index++)
                             _packagePortVisual(
                               inputs[index],
@@ -3589,6 +3664,82 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                               isSource: true,
                               theme: t,
                             ),
+                          Positioned(
+                            left: 72,
+                            right: 72,
+                            top: 27,
+                            bottom: 8,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: BackdropFilter(
+                                filter: ui.ImageFilter.blur(
+                                  sigmaX: 5.5,
+                                  sigmaY: 5.5,
+                                ),
+                                child: DecoratedBox(
+                                  key: ValueKey(
+                                    'package-glass-overview-${current.id}',
+                                  ),
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        Colors.white.withValues(alpha: .2),
+                                        const Color(
+                                          0xFF8A9099,
+                                        ).withValues(alpha: .08),
+                                        Colors.white.withValues(alpha: .13),
+                                      ],
+                                    ),
+                                    border: Border.all(
+                                      color: Colors.white.withValues(alpha: .3),
+                                      width: .8,
+                                    ),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: ImageFiltered(
+                                    imageFilter: ui.ImageFilter.blur(
+                                      sigmaX: .55,
+                                      sigmaY: .55,
+                                    ),
+                                    child: CustomPaint(
+                                      painter: _PackageOverviewPainter(
+                                        nodes: members,
+                                        edges: store.edges,
+                                        color: const Color(0xFF737983),
+                                        revision: store.layoutRevision.value,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            left: 86,
+                            right: 86,
+                            bottom: 13,
+                            child: IgnorePointer(
+                              child: Text(
+                                '${current.name} · ${current.nodeIds.length}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: t.text,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w700,
+                                  shadows: [
+                                    Shadow(
+                                      color: t.bgNode.withValues(alpha: .9),
+                                      blurRadius: 5,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
                           Positioned(
                             right: 8,
                             bottom: 8,
@@ -3937,6 +4088,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   /// 指针取消(如窗口失焦):清理连线拖拽状态,避免残留预览线
   void _onPointerCancel(PointerCancelEvent e) {
+    final resizingViewerId = _resizingViewerId;
+    if (resizingViewerId != null) _onViewerResizeEnd(resizingViewerId);
     if (_rightPressScreen != null || _radialVisible) {
       _cancelRadialGesture();
       _bump();

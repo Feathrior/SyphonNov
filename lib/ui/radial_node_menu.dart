@@ -1,6 +1,7 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -24,10 +25,10 @@ const radialNodeSections = <RadialNodeSection>[
 
 typedef RadialNodeItem = ({String id, String label, bool isPackage});
 
-const double radialDeadRadius = 28;
-const double radialCategoryRadius = 84;
-const double radialDetailRadius = 96;
-const double radialCommitRadius = 154;
+const double radialInnerRadius = 48;
+const double radialOuterRadius = 66;
+const double radialDetachRadius = 88;
+const double radialDeadRadius = radialInnerRadius - 10;
 
 Category? categoryForRadialSection(RadialNodeSection section) =>
     switch (section) {
@@ -70,7 +71,7 @@ int? radialSectionIndex(Offset delta) {
 }
 
 int? radialDetailIndex(Offset delta, int sectionIndex, int itemCount) {
-  if (delta.distance < radialDetailRadius || itemCount == 0) return null;
+  if (delta.distance < radialDeadRadius || itemCount == 0) return null;
   const sweep = math.pi * 2 / 6;
   final center = -math.pi / 2 + sectionIndex * sweep;
   var relative = math.atan2(delta.dy, delta.dx) - center;
@@ -84,13 +85,21 @@ int? radialDetailIndex(Offset delta, int sectionIndex, int itemCount) {
   return (normalized * itemCount).floor().clamp(0, itemCount - 1);
 }
 
+Offset radialAttachmentPoint(Offset center, Offset pointer) {
+  final delta = pointer - center;
+  if (delta.distance == 0) return center;
+  return center +
+      delta / delta.distance * ((radialInnerRadius + radialOuterRadius) / 2);
+}
+
 class RadialNodeMenu extends StatelessWidget {
   final Offset center;
   final Offset pointer;
   final int? sectionIndex;
   final int? detailIndex;
   final List<RadialNodeItem> detailItems;
-  final bool armed;
+  final RadialNodeItem? lockedItem;
+  final Offset? detachAnchor;
 
   const RadialNodeMenu({
     super.key,
@@ -99,40 +108,69 @@ class RadialNodeMenu extends StatelessWidget {
     required this.sectionIndex,
     required this.detailIndex,
     required this.detailItems,
-    required this.armed,
+    required this.lockedItem,
+    required this.detachAnchor,
   });
 
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    return IgnorePointer(
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: MotionTokens.standard(context),
-        curve: MotionTokens.emphasized,
-        builder: (context, value, child) => Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: .82 + .18 * value,
-            origin: center,
-            child: child,
-          ),
-        ),
-        child: RepaintBoundary(
-          child: CustomPaint(
-            key: const Key('radial-node-menu'),
-            painter: _RadialNodeMenuPainter(
-              center: center,
-              pointer: pointer,
-              sectionIndex: sectionIndex,
-              detailIndex: detailIndex,
-              detailItems: detailItems,
-              armed: armed,
-              theme: t,
+    final radius = math.max(124.0, (pointer - center).distance + 36);
+    final bounds = Rect.fromCircle(center: center, radius: radius);
+    final localCenter = center - bounds.topLeft;
+    final localPointer = pointer - bounds.topLeft;
+    final localAnchor = detachAnchor == null
+        ? null
+        : detachAnchor! - bounds.topLeft;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Positioned.fromRect(
+          rect: bounds,
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: 1),
+            duration: MotionTokens.spatial(context),
+            curve: MotionTokens.emphasized,
+            builder: (context, opening, child) => ImageFiltered(
+              imageFilter: ui.ImageFilter.blur(
+                sigmaX: 7 * (1 - opening),
+                sigmaY: 7 * (1 - opening),
+              ),
+              child: Opacity(
+                opacity: opening,
+                child: Transform.scale(
+                  scale: .78 + .22 * opening,
+                  alignment: Alignment.topLeft,
+                  origin: localCenter,
+                  child: child,
+                ),
+              ),
+            ),
+            child: TweenAnimationBuilder<double>(
+              key: ValueKey(lockedItem?.id ?? 'radial-attached'),
+              tween: Tween(begin: 0, end: lockedItem == null ? 0 : 1),
+              duration: MotionTokens.spatial(context),
+              curve: Curves.easeOutBack,
+              builder: (context, detachProgress, _) => RepaintBoundary(
+                child: CustomPaint(
+                  key: const Key('radial-node-menu'),
+                  painter: _RadialNodeMenuPainter(
+                    center: localCenter,
+                    pointer: localPointer,
+                    sectionIndex: sectionIndex,
+                    detailIndex: detailIndex,
+                    detailItems: detailItems,
+                    lockedItem: lockedItem,
+                    detachAnchor: localAnchor,
+                    detachProgress: detachProgress,
+                    theme: t,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -143,7 +181,9 @@ class _RadialNodeMenuPainter extends CustomPainter {
   final int? sectionIndex;
   final int? detailIndex;
   final List<RadialNodeItem> detailItems;
-  final bool armed;
+  final RadialNodeItem? lockedItem;
+  final Offset? detachAnchor;
+  final double detachProgress;
   final SyphonTheme theme;
 
   const _RadialNodeMenuPainter({
@@ -152,7 +192,9 @@ class _RadialNodeMenuPainter extends CustomPainter {
     required this.sectionIndex,
     required this.detailIndex,
     required this.detailItems,
-    required this.armed,
+    required this.lockedItem,
+    required this.detachAnchor,
+    required this.detachProgress,
     required this.theme,
   });
 
@@ -163,7 +205,7 @@ class _RadialNodeMenuPainter extends CustomPainter {
   }
 
   String _sectionLabel(int index) {
-    if (index == 5) return 'Package';
+    if (index == 5) return 'PKG';
     final category = categoryForRadialSection(radialNodeSections[index])!;
     return L.t(kCategoryInfo[category]!.label);
   }
@@ -180,175 +222,154 @@ class _RadialNodeMenuPainter extends CustomPainter {
   void _drawCentered(Canvas canvas, String text, Offset at, TextStyle style) {
     final painter = TextPainter(
       text: TextSpan(text: text, style: style),
+      textAlign: TextAlign.center,
       textDirection: TextDirection.ltr,
       maxLines: 1,
       ellipsis: '…',
-    )..layout(maxWidth: 86);
+    )..layout(maxWidth: 112);
     painter.paint(canvas, at - Offset(painter.width / 2, painter.height / 2));
   }
 
   @override
   void paint(Canvas canvas, Size size) {
-    const sectionSweep = math.pi * 2 / 6;
-    const gap = .025;
+    const sweep = math.pi * 2 / 6;
     canvas.drawCircle(
       center,
-      88,
+      radialOuterRadius + 5,
       Paint()
-        ..color = Colors.black.withValues(alpha: theme.isDark ? .2 : .08)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
+        ..color = Colors.black.withValues(alpha: theme.isDark ? .28 : .14)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
     );
+    canvas.drawCircle(
+      center,
+      radialInnerRadius - 4,
+      Paint()..color = theme.bgSurface.withValues(alpha: .88),
+    );
+
     for (var index = 0; index < 6; index++) {
       final selected = sectionIndex == index;
       final color = _sectionColor(index);
-      final start = -math.pi / 2 - sectionSweep / 2 + index * sectionSweep;
+      final start = -math.pi / 2 - sweep / 2 + index * sweep + .025;
       final path = _sector(
-        radialDeadRadius + 2,
-        radialCategoryRadius,
-        start + gap,
-        sectionSweep - gap * 2,
+        selected ? radialInnerRadius - 3 : radialInnerRadius,
+        selected ? radialOuterRadius + 6 : radialOuterRadius,
+        start,
+        sweep - .05,
       );
+      if (selected) {
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = color.withValues(alpha: .48)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
+        );
+      }
       canvas.drawPath(
         path,
-        Paint()
-          ..color = selected
-              ? color.withValues(alpha: .9)
-              : theme.bgFloat.withValues(alpha: .97),
+        Paint()..color = color.withValues(alpha: selected ? .96 : .72),
       );
-      canvas.drawPath(
-        path,
-        Paint()
-          ..color = selected ? color : theme.strokeStrong.withValues(alpha: .75)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = selected ? 1.8 : 1,
-      );
-      final angle = -math.pi / 2 + index * sectionSweep;
+      final angle = -math.pi / 2 + index * sweep;
       _drawCentered(
         canvas,
         _sectionLabel(index),
-        center + Offset(math.cos(angle), math.sin(angle)) * 57,
+        center + Offset(math.cos(angle), math.sin(angle)) * 56.5,
         TextStyle(
-          color: selected ? Colors.white : theme.textDim,
-          fontSize: 9,
-          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+          color: Colors.white.withValues(alpha: selected ? 1 : .82),
+          fontSize: 7.5,
+          fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
         ),
       );
     }
-    canvas.drawCircle(
-      center,
-      radialDeadRadius - 3,
-      Paint()..color = theme.bgSurface,
-    );
+
+    if (sectionIndex != null && detailItems.isNotEmpty) {
+      final start = -math.pi / 2 - sweep / 2 + sectionIndex! * sweep;
+      final itemSweep = sweep / detailItems.length;
+      for (var index = 1; index < detailItems.length; index++) {
+        final angle = start + index * itemSweep;
+        final unit = Offset(math.cos(angle), math.sin(angle));
+        canvas.drawLine(
+          center + unit * (radialInnerRadius + 2),
+          center + unit * (radialOuterRadius - 2),
+          Paint()
+            ..color = Colors.white.withValues(alpha: .54)
+            ..strokeWidth = .75,
+        );
+      }
+    }
+
+    final selectedItem =
+        detailIndex == null || detailIndex! >= detailItems.length
+        ? null
+        : detailItems[detailIndex!];
     _drawCentered(
       canvas,
-      '滑动',
+      lockedItem?.label ?? selectedItem?.label ?? '滑向色环',
       center,
-      TextStyle(color: theme.textFaint, fontSize: 8),
+      TextStyle(
+        color: theme.text,
+        fontSize: lockedItem == null ? 8.5 : 9,
+        fontWeight: lockedItem == null ? FontWeight.w500 : FontWeight.w700,
+      ),
     );
 
-    final selectedSection = sectionIndex;
-    if (selectedSection != null && detailItems.isNotEmpty) {
-      final color = _sectionColor(selectedSection);
-      final sectionStart =
-          -math.pi / 2 - sectionSweep / 2 + selectedSection * sectionSweep;
-      final itemSweep = sectionSweep / detailItems.length;
-      for (var index = 0; index < detailItems.length; index++) {
-        final selected = detailIndex == index;
-        final path = _sector(
-          radialDetailRadius,
-          radialCommitRadius - 8,
-          sectionStart + index * itemSweep + .008,
-          itemSweep - .016,
+    final delta = pointer - center;
+    if (delta.distance < radialDeadRadius || sectionIndex == null) return;
+    final color = _sectionColor(sectionIndex!);
+    final unit = delta / delta.distance;
+    final anchor =
+        detachAnchor ??
+        center + unit * ((radialInnerRadius + radialOuterRadius) / 2);
+    Offset dot;
+    if (lockedItem == null) {
+      final pull = math.max(0.0, delta.distance - radialInnerRadius);
+      final resisted =
+          ((radialInnerRadius + radialOuterRadius) / 2) + pull * .22;
+      dot = center + unit * math.min(resisted, radialDetachRadius - 4);
+    } else {
+      dot = Offset.lerp(anchor, pointer, detachProgress.clamp(0, 1))!;
+      final tether = Path()
+        ..moveTo(anchor.dx, anchor.dy)
+        ..quadraticBezierTo(
+          (anchor.dx + dot.dx) / 2 - unit.dy * 5 * (1 - detachProgress),
+          (anchor.dy + dot.dy) / 2 + unit.dx * 5 * (1 - detachProgress),
+          dot.dx,
+          dot.dy,
         );
-        canvas.drawPath(
-          path,
-          Paint()
-            ..color = selected
-                ? color.withValues(alpha: .82)
-                : theme.bgSurface.withValues(alpha: .82),
-        );
-        canvas.drawPath(
-          path,
-          Paint()
-            ..color = selected ? color : theme.stroke
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = selected ? 1.4 : .8,
-        );
-      }
-      final selectedDetail = detailIndex;
-      if (selectedDetail != null && selectedDetail < detailItems.length) {
-        final item = detailItems[selectedDetail];
-        final labelPainter = TextPainter(
-          text: TextSpan(
-            text: item.label,
-            style: TextStyle(
-              color: theme.text,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-          maxLines: 1,
-          ellipsis: '…',
-        )..layout(maxWidth: 150);
-        final labelRect = RRect.fromRectAndRadius(
-          Rect.fromCenter(
-            center: center + const Offset(0, 112),
-            width: labelPainter.width + 22,
-            height: 28,
-          ),
-          const Radius.circular(9),
-        );
-        canvas.drawRRect(labelRect, Paint()..color = theme.bgFloat);
-        canvas.drawRRect(
-          labelRect,
-          Paint()
-            ..color = color.withValues(alpha: .65)
-            ..style = PaintingStyle.stroke,
-        );
-        labelPainter.paint(
-          canvas,
-          Offset(
-            labelRect.center.dx - labelPainter.width / 2,
-            labelRect.center.dy - labelPainter.height / 2,
-          ),
-        );
-      }
-    }
-
-    if (armed) {
-      final color = sectionIndex == null
-          ? theme.accent
-          : _sectionColor(sectionIndex!);
-      canvas.drawCircle(
-        pointer,
-        25,
-        Paint()..color = color.withValues(alpha: .12),
-      );
-      canvas.drawCircle(
-        pointer,
-        12,
+      canvas.drawPath(
+        tether,
         Paint()
-          ..color = theme.bgSurface
-          ..style = PaintingStyle.fill,
-      );
-      canvas.drawCircle(
-        pointer,
-        12,
-        Paint()
-          ..color = color
+          ..color = color.withValues(alpha: .5 * (1 - detachProgress))
+          ..strokeWidth = 5 * (1 - detachProgress) + 1
+          ..strokeCap = StrokeCap.round
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
       );
     }
+    final pulse = lockedItem == null ? 0.0 : math.sin(detachProgress * math.pi);
+    canvas.drawCircle(
+      dot,
+      13 + pulse * 4,
+      Paint()
+        ..color = color.withValues(alpha: .35)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 + pulse * 5),
+    );
+    canvas.drawCircle(dot, 9.5, Paint()..color = color);
+    canvas.drawCircle(
+      dot - const Offset(2.5, 2.5),
+      2.2,
+      Paint()..color = Colors.white.withValues(alpha: .7),
+    );
   }
 
   @override
   bool shouldRepaint(covariant _RadialNodeMenuPainter oldDelegate) =>
+      oldDelegate.center != center ||
       oldDelegate.pointer != pointer ||
       oldDelegate.sectionIndex != sectionIndex ||
       oldDelegate.detailIndex != detailIndex ||
-      oldDelegate.armed != armed ||
       oldDelegate.detailItems != detailItems ||
+      oldDelegate.lockedItem != lockedItem ||
+      oldDelegate.detachAnchor != detachAnchor ||
+      oldDelegate.detachProgress != detachProgress ||
       oldDelegate.theme != theme;
 }
