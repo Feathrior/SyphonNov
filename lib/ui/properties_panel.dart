@@ -131,6 +131,175 @@ const Map<String, Set<String>> kAxisPropertyGroups = {
   },
 };
 
+const List<String> kGenericPropertyGroupOrder = [
+  '基础',
+  '数据与计算',
+  '范围与精度',
+  '外观',
+  '导入导出',
+];
+
+String propertyGroupForParam(md.ParamSpec spec) {
+  final key = spec.key.toLowerCase();
+  bool hasAny(Iterable<String> words) => words.any(key.contains);
+
+  if (hasAny([
+    'file',
+    'path',
+    'header',
+    'delimiter',
+    'encoding',
+    'sheet',
+    'export',
+    'dpi',
+  ])) {
+    return '导入导出';
+  }
+  if (((key == 'rows' || key == 'columns') && spec.defaultValue is num) ||
+      hasAny([
+        'min',
+        'max',
+        'start',
+        'end',
+        'step',
+        'sample',
+        'resolution',
+        'tolerance',
+        'iteration',
+        'degree',
+        'bandwidth',
+        'bins',
+        'budget',
+        'depth',
+        'seed',
+      ])) {
+    return '范围与精度';
+  }
+  if (key.endsWith('col') ||
+      key.contains('column') ||
+      hasAny([
+        'expr',
+        'formula',
+        'method',
+        'operation',
+        'normalize',
+        'missing',
+        'threshold',
+        'stat',
+        'source',
+        'target',
+      ])) {
+    return '数据与计算';
+  }
+  if (hasAny([
+    'color',
+    'opacity',
+    'width',
+    'size',
+    'style',
+    'shape',
+    'font',
+    'label',
+    'legend',
+    'display',
+    'show',
+    'visible',
+    'marker',
+    'line',
+    'blend',
+    'wireframe',
+  ])) {
+    return '外观';
+  }
+  return '基础';
+}
+
+/// 不使用高度动画的属性分栏。展开时只做一次布局，避免大量 Fluent
+/// Slider/TextBox 在 AnimatedSize 中逐帧重新测量。
+class _PropertyDisclosure extends StatefulWidget {
+  final SyphonTheme theme;
+  final String title;
+  final List<Widget> children;
+  final bool initiallyExpanded;
+
+  const _PropertyDisclosure({
+    super.key,
+    required this.theme,
+    required this.title,
+    required this.children,
+    this.initiallyExpanded = false,
+  });
+
+  @override
+  State<_PropertyDisclosure> createState() => _PropertyDisclosureState();
+}
+
+class _PropertyDisclosureState extends State<_PropertyDisclosure> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = widget.theme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: t.bgSurface,
+        border: Border.all(color: t.stroke),
+        borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Semantics(
+            button: true,
+            expanded: _expanded,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: SizedBox(
+                height: 36,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.title,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: t.textFaint,
+                            letterSpacing: .8,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        _expanded
+                            ? Icons.keyboard_arrow_down
+                            : Icons.keyboard_arrow_right,
+                        size: 17,
+                        color: t.textDim,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: widget.children,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 Color _catColor(md.Category c) {
   final info = md.kCategoryInfo[c];
   if (info == null) return const Color(0xFF7C8DB5);
@@ -1684,35 +1853,49 @@ class PropertiesPanel extends StatelessWidget {
     GraphNode node,
     List<String> exposedKeys,
   ) {
-    if (cfg.id != 'axis_input') {
-      return [
-        _section(t, '参数', [
-          for (final p in cfg.params)
-            if (_paramVisible(cfg, node, p))
-              _paramRow(context, t, p, node, exposedKeys),
-        ]),
-      ];
-    }
-
-    final assigned = kAxisPropertyGroups.values.expand((keys) => keys).toSet();
-    final allGroups = <String, Set<String>>{
-      ...kAxisPropertyGroups,
-      if (cfg.params.any((p) => !assigned.contains(p.key)))
-        '其他': {
-          for (final p in cfg.params)
-            if (!assigned.contains(p.key)) p.key,
-        },
-    };
-    return [
-      for (final entry in allGroups.entries)
-        if (cfg.params.any(
-          (p) => entry.value.contains(p.key) && _paramVisible(cfg, node, p),
-        ))
-          _collapsibleSection(t, '${node.id}:axis:${entry.key}', entry.key, [
+    late final Map<String, Set<String>> allGroups;
+    if (cfg.id == 'axis_input') {
+      final assigned = kAxisPropertyGroups.values
+          .expand((keys) => keys)
+          .toSet();
+      allGroups = <String, Set<String>>{
+        ...kAxisPropertyGroups,
+        if (cfg.params.any((p) => !assigned.contains(p.key)))
+          '其他': {
             for (final p in cfg.params)
-              if (entry.value.contains(p.key) && _paramVisible(cfg, node, p))
+              if (!assigned.contains(p.key)) p.key,
+          },
+      };
+    } else {
+      allGroups = {
+        for (final title in kGenericPropertyGroupOrder)
+          title: {
+            for (final p in cfg.params)
+              if (propertyGroupForParam(p) == title) p.key,
+          },
+      };
+    }
+    final visibleGroups = allGroups.entries
+        .where(
+          (entry) => cfg.params.any(
+            (p) => entry.value.contains(p.key) && _paramVisible(cfg, node, p),
+          ),
+        )
+        .toList(growable: false);
+    return [
+      for (var i = 0; i < visibleGroups.length; i++)
+        _collapsibleSection(
+          t,
+          '${node.id}:properties:${visibleGroups[i].key}',
+          visibleGroups[i].key,
+          [
+            for (final p in cfg.params)
+              if (visibleGroups[i].value.contains(p.key) &&
+                  _paramVisible(cfg, node, p))
                 _paramRow(context, t, p, node, exposedKeys),
-          ], initiallyExpanded: entry.key == '基础'),
+          ],
+          initiallyExpanded: i == 0,
+        ),
     ];
   }
 
@@ -1723,29 +1906,12 @@ class PropertiesPanel extends StatelessWidget {
     List<Widget> children, {
     bool initiallyExpanded = false,
   }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
-        color: t.bgSurface,
-        border: Border.all(color: t.stroke),
-        borderRadius: BorderRadius.circular(SyphonDims.radiusM),
-      ),
-      child: ExpansionTile(
-        key: PageStorageKey<String>(storageKey),
-        initiallyExpanded: initiallyExpanded,
-        dense: true,
-        tilePadding: const EdgeInsets.symmetric(horizontal: 10),
-        childrenPadding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-        iconColor: t.textDim,
-        collapsedIconColor: t.textFaint,
-        shape: const Border(),
-        collapsedShape: const Border(),
-        title: Text(
-          title,
-          style: TextStyle(fontSize: 11, color: t.textFaint, letterSpacing: .8),
-        ),
-        children: children,
-      ),
+    return _PropertyDisclosure(
+      key: ValueKey(storageKey),
+      theme: t,
+      title: title,
+      initiallyExpanded: initiallyExpanded,
+      children: children,
     );
   }
 

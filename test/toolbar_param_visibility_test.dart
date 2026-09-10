@@ -29,6 +29,10 @@ void main() {
     final store = GraphStore.instance;
     store.selectNode('fc'); // 演示图中的 func_curve 节点
     await tester.pump();
+    await tester.tap(find.text('数据与计算'));
+    await tester.pump();
+    await tester.tap(find.text('范围与精度'));
+    await tester.pump();
 
     // 默认 function 模式:显示"表达式",不显示 x(t)/y(t)
     expect(find.text('表达式'), findsWidgets, reason: '函数模式应显示表达式');
