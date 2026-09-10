@@ -17,6 +17,7 @@ import 'store/graph_store.dart';
 import 'store/settings_store.dart';
 import 'ui/inspector.dart';
 import 'ui/node_canvas.dart';
+import 'ui/node_shelf.dart';
 import 'ui/properties_panel.dart';
 import 'ui/settings_panel.dart';
 import 'ui/shortcuts_panel.dart';
@@ -352,7 +353,7 @@ class _AppShellState extends State<_AppShell> {
             RepaintBoundary(
               child: Column(
                 children: [
-                  SizedBox(height: SyphonDims.toolbarH),
+                  SizedBox(height: SyphonDims.toolbarH + SyphonDims.nodeShelfH),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -381,10 +382,32 @@ class _AppShellState extends State<_AppShell> {
                 ],
               ),
             ),
+            Positioned(
+              top: SyphonDims.toolbarH,
+              left: 0,
+              right: 0,
+              child: NodeShelf(
+                onCreateNode: (id) =>
+                    _canvasKey.currentState?.addNodeAtViewportCenter(id),
+                onDropNode: (id, position) =>
+                    _canvasKey.currentState?.addNodeFromGlobal(id, position) ??
+                    false,
+                onDragUpdate: (id, category, position) => _canvasKey
+                    .currentState
+                    ?.updateExternalNodeDrag(id, category, position),
+                onDragCancel: () =>
+                    _canvasKey.currentState?.cancelExternalNodeDrag(),
+              ),
+            ),
             // 顶栏层:悬浮于所有图层之上
             Toolbar(
               boxSelect: _boxSelect,
-              onBoxSelectChanged: (v) => setState(() => _boxSelect = v),
+              onBoxSelectChanged: (v) {
+                // 先让菜单完成关闭，再更新工具栏状态，避免重建打断退出动画。
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() => _boxSelect = v);
+                });
+              },
               onOpenSettings: () => fluent.showDialog<void>(
                 context: context,
                 builder: (ctx) =>

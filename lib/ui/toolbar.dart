@@ -191,16 +191,20 @@ class Toolbar extends StatelessWidget {
   }
 
   /// 勾选菜单项(内置 ✓ 勾选位,如"框选模式")
-  fluent.ToggleMenuFlyoutItem _mCheck(
+  fluent.MenuFlyoutItem _mCheck(
     SyphonTheme t,
     String label,
     bool checked,
     VoidCallback onToggle,
   ) {
-    return fluent.ToggleMenuFlyoutItem(
+    return fluent.MenuFlyoutItem(
+      leading: Icon(
+        checked ? Icons.check_rounded : null,
+        size: 16,
+        color: t.accent,
+      ),
       text: Text(label),
-      value: checked,
-      onChanged: (_) => onToggle(),
+      onPressed: onToggle,
     );
   }
 
@@ -435,7 +439,7 @@ class Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Text('SyphonNov v0.4.2', style: const TextStyle(fontSize: 15)),
+            Text('SyphonNov v0.4.3', style: const TextStyle(fontSize: 15)),
           ],
         ),
         content: Text(
@@ -520,10 +524,35 @@ class _MenuButtonState extends State<_MenuButton> {
         dismissOnPointerMoveAway: true,
         placementMode: fluent.FlyoutPlacementMode.bottomLeft,
         additionalOffset: 2,
-        builder: (context) => fluent.MenuFlyout(items: widget.items),
+        builder: (context) => fluent.MenuFlyout(items: _closeableItems()),
       );
     }
   }
+
+  /// 由本按钮的 controller 先关闭浮层，再执行动作。这样会触发父级
+  /// setState 的菜单项也不会在退出动画中重建并滞留。
+  List<fluent.MenuFlyoutItemBase> _closeableItems() => [
+    for (final item in widget.items)
+      if (item is fluent.MenuFlyoutItem)
+        fluent.MenuFlyoutItem(
+          key: item.key,
+          text: item.text,
+          leading: item.leading,
+          trailing: item.trailing,
+          selected: item.selected,
+          focusNode: item.focusNode,
+          closeAfterClick: false,
+          onLongPress: item.onLongPress,
+          onPressed: item.onPressed == null
+              ? null
+              : () {
+                  _controller.close();
+                  item.onPressed!.call();
+                },
+        )
+      else
+        item,
+  ];
 
   // 用 Listener 手动接管点击(绕开手势竞技场):工具栏外层 DragToMoveArea
   // 的 pan/双击识别器会抢占普通 GestureDetector 的 tap,导致单击无响应。

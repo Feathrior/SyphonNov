@@ -34,6 +34,14 @@ void main() {
       await tester.pump();
 
       expect(find.text('基础'), findsOneWidget);
+      await tester.drag(
+        find.descendant(
+          of: find.byType(PropertiesPanel),
+          matching: find.byType(ListView),
+        ),
+        const Offset(0, -420),
+      );
+      await tester.pump();
       expect(find.text('坐标轴与网格'), findsOneWidget);
       expect(find.text('X 方向网格线'), findsNothing);
 

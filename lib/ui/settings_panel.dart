@@ -73,11 +73,14 @@ class _SettingsPanelState extends State<SettingsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 14, 10, 14),
       child: Row(
         children: [
-          Text(L.t('设置'),
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: t.text)),
+          Text(
+            L.t('设置'),
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: t.text,
+            ),
+          ),
           const Spacer(),
           _CloseButton(onPressed: widget.onClose),
         ],
@@ -86,7 +89,11 @@ class _SettingsPanelState extends State<SettingsPanel> {
   }
 
   /// 主体:左侧导航 + 右侧设置内容
-  Widget _buildBody(BuildContext context, SettingsStore settings, SyphonTheme t) {
+  Widget _buildBody(
+    BuildContext context,
+    SettingsStore settings,
+    SyphonTheme t,
+  ) {
     return ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 240),
       child: IntrinsicHeight(
@@ -133,11 +140,31 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       L.t('界面显示语言'),
                       _Segmented<String>(
                         value: settings.locale,
-                        options: [
-                          ('zh', '中文'),
-                          ('en', 'English'),
-                        ],
+                        options: [('zh', '中文'), ('en', 'English')],
                         onChanged: settings.setLocale,
+                      ),
+                      t,
+                    ),
+                    _row(
+                      L.t('动态效果'),
+                      L.t('完整、简化或关闭界面过渡；同时遵循 Windows 辅助功能设置'),
+                      _Segmented<MotionMode>(
+                        value: settings.motionMode,
+                        options: [
+                          (MotionMode.full, L.t('完整')),
+                          (MotionMode.reduced, L.t('简化')),
+                          (MotionMode.off, L.t('关闭')),
+                        ],
+                        onChanged: settings.setMotionMode,
+                      ),
+                      t,
+                    ),
+                    _row(
+                      L.t('节点放置吸附'),
+                      L.t('从顶部节点条拖入画布时吸附到 20 单位网格'),
+                      fluent.ToggleSwitch(
+                        checked: settings.snapNodePlacement,
+                        onChanged: settings.setSnapNodePlacement,
                       ),
                       t,
                     ),
@@ -168,8 +195,10 @@ class _SettingsPanelState extends State<SettingsPanel> {
               color: t.accent.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(SyphonDims.radiusS),
             ),
-            child: Text(L.t('常用设置'),
-                style: TextStyle(fontSize: 12, color: t.text)),
+            child: Text(
+              L.t('常用设置'),
+              style: TextStyle(fontSize: 12, color: t.text),
+            ),
           ),
         ],
       ),
@@ -182,13 +211,12 @@ class _SettingsPanelState extends State<SettingsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
       child: Row(
         children: [
-          Text(L.t('修改自动保存至 settings.json'),
-              style: TextStyle(fontSize: 11, color: t.textFaint)),
-          const Spacer(),
-          _PrimaryButton(
-            label: L.t('完成'),
-            onPressed: widget.onClose,
+          Text(
+            L.t('修改自动保存至 settings.json'),
+            style: TextStyle(fontSize: 11, color: t.textFaint),
           ),
+          const Spacer(),
+          _PrimaryButton(label: L.t('完成'), onPressed: widget.onClose),
         ],
       ),
     );
@@ -196,12 +224,15 @@ class _SettingsPanelState extends State<SettingsPanel> {
 
   // 分组标题(小号大写)
   Widget _sectionTitle(String text, SyphonTheme t) {
-    return Text(text,
-        style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.8,
-            color: t.textFaint));
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.8,
+        color: t.textFaint,
+      ),
+    );
   }
 
   // 设置行:标签 + 描述 + 控件
@@ -297,9 +328,14 @@ class _PrimaryButtonState extends State<_PrimaryButton> {
             borderRadius: BorderRadius.circular(SyphonDims.radiusS),
             border: Border.all(color: t.accent),
           ),
-          child: Text(widget.label,
-              style: TextStyle(
-                  fontSize: 12, color: t.onAccent, fontWeight: FontWeight.w600)),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 12,
+              color: t.onAccent,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
       ),
     );
@@ -365,16 +401,20 @@ class _SegmentedState<T> extends State<_Segmented<T>> {
             boxShadow: selected
                 ? [
                     BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.12),
-                        blurRadius: 2,
-                        offset: const Offset(0, 1))
+                      color: Colors.black.withValues(alpha: 0.12),
+                      blurRadius: 2,
+                      offset: const Offset(0, 1),
+                    ),
                   ]
                 : null,
           ),
-          child: Text(widget.options[i].$2,
-              style: TextStyle(
-                  fontSize: 12,
-                  color: selected ? t.text : t.textDim)),
+          child: Text(
+            widget.options[i].$2,
+            style: TextStyle(
+              fontSize: 12,
+              color: selected ? t.text : t.textDim,
+            ),
+          ),
         ),
       ),
     );

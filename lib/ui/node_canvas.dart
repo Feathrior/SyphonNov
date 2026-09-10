@@ -18,9 +18,11 @@ import '../i18n.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
 import '../store/graph_store.dart';
+import '../store/settings_store.dart';
 import 'canvas_geometry.dart';
 import 'context_menu.dart';
 import 'mini_map.dart';
+import 'motion.dart';
 import 'node_card.dart';
 import 'node_context_menus.dart';
 import 'theme.dart';
@@ -696,6 +698,8 @@ class NodeCanvasState extends State<NodeCanvas>
   final GraphStore store = GraphStore.instance;
   final ValueNotifier<double> _zoomNotifier = ValueNotifier(1);
   final FocusNode _focusNode = FocusNode();
+  final ValueNotifier<({Offset local, Color color, bool accepted})?>
+  _dropPreview = ValueNotifier(null);
 
   // 切断粒子爆裂动画:每帧刷新直到动画结束
   late final Ticker _cutTicker;
@@ -795,6 +799,70 @@ class NodeCanvasState extends State<NodeCanvas>
 
   Offset _toScreen(Offset flow) =>
       Offset(flow.dx * _zoom + _pan.dx, flow.dy * _zoom + _pan.dy);
+
+  /// 顶部节点条拖动时，仅刷新这个轻量 overlay，不触发节点世界重建。
+  void updateExternalNodeDrag(
+    String configId,
+    Category category,
+    Offset globalPosition,
+  ) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final local = box.globalToLocal(globalPosition);
+    final accepted = (Offset.zero & box.size).contains(local);
+    final hex = kCategoryInfo[category]?.color ?? '#7c8db5';
+    final color = Color(
+      int.tryParse(hex.replaceFirst('#', '0xFF')) ?? 0xFF7C8DB5,
+    );
+    _dropPreview.value = (local: local, color: color, accepted: accepted);
+  }
+
+  void cancelExternalNodeDrag() => _dropPreview.value = null;
+
+  /// 用全局指针坐标放置节点。返回 false 表示画布外取消，工作流不变化。
+  bool addNodeFromGlobal(String configId, Offset globalPosition) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    final local = box.globalToLocal(globalPosition);
+    if (!(Offset.zero & box.size).contains(local)) return false;
+    var flow = _toFlow(local) - const Offset(30, 20);
+    if (SettingsStore.instance.snapNodePlacement) {
+      const step = 20.0;
+      flow = Offset(
+        (flow.dx / step).round() * step,
+        (flow.dy / step).round() * step,
+      );
+    }
+    final id = store.addNode(configId, flow);
+    final node = store.nodeOf(id);
+    if (node != null) {
+      final size = nodeSize(node, store.edges, result: store.results[id]);
+      final min = _toFlow(const Offset(12, 12));
+      final bottomRight = _toFlow(
+        Offset(
+          math.max(12, box.size.width - 12),
+          math.max(12, box.size.height - 12),
+        ),
+      );
+      final maxX = math.max(min.dx, bottomRight.dx - size.width);
+      final maxY = math.max(min.dy, bottomRight.dy - size.height);
+      final clamped = Offset(
+        flow.dx.clamp(min.dx, maxX),
+        flow.dy.clamp(min.dy, maxY),
+      );
+      if (clamped != flow) store.moveNode(id, clamped);
+    }
+    cancelExternalNodeDrag();
+    _focusNode.requestFocus();
+    return true;
+  }
+
+  void addNodeAtViewportCenter(String configId) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final global = box.localToGlobal(box.size.center(Offset.zero));
+    addNodeFromGlobal(configId, global);
+  }
 
   void _bump() {
     _revision++;
@@ -2210,6 +2278,7 @@ class NodeCanvasState extends State<NodeCanvas>
   void dispose() {
     _cutTicker.dispose();
     _zoomNotifier.dispose();
+    _dropPreview.dispose();
     _sockHover.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -2295,8 +2364,51 @@ class NodeCanvasState extends State<NodeCanvas>
         clipBehavior: Clip.none,
         children: [
           Positioned.fill(child: _buildCanvasLayer(t)),
+          _buildExternalDropPreview(t),
           if (_menuPos != null) _buildMenuLayer(),
         ],
+      ),
+    );
+  }
+
+  Widget _buildExternalDropPreview(SyphonTheme t) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _dropPreview,
+          builder: (context, _) {
+            final preview = _dropPreview.value;
+            if (preview == null) return const SizedBox.shrink();
+            final color = preview.accepted ? preview.color : t.textFaint;
+            return Stack(
+              children: [
+                Positioned(
+                  left: preview.local.dx - 25,
+                  top: preview.local.dy - 25,
+                  child: Container(
+                    key: const Key('canvas-node-drop-preview'),
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: color.withValues(alpha: .09),
+                      border: Border.all(
+                        color: color.withValues(alpha: .72),
+                        width: 1.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: color.withValues(alpha: .24),
+                          blurRadius: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -2483,7 +2595,21 @@ class NodeCanvasState extends State<NodeCanvas>
       child: CanvasZoom(
         notifier: _zoomNotifier,
         child: RepaintBoundary(
-          child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
+          child: TweenAnimationBuilder<double>(
+            key: ValueKey('node-entry-${n.id}'),
+            tween: Tween(begin: 0.72, end: 1),
+            duration: MotionTokens.spatial(context),
+            curve: MotionTokens.emphasized,
+            builder: (context, value, child) => Opacity(
+              opacity: value,
+              child: Transform.scale(
+                scale: value,
+                alignment: Alignment.topLeft,
+                child: child,
+              ),
+            ),
+            child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
+          ),
         ),
       ),
       builder: (context, child) {
