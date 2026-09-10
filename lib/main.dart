@@ -236,9 +236,7 @@ class _AppShellState extends State<_AppShell> {
   bool _isGlobalShortcut(KeyEvent event) {
     final settings = SettingsStore.instance;
     return settings.matchesShortcut('undo', event) ||
-        settings.matchesShortcut('redo', event) ||
-        settings.matchesShortcut('group', event) ||
-        settings.matchesShortcut('ungroup', event);
+        settings.matchesShortcut('redo', event);
   }
 
   /// 全局键盘快捷键(对应 React 版 App.tsx 的 keydown 监听):
@@ -287,34 +285,6 @@ class _AppShellState extends State<_AppShell> {
     if (settings.matchesShortcut('selectAll', event)) {
       final s = GraphStore.instance;
       s.setMultiSelected(s.nodes.map((item) => item.id).toSet());
-      return KeyEventResult.handled;
-    }
-    if (settings.matchesShortcut('group', event)) {
-      final s = GraphStore.instance;
-      final ids = s.multiSelected.isNotEmpty
-          ? s.multiSelected.toList()
-          : (s.selectedId != null ? <String>[s.selectedId!] : const <String>[]);
-      if (ids.length >= 2) {
-        s.createGroup(ids);
-      }
-      return KeyEventResult.handled;
-    }
-    if (settings.matchesShortcut('ungroup', event)) {
-      final s = GraphStore.instance;
-      if (s.selectedId != null) {
-        final gid = s.groupOf(s.selectedId!);
-        if (gid != null) s.dissolveGroup(gid);
-      } else if (s.multiSelected.isNotEmpty) {
-        // 多选:收集所有不同的分组 id 逐一解散
-        final gids = <String>{};
-        for (final id in s.multiSelected) {
-          final gid = s.groupOf(id);
-          if (gid != null) gids.add(gid);
-        }
-        for (final gid in gids) {
-          s.dissolveGroup(gid);
-        }
-      }
       return KeyEventResult.handled;
     }
     // Escape:取消选中(画布右键菜单/分割点编辑由 NodeCanvas 自身的 Focus 处理)

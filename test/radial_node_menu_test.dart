@@ -130,6 +130,24 @@ void main() {
     );
   });
 
+  testWidgets('dragging a detached dot back into the hollow center cancels', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final center = tester.getCenter(find.byType(NodeCanvas));
+    final gesture = await tester.startGesture(
+      center,
+      buttons: kSecondaryButton,
+    );
+    await gesture.moveBy(const Offset(0, -140));
+    await tester.pump();
+    await gesture.moveBy(const Offset(0, 140));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(GraphStore.instance.nodes, isEmpty);
+  });
+
   testWidgets('node shelf can be hidden independently', (tester) async {
     SettingsStore.instance.nodeShelfEnabled = false;
     await pumpApp(tester);

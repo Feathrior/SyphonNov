@@ -112,7 +112,7 @@ class NodeMenu extends StatefulWidget {
   final Offset position;
   final void Function(String configId) onPick;
   final VoidCallback onClose;
-  final Widget? bottomSlot; // 可选底部扩展区(分组内右键时显示分组操作)
+  final Widget? bottomSlot; // 可选底部扩展区（例如 Package 库）
 
   const NodeMenu({
     super.key,

@@ -251,7 +251,7 @@ class LogEntry {
   });
 }
 
-/// 节点分组(Blender 风格):将多个节点组成一个分组,成员整体拖动,保存到画布文件
+/// Package 容器的持久化模型。
 class NodeGroup {
   final String id;
   final String name;
@@ -290,7 +290,7 @@ class NodeGroup {
 
   factory NodeGroup.fromJson(Map<String, dynamic> j) => NodeGroup(
     id: '${j['id'] ?? genId('g')}',
-    name: '${j['name'] ?? '分组'}',
+    name: '${j['name'] ?? 'Package'}',
     nodeIds: j['nodeIds'] is List
         ? (j['nodeIds'] as List).map((e) => '$e').toList()
         : const [],
@@ -369,7 +369,7 @@ class GraphStore extends ChangeNotifier {
       _nodeGeometryRevisions.putIfAbsent(id, () => ValueNotifier<int>(0));
   List<GraphNode> nodes = [];
   List<GraphEdge> edges = [];
-  List<NodeGroup> groups = []; // 节点分组(Blender 风格,成员整体拖动)
+  List<NodeGroup> groups = []; // Package 容器；旧版普通 Group 在加载时丢弃
   String? selectedId;
   Set<String> multiSelected = {}; // 多选节点集(Shift 点击/框选/分组)
   String? selectedSplitEdgeId; // 选中断点(Alt 创建 / 点击 mid)
@@ -591,65 +591,7 @@ class GraphStore extends ChangeNotifier {
     }
   }
 
-  /// 复制分组:克隆组内全部节点(含内部连线与断点),并对克隆重建分组,
-  /// 整体偏移 (40,40);克隆组成为新的多选集
-  void duplicateGroup(String groupId) {
-    final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
-    final g = target.first;
-    final members = nodes.where((n) => g.nodeIds.contains(n.id)).toList();
-    if (members.isEmpty) return;
-    snapshotNow();
-    final idMap = <String, String>{};
-    final clones = <GraphNode>[];
-    for (final n in members) {
-      final newId = genId();
-      idMap[n.id] = newId;
-      clones.add(
-        GraphNode(
-          id: newId,
-          configId: n.configId,
-          params: GraphNode.deepCopy(n).params,
-          exposed: List.of(n.exposed),
-          collapsed: n.collapsed,
-          position: n.position + const Offset(40, 40),
-        ),
-      );
-    }
-    final newEdges = <GraphEdge>[];
-    for (final e in edges) {
-      if (idMap.containsKey(e.source) && idMap.containsKey(e.target)) {
-        newEdges.add(
-          GraphEdge(
-            id: genId('e'),
-            source: idMap[e.source]!,
-            target: idMap[e.target]!,
-            sourceHandle: e.sourceHandle,
-            targetHandle: e.targetHandle,
-            mid: e.mid,
-          ),
-        );
-      }
-    }
-    _groupCounter++;
-    final newGroup = NodeGroup(
-      id: genId('g'),
-      name: '${g.name} 副本',
-      nodeIds: clones.map((c) => c.id).toList(),
-      isPackage: g.isPackage,
-      collapsed: g.collapsed,
-    );
-    nodes = [...nodes, ...clones];
-    edges = [...edges, ...newEdges];
-    groups = [...groups, newGroup];
-    selectedId = clones.isNotEmpty ? clones.first.id : null;
-    multiSelected = clones.map((c) => c.id).toSet();
-    addLog('ok', '已复制分组「${g.name}」');
-    structureVersion++;
-    notifyListeners();
-  }
-
-  // ---------- 复制 / 粘贴(节点/节点组,内部剪贴板) ----------
+  // ---------- 复制 / 粘贴(节点/Package,内部剪贴板) ----------
 
   Map<String, GraphNode>? _clipNodes;
   List<GraphEdge>? _clipEdges;
@@ -659,7 +601,7 @@ class GraphStore extends ChangeNotifier {
   /// 剪贴板中是否有可粘贴内容
   bool get hasClipboard => _clipNodes != null && _clipNodes!.isNotEmpty;
 
-  /// 复制所选节点到内部剪贴板;所选构成完整分组的节点,分组信息一并复制
+  /// 复制所选节点到内部剪贴板；完整选中的 Package 信息一并复制。
   void copySelection(Set<String> ids) {
     if (ids.isEmpty) {
       _clipNodes = null;
@@ -684,10 +626,12 @@ class GraphStore extends ChangeNotifier {
         if (src.containsKey(e.source) && src.containsKey(e.target))
           GraphEdge.deepCopy(e),
     ];
-    // 完整包含于所选的分组(组内成员全部在剪贴板)
+    // 完整包含于所选的 Package（全部成员都在剪贴板）。
     _clipGroups = [
       for (final g in groups)
-        if (g.nodeIds.isNotEmpty && g.nodeIds.every(src.containsKey))
+        if (g.isPackage &&
+            g.nodeIds.isNotEmpty &&
+            g.nodeIds.every(src.containsKey))
           NodeGroup(
             id: g.id,
             name: g.name,
@@ -710,7 +654,7 @@ class GraphStore extends ChangeNotifier {
   }
 
   /// 在 anchor(flow 坐标)处粘贴剪贴板内容:原内容左上角对齐 anchor;
-  /// 克隆节点/连线/分组,粘贴后成为新的多选集
+  /// 克隆节点、连线与 Package，粘贴后成为新的多选集。
   void pasteAt(Offset anchor) {
     final src = _clipNodes;
     if (src == null || src.isEmpty) return;
@@ -767,7 +711,7 @@ class GraphStore extends ChangeNotifier {
     addLog(
       'ok',
       '已粘贴 ${clones.length} 个节点'
-          '${newGroups.isNotEmpty ? '(含 ${newGroups.length} 个分组)' : ''}',
+          '${newGroups.isNotEmpty ? '(含 ${newGroups.length} 个 Package)' : ''}',
     );
     structureVersion++;
     notifyListeners();
@@ -849,36 +793,6 @@ class GraphStore extends ChangeNotifier {
     }
     if (edgesChanged) edges = newEdges;
     layoutRevision.value++;
-  }
-
-  // ---------- 节点分组(Blender 风格) ----------
-
-  int _groupCounter = 0;
-
-  /// 节点所属分组 id(未分组返回 null)
-  String? groupOf(String nodeId) {
-    for (final g in groups) {
-      if (g.nodeIds.contains(nodeId)) return g.id;
-    }
-    return null;
-  }
-
-  /// 将多个节点创建为一个分组(少于 2 个节点时忽略)
-  void createGroup(List<String> nodeIds) {
-    final ids = nodeIds
-        .where((id) => nodes.any((n) => n.id == id))
-        .toSet()
-        .toList();
-    if (ids.length < 2) return;
-    snapshotNow();
-    _groupCounter++;
-    groups = [
-      ...groups,
-      NodeGroup(id: genId('g'), name: '分组 $_groupCounter', nodeIds: ids),
-    ];
-    addLog('ok', '已将 ${ids.length} 个节点创建为「分组 $_groupCounter」');
-    structureVersion++;
-    notifyListeners();
   }
 
   /// 将所选子图收纳为可折叠 Package。执行图保持原样，折叠仅影响画布呈现。
@@ -1069,61 +983,13 @@ class GraphStore extends ChangeNotifier {
     return group.id;
   }
 
-  /// 将已有节点加入指定分组(节点已在该组或组不存在时忽略)
-  void addNodeToGroup(String nodeId, String groupId) {
+  /// 解散 Package（节点保留，仅移除 Package 容器）。
+  void dissolvePackage(String groupId) {
     final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
-    final g = target.first;
-    if (g.nodeIds.contains(nodeId)) return;
-    // 节点不允许同时属于多个分组:先从原分组移除
-    final oldGid = groupOf(nodeId);
-    snapshotNow();
-    if (oldGid != null && oldGid != groupId) {
-      groups = groups
-          .map((og) {
-            if (og.id == oldGid) {
-              return og.copyWith(
-                nodeIds: og.nodeIds.where((id) => id != nodeId).toList(),
-              );
-            }
-            return og;
-          })
-          .where((og) => og.nodeIds.isNotEmpty)
-          .toList();
-    }
-    groups = groups.map((og) {
-      if (og.id == groupId) {
-        return og.copyWith(nodeIds: [...og.nodeIds, nodeId]);
-      }
-      return og;
-    }).toList();
-    addLog('info', '节点已加入「${g.name}」');
-    structureVersion++;
-    notifyListeners();
-  }
-
-  /// 解散分组(节点保留,仅移除分组容器)
-  void dissolveGroup(String groupId) {
-    final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
+    if (target.isEmpty || !target.first.isPackage) return;
     snapshotNow();
     groups = groups.where((g) => g.id != groupId).toList();
-    addLog('info', '已解散分组「${target.first.name}」');
-    structureVersion++;
-    notifyListeners();
-  }
-
-  /// 重命名分组(空名忽略)
-  void renameGroup(String groupId, String name) {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return;
-    final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
-    snapshotNow();
-    groups = [
-      for (final g in groups) g.id == groupId ? g.copyWith(name: trimmed) : g,
-    ];
-    addLog('info', '分组已重命名为「$trimmed」');
+    addLog('info', '已解散 Package「${target.first.name}」');
     structureVersion++;
     notifyListeners();
   }
@@ -1591,7 +1457,8 @@ class GraphStore extends ChangeNotifier {
               group.nodeIds.any((id) => !byId.containsKey(id))) {
             throw FormatException('分组 ${group.id} 无效');
           }
-          loadedGroups.add(group);
+          // 普通 Group 已由 Package 取代；旧文件中的 Group 元数据在加载时丢弃。
+          if (group.isPackage) loadedGroups.add(group);
         }
       }
 

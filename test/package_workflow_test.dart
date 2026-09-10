@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter/gestures.dart' show kSecondaryButton;
-import 'package:flutter/material.dart' show DecoratedBox, IgnorePointer;
+import 'package:flutter/material.dart'
+    show AlertDialog, Color, DecoratedBox, IgnorePointer;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -268,6 +269,66 @@ void main() {
     expect(find.text('保存到 Package 库'), findsOneWidget);
     expect(find.text('解散 Package'), findsOneWidget);
     expect(find.byType(NodeMenu), findsNothing);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+    await tester.pump(const Duration(milliseconds: 32));
+    expect(
+      GraphStore.instance.groups
+          .singleWhere((g) => g.id == packageId)
+          .collapsed,
+      isFalse,
+    );
+    await tester.tap(
+      find.byKey(ValueKey('package-toggle-expanded-$packageId')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      GraphStore.instance.groups
+          .singleWhere((g) => g.id == packageId)
+          .collapsed,
+      isTrue,
+    );
+    expect(proxy.hitTestable(), findsOneWidget);
+  });
+
+  testWidgets('Package creation menu is opaque grey and Group is absent', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final first = GraphStore.instance.addNode(
+      'table_input',
+      const Offset(120, 90),
+      triggerRun: false,
+    );
+    final second = GraphStore.instance.addNode(
+      'table_to_scatter',
+      const Offset(440, 90),
+      triggerRun: false,
+    );
+    GraphStore.instance.setMultiSelected({first, second});
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+
+    final firstCard = find.byWidgetPredicate(
+      (widget) => widget is NodeCard && widget.nodeId == first,
+    );
+    await tester.tapAt(tester.getCenter(firstCard), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.text('分组'), findsNothing);
+    expect(find.text('取消分组'), findsNothing);
+    expect(find.text('打包为 Package'), findsOneWidget);
+
+    await tester.tap(find.text('打包为 Package'));
+    await tester.pumpAndSettle();
+    final dialog = tester.widget<AlertDialog>(find.byType(AlertDialog));
+    expect(dialog.backgroundColor, const Color(0xFFE1E3E6));
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('collapsed Package follows the pointer during drag', (

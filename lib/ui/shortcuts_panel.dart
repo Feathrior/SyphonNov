@@ -27,8 +27,6 @@ _kShortcutGroups = [
   (
     title: '画布',
     items: [
-      (action: 'group', keys: 'Ctrl+G', desc: '将所选节点分组'),
-      (action: 'ungroup', keys: 'Ctrl+Shift+G', desc: '解散所选节点所在分组'),
       (action: null, keys: 'Ctrl+滚轮', desc: '任意位置缩放画布'),
       (action: null, keys: 'Ctrl+按住左键划过连线', desc: '切断连线'),
       (action: null, keys: 'Shift+拖拽节点到连线上', desc: '把节点插入连线中间(拆分连线)'),

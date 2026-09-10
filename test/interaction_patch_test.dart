@@ -9,6 +9,7 @@ import 'package:syphon_nov/store/settings_store.dart';
 import 'package:syphon_nov/ui/canvas_geometry.dart';
 import 'package:syphon_nov/ui/node_card.dart';
 import 'package:syphon_nov/ui/shortcuts_panel.dart';
+import 'package:syphon_nov/ui/viewer.dart';
 
 void main() {
   setUp(() {
@@ -123,6 +124,40 @@ void main() {
     final afterSecondResize = tester.getSize(card);
     expect(afterSecondResize.width, greaterThan(after.width));
     expect(afterSecondResize.height, greaterThan(after.height));
+  });
+
+  testWidgets('clicking a viewer preview reselects it before resizing', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final viewerId = GraphStore.instance.addNode(
+      'viz_line',
+      const Offset(240, 80),
+      triggerRun: false,
+    );
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+    GraphStore.instance.setMultiSelected({});
+    await tester.pump();
+    expect(GraphStore.instance.multiSelected, isEmpty);
+
+    await tester.tap(find.byType(ChartViewer));
+    await tester.pump();
+    expect(GraphStore.instance.multiSelected, {viewerId});
+
+    final card = find.byWidgetPredicate(
+      (widget) => widget is NodeCard && widget.nodeId == viewerId,
+    );
+    final before = tester.getSize(card);
+    await tester.drag(
+      find.byKey(ValueKey('viewer-resize-$viewerId')),
+      const Offset(40, 30),
+    );
+    await tester.pump();
+    expect(tester.getSize(card).width, greaterThan(before.width));
   });
 
   testWidgets('shortcut panel records a replacement chord', (tester) async {

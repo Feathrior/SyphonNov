@@ -18,6 +18,6 @@ void main() {
     expect(errors, isEmpty, reason: '执行错误: ${errors.map((e) => e.error)}');
     expect(store.nodes.length, greaterThanOrEqualTo(35));
     expect(store.edges.length, greaterThanOrEqualTo(35));
-    expect(store.groups.length, 4);
+    expect(store.groups, isEmpty);
   });
 }

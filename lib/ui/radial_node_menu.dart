@@ -130,24 +130,24 @@ class RadialNodeMenu extends StatelessWidget {
           child: TweenAnimationBuilder<double>(
             tween: Tween(begin: 0, end: 1),
             duration: Duration(
-              milliseconds: (MotionTokens.spatial(context).inMilliseconds * 1.2)
-                  .round(),
+              milliseconds:
+                  (MotionTokens.spatial(context).inMilliseconds * 1.45).round(),
             ),
             curve: MotionTokens.emphasized,
             builder: (context, opening, child) {
               final eased = Curves.easeOutCubic.transform(opening);
               return ImageFiltered(
                 imageFilter: ui.ImageFilter.blur(
-                  sigmaX: 12 * (1 - eased),
-                  sigmaY: 12 * (1 - eased),
+                  sigmaX: 24 * (1 - eased),
+                  sigmaY: 24 * (1 - eased),
                 ),
                 child: Opacity(
                   opacity: Curves.easeOut.transform(opening),
                   child: Transform.rotate(
-                    angle: -.075 * (1 - eased),
+                    angle: -.32 * (1 - eased),
                     origin: localCenter,
                     child: Transform.scale(
-                      scale: .42 + .58 * eased,
+                      scale: .08 + .92 * eased,
                       alignment: Alignment.topLeft,
                       origin: localCenter,
                       child: child,

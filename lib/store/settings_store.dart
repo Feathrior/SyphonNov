@@ -20,8 +20,6 @@ const Map<String, String> defaultShortcutBindings = {
   'paste': 'Ctrl+V',
   'cut': 'Ctrl+X',
   'selectAll': 'Ctrl+A',
-  'group': 'Ctrl+G',
-  'ungroup': 'Ctrl+Shift+G',
   'delete': 'Delete',
 };
 

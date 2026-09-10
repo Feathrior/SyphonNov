@@ -11,11 +11,11 @@ import 'package:flutter/gestures.dart'
         PointerSignalEvent,
         kPrimaryButton,
         kSecondaryMouseButton;
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
-import '../i18n.dart';
 import '../models/color_utils.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
@@ -379,8 +379,6 @@ class _EdgesPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 分组框在最底层(连线/节点之上被遮挡部分自然隐藏,标签始终可见)
-    _paintGroupFrames(canvas);
     for (final e in edges) {
       final src = nodeMap[e.source];
       final tgt = nodeMap[e.target];
@@ -551,127 +549,6 @@ class _EdgesPainter extends CustomPainter {
     var h = hex.replaceFirst('#', '');
     if (h.length == 6) h = 'FF$h';
     return Color(int.tryParse(h, radix: 16) ?? 0xFF000000);
-  }
-
-  /// 分组外框(Blender 风格):圆角矩形 + 顶部内嵌标签。
-  /// 完整画 rrect,再用 fill 色在标签位置盖掉顶边实现"断开",
-  /// 最后画深色小标签 + 白字。
-  void _paintGroupFrames(Canvas canvas) {
-    if (groups.isEmpty) return;
-    final padX = 14.0 / zoom;
-    final padBottom = 14.0 / zoom;
-    final padTop = 22.0 / zoom; // 顶部更多空间容纳内嵌标签
-    final radius = 10.0 / zoom;
-    final strokeWidth = 1.2 / zoom;
-    for (final g in groups) {
-      // Package 使用独立的可动画区域层；普通分组仍由本画笔处理。
-      if (g.isPackage) continue;
-      final groupAccent = g.isPackage ? const Color(0xFF8A9099) : accent;
-      final stroke = Paint()
-        ..color = groupAccent.withValues(alpha: 0.6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = strokeWidth;
-      final fill = Paint()
-        ..color = groupAccent.withValues(alpha: g.isPackage ? .085 : .05);
-      final labelBg = Color.lerp(
-        groupAccent,
-        Colors.black,
-        isDark ? 0.55 : 0.28,
-      )!;
-      final coverPaint = Paint()..color = fill.color;
-      Rect? box;
-      for (final id in g.nodeIds) {
-        final n = nodeMap[id];
-        if (n == null) continue;
-        final r = n.position & nodeSize(n, edges);
-        box = box == null ? r : box.expandToInclude(r);
-      }
-      final inGroup = g.nodeIds.toSet();
-      for (final e in edges) {
-        final mid = e.mid;
-        if (mid == null) continue;
-        if (!inGroup.contains(e.source) || !inGroup.contains(e.target)) {
-          continue;
-        }
-        box = box == null
-            ? Rect.fromCircle(center: mid, radius: 0)
-            : box.expandToInclude(Rect.fromCircle(center: mid, radius: 0));
-      }
-      if (box == null) continue;
-      final rect = Rect.fromLTRB(
-        box.left - padX,
-        box.top - padTop,
-        box.right + padX,
-        box.bottom + padBottom,
-      );
-      final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
-      // 1) 完整圆角填充 + 完整圆角描边(天然正确,无方向问题)
-      canvas.drawRRect(rrect, fill);
-      if (g.isPackage) {
-        _drawDashedPath(
-          canvas,
-          [
-            rect.topLeft,
-            rect.topRight,
-            rect.bottomRight,
-            rect.bottomLeft,
-            rect.topLeft,
-          ],
-          stroke.color,
-          strokeWidth,
-          dash: [7 / zoom, 5 / zoom],
-        );
-      } else {
-        canvas.drawRRect(rrect, stroke);
-      }
-
-      // 2) 标签参数
-      final tp = TextPainter(
-        text: TextSpan(
-          text: g.name,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 12 / zoom,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout();
-      const lblH = 16.0; // 屏幕恒定高度
-      const lblPad = 5.0; // 文字左右 padding
-      const lblMargin = 6.0; // 标签距左边框的边距
-      const lblTopOverlap = 1.0; // 标签向上嵌入边框 1px(屏幕恒定)
-      final lblHeight = lblH / zoom;
-      final lblWidth = tp.width + 2 * lblPad / zoom;
-      final lblL = rect.left + lblMargin / zoom;
-      final lblT = g.isPackage
-          ? rect.top + 5 / zoom
-          : rect.top - lblTopOverlap / zoom;
-      final lblR = lblL + lblWidth;
-
-      // 3) 用 fill 色在标签位置覆盖顶边的 stroke,制造"断开"效果
-      // stroke 居中画在 rect 边缘,一半外侧一半内侧;
-      // coverRect 须从 stroke 外侧到 stroke 内侧完全盖净
-      final cover = Rect.fromLTRB(
-        lblL - 0.5 / zoom,
-        rect.top - strokeWidth / 2 - 0.2 / zoom,
-        lblR + 0.5 / zoom,
-        rect.top + strokeWidth / 2 + 0.2 / zoom,
-      );
-      if (!g.isPackage) canvas.drawRect(cover, coverPaint);
-
-      // 4) 画标签:深色小矩形 + 白字
-      final lblRect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(lblL, lblT, lblWidth, lblHeight),
-        Radius.circular(4 / zoom),
-      );
-      canvas.drawRRect(lblRect, Paint()..color = labelBg);
-      tp.paint(
-        canvas,
-        Offset(lblL + lblPad / zoom, lblT + (lblHeight - tp.height) / 2),
-      );
-    }
   }
 
   /// Alt 拆分预览点:12px 白底圆 + 2px 紫边 + 外圈光晕(React .nf-alt-split-dot)
@@ -1002,10 +879,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   RadialNodeItem? _radialLockedItem;
   Offset? _radialDetachAnchor;
 
-  // 分组标签双击重命名检测(双击 = 两次快速按下标签)
-  DateTime? _lastGroupLabelDownAt;
-  String? _lastGroupLabelDownId;
-  Offset _lastGroupLabelDownFlow = Offset.zero;
   // 鼠标最后位置(flow 坐标):Ctrl+V 粘贴定位用(hover/move 时更新)
   Offset? _boxStart; // 屏幕坐标
   Offset? _boxEnd;
@@ -1189,6 +1062,20 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       milliseconds: (duration.inMilliseconds * 1.25).round(),
     );
     _conversionLayoutController.forward(from: 0);
+  }
+
+  void _collapsePackage(NodeGroup group) {
+    final memberIds = group.nodeIds.toSet();
+    if (_conversionLayoutController.isAnimating &&
+        _conversionLayoutTargets.keys.any(memberIds.contains)) {
+      _conversionLayoutController.stop();
+      final targets = Map<String, Offset>.from(_conversionLayoutTargets);
+      _conversionLayoutOrigins = const {};
+      _conversionLayoutTargets = const {};
+      store.moveNodesTo(targets.keys.toSet(), targets);
+      store.finishLayoutChange();
+    }
+    store.setPackageCollapsed(group.id, true);
   }
 
   void _bump() {
@@ -1379,7 +1266,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     return Offset.zero;
   }
 
-  // ---------------- 分组几何(与 _EdgesPainter._paintGroupFrames 一致) ----------------
+  // ---------------- Package 几何与命中 ----------------
 
   /// 分组包围盒:成员矩形 + 组内连线断点 + 14px/zoom 内边距(世界坐标;
   /// 与 _EdgesPainter._paintGroupFrames 一致)
@@ -1421,65 +1308,29 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  /// 返回包含 flow 点的分组 id(整个分组框内部,右键解散分组用)
+  Rect? _packageTargetRect(NodeGroup group) {
+    Rect? box;
+    for (final node in store.nodes) {
+      if (!group.nodeIds.contains(node.id)) continue;
+      final position = _conversionLayoutTargets[node.id] ?? node.position;
+      final rect = position & nodeSize(node, store.edges);
+      box = box == null ? rect : box.expandToInclude(rect);
+    }
+    if (box == null) return null;
+    return Rect.fromLTRB(
+      box.left - 14 / _zoom,
+      box.top - 22 / _zoom,
+      box.right + 14 / _zoom,
+      box.bottom + 14 / _zoom,
+    );
+  }
+
+  /// 返回包含 flow 点的 Package id。
   String? _groupAt(Offset flow) {
     for (final g in store.groups) {
+      if (!g.isPackage) continue;
       final r = _groupRect(g);
       if (r != null && r.contains(flow)) return g.id;
-    }
-    return null;
-  }
-
-  /// 将节点矩形夹到容器矩形内:超出哪一侧就向内侧平移贴边。
-  /// 若节点本身大于容器,则保持原位(已无处可夹)。
-  Offset _clampInside(Offset pos, Size nodeSize, Rect container) {
-    var dx = pos.dx;
-    var dy = pos.dy;
-    // 左边界越界 → 贴左
-    if (dx < container.left) dx = container.left;
-    // 右边界越界 → 贴右
-    if (dx + nodeSize.width > container.right) {
-      dx = container.right - nodeSize.width;
-    }
-    // 上边界越界 → 贴上
-    if (dy < container.top) dy = container.top;
-    // 下边界越界 → 贴下
-    if (dy + nodeSize.height > container.bottom) {
-      dy = container.bottom - nodeSize.height;
-    }
-    return Offset(dx, dy);
-  }
-
-  /// 命中分组顶部内嵌标签(深色小矩形 + 白字)—— 拖拽标签整体移动分组
-  String? _groupLabelAt(Offset flow) {
-    const lblH = 16.0;
-    const lblPad = 5.0;
-    const lblMargin = 6.0;
-    const lblTopOverlap = 1.0;
-    const hitPad = 2.0; // 额外点击容错
-    for (final g in store.groups) {
-      final rect = _groupRect(g);
-      if (rect == null) continue;
-      final tp = TextPainter(
-        text: TextSpan(
-          text: g.name,
-          style: TextStyle(fontSize: 12 / _zoom, fontWeight: FontWeight.w600),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout();
-      final lblHeight = lblH / _zoom;
-      final lblWidth = tp.width + 2 * lblPad / _zoom;
-      final lblL = rect.left + lblMargin / _zoom;
-      final lblT = rect.top - lblTopOverlap / _zoom;
-      // 命中区:标签矩形 + 周围 hitPad 容错
-      final hitRect = Rect.fromLTRB(
-        lblL - hitPad / _zoom,
-        lblT - hitPad / _zoom,
-        lblL + lblWidth + hitPad / _zoom,
-        lblT + lblHeight + hitPad / _zoom,
-      );
-      if (hitRect.contains(flow)) return g.id;
     }
     return null;
   }
@@ -2115,8 +1966,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _bump();
     }
     final flow = _toFlow(e.localPosition);
-    // 右键:节点上走卡片折叠;分组框内部空白 → 分组右键菜单(取消分组/复制分组);
-    // 其余空白 → 新建节点菜单
+    // 右键:节点上走卡片折叠；Package 区域打开 Package 菜单；
+    // 其余空白打开新建节点菜单。
     if (e.buttons & kSecondaryMouseButton != 0) {
       if (_pointInAnyNode(flow)) return; // 节点上右键走卡片折叠
       final gid = _groupAt(flow);
@@ -2197,32 +2048,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         if (store.selectedEdgeId != null) store.selectEdge(null);
         return;
       }
-    }
-    // 命中分组标签(顶部蓝色矩形):选中组内节点并整体拖动(Blender 分组语义);
-    // 快速连续两次按下(双击)标签 → 弹出重命名分组对话框
-    final gid = _groupLabelAt(flow);
-    if (gid != null) {
-      final g = store.groups.firstWhere((x) => x.id == gid);
-      final now = DateTime.now();
-      if (gid == _lastGroupLabelDownId &&
-          _lastGroupLabelDownAt != null &&
-          now.difference(_lastGroupLabelDownAt!).inMilliseconds < 400 &&
-          (flow - _lastGroupLabelDownFlow).distance < 12 / _zoom) {
-        _lastGroupLabelDownAt = null;
-        _renameGroupDialog(g);
-        return;
-      }
-      _lastGroupLabelDownAt = now;
-      _lastGroupLabelDownId = gid;
-      _lastGroupLabelDownFlow = flow;
-      final ids = g.nodeIds.toSet();
-      store.setMultiSelected(ids);
-      _downAddedNode = false;
-      _startNodeDrag(ids);
-      if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
-      store.selectEdge(null);
-      if (store.selectedEdgeId != null) store.selectEdge(null);
-      return;
     }
     // 命中连线(无修饰键 → 取消分割点选择;Alt → 进入划线模式,给经过的连线加断点)
     if (!_ctrl && !_shift) {
@@ -2665,6 +2490,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     }
     if (!_radialVisible) return;
     if (_radialLockedItem != null) {
+      if (delta.distance < radialDeadRadius) {
+        _radialLockedItem = null;
+        _radialDetachAnchor = null;
+        _radialSection = null;
+        _radialDetail = null;
+        _radialItems = const [];
+      }
       _bump();
       return;
     }
@@ -2748,28 +2580,44 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _bump();
   }
 
-  // ---------------- 多选右键菜单动作(分组/复制/删除) ----------------
-
-  void _groupSelection() {
-    final sel = _nodeMenuFor;
-    if (sel == null || sel.length < 2) return;
-    store.createGroup(sel.toList());
-    _closeMenu();
-  }
+  // ---------------- 多选右键菜单动作(Package/复制/删除) ----------------
 
   Future<void> _packageSelection() async {
     final sel = _nodeMenuFor;
     if (sel == null || sel.length < 2) return;
-    final controller = TextEditingController(text: 'Package');
+    final t = SyphonTheme.of(context);
+    final panelColor = t.isDark
+        ? const Color(0xFF34383E)
+        : const Color(0xFFE1E3E6);
+    var draftName = 'Package';
     final name = await showDialog<String>(
       context: context,
+      barrierColor: Colors.black.withValues(alpha: .3),
       builder: (ctx) => AlertDialog(
-        title: const Text('创建 Package'),
-        content: TextField(
-          controller: controller,
+        backgroundColor: panelColor,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.black.withValues(alpha: .35),
+        shape: RoundedRectangleBorder(
+          side: BorderSide(color: t.strokeStrong),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        title: Text('创建 Package', style: TextStyle(color: t.text)),
+        content: TextFormField(
+          initialValue: draftName,
           autofocus: true,
-          decoration: const InputDecoration(labelText: 'Package 名称'),
-          onSubmitted: (value) => Navigator.of(ctx).pop(value),
+          style: TextStyle(color: t.text),
+          decoration: InputDecoration(
+            labelText: 'Package 名称',
+            labelStyle: TextStyle(color: t.textDim),
+            filled: true,
+            fillColor: t.bgNode.withValues(alpha: .72),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(9),
+              borderSide: BorderSide(color: t.strokeStrong),
+            ),
+          ),
+          onChanged: (value) => draftName = value,
+          onFieldSubmitted: (value) => Navigator.of(ctx).pop(value),
         ),
         actions: [
           TextButton(
@@ -2777,13 +2625,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            onPressed: () => Navigator.of(ctx).pop(draftName),
             child: const Text('创建'),
           ),
         ],
       ),
     );
-    controller.dispose();
     if (name == null) return;
     store.createPackage(sel.toList(), name);
     _closeMenu();
@@ -2833,20 +2680,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  void _ungroupSelection() {
-    final sel = _nodeMenuFor;
-    if (sel == null) return;
-    final gids = <String>{};
-    for (final id in sel) {
-      final gid = store.groupOf(id);
-      if (gid != null) gids.add(gid);
-    }
-    for (final gid in gids) {
-      store.dissolveGroup(gid);
-    }
-    _closeMenu();
-  }
-
   void _duplicateSelection() {
     final sel = _nodeMenuFor;
     if (sel == null || sel.isEmpty) return;
@@ -2861,54 +2694,24 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _closeMenu();
   }
 
-  // ---------------- 分组右键菜单动作(取消分组/复制分组) ----------------
-
-  void _ungroupFromGroupMenu() {
+  void _dissolvePackageFromMenu() {
     final gid = _groupMenuFor;
-    if (gid != null) store.dissolveGroup(gid);
+    if (gid != null) store.dissolvePackage(gid);
     _closeMenu();
   }
 
-  void _duplicateGroupFromMenu() {
-    final gid = _groupMenuFor;
-    if (gid != null) store.duplicateGroup(gid);
-    _closeMenu();
-  }
-
-  /// 双击分组标签 → 重命名分组
-  Future<void> _renameGroupDialog(NodeGroup g) async {
-    final controller = TextEditingController(text: g.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('重命名分组'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '输入分组名称'),
-          onSubmitted: (v) => Navigator.of(ctx).pop(v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (name != null && name.trim().isNotEmpty) {
-      store.renameGroup(g.id, name.trim());
+  void _activateViewer(String id) {
+    _focusNode.requestFocus();
+    final selected = _shift ? {...store.multiSelected, id} : <String>{id};
+    if (!setEquals(selected, store.multiSelected)) {
+      store.setMultiSelected(selected);
     }
+    if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
+    if (store.selectedEdgeId != null) store.selectEdge(null);
   }
 
   void _pickNode(String configId) {
     final menuPos = _menuPos;
-    final targetGroup = _groupMenuFor;
     _menuPos = null;
     _groupMenuFor = null;
     if (menuPos == null) return;
@@ -2917,33 +2720,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
     store.addNode(configId, initPos);
     final newNodeId = store.selectedId;
-
-    // 分组内右键新建节点 → 自动并入分组 + 边界夹紧(贴边不越界)
-    if (targetGroup != null && newNodeId != null) {
-      NodeGroup? g;
-      for (final x in store.groups) {
-        if (x.id == targetGroup) {
-          g = x;
-          break;
-        }
-      }
-      if (g != null) {
-        // 在入组前先夹紧位置(此时 group rect 不含新节点,正好作为边界)
-        final gRect = _groupRect(g);
-        if (gRect != null) {
-          final newNode = store.nodes.firstWhere(
-            (n) => n.id == newNodeId,
-            orElse: () => store.nodes.first,
-          );
-          final size = nodeSize(newNode, store.edges);
-          final clamped = _clampInside(initPos, size, gRect);
-          if (clamped != initPos) {
-            store.moveNode(newNodeId, clamped);
-          }
-        }
-        store.addNodeToGroup(newNodeId, targetGroup);
-      }
-    }
 
     final pc = _pendingConn;
     if (pc != null && newNodeId != null) {
@@ -3146,6 +2922,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   NodeCardCallbacks get _cardCallbacks => NodeCardCallbacks(
     onSelect: _onSelect,
+    onActivateViewer: _activateViewer,
     onSecondaryTap: _onSecondaryTap,
     onResizeStart: _onViewerResizeStart,
     onResizeUpdate: _onViewerResizeUpdate,
@@ -3153,6 +2930,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   );
 
   void _onViewerResizeStart(String id) {
+    _activateViewer(id);
     _draggingId = null;
     _dragIds = {};
     _dragOrigins = {};
@@ -3365,9 +3143,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 for (final group in store.groups)
                   if (group.isPackage) _buildPackageBackgroundLayer(group, t),
                 _buildEdgesLayer(t, nodes, edges),
+                for (final n in paintNodes) _buildNodeLayer(n),
+                // Keep collapsed Package proxies above their hidden members so
+                // the whole card, including its expand button, remains hittable.
                 for (final group in store.groups)
                   if (group.isPackage) _buildPackageLayer(group, t),
-                for (final n in paintNodes) _buildNodeLayer(n),
                 for (final group in store.groups)
                   if (group.isPackage) _buildExpandedPackageToggle(group, t),
               ],
@@ -3530,7 +3310,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             .where((item) => item.id == group.id)
             .firstOrNull;
         if (current == null) return const SizedBox.shrink();
-        final rect = _groupRect(current, expandedGeometry: true);
+        final isExpanding =
+            _conversionLayoutController.isAnimating &&
+            _conversionLayoutTargets.keys.any(current.nodeIds.contains);
+        // During repulsive expansion the nodes move every frame. Anchor the
+        // control to the final frame so it cannot slide out from under a click.
+        final rect = isExpanding
+            ? _packageTargetRect(current)
+            : _groupRect(current, expandedGeometry: true);
         if (rect == null) return const SizedBox.shrink();
         return Positioned(
           left: rect.left,
@@ -3598,7 +3385,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             .where((item) => item.id == group.id)
             .firstOrNull;
         if (current == null) return const SizedBox.shrink();
-        final rect = _groupRect(current, expandedGeometry: true);
+        final isExpanding =
+            _conversionLayoutController.isAnimating &&
+            _conversionLayoutTargets.keys.any(current.nodeIds.contains);
+        final rect = isExpanding
+            ? _packageTargetRect(current)
+            : _groupRect(current, expandedGeometry: true);
         if (rect == null) return const SizedBox.shrink();
         final size = 24 / _zoom;
         return Positioned(
@@ -3619,7 +3411,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                   child: GestureDetector(
                     key: ValueKey('package-toggle-expanded-${current.id}'),
                     behavior: HitTestBehavior.opaque,
-                    onTap: () => store.setPackageCollapsed(current.id, true),
+                    onTapDown: (_) => _collapsePackage(current),
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         color: const Color(0xFF8A9099).withValues(alpha: .2),
@@ -4021,14 +3813,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   /// 菜单层:与画布层平级,独立指针链。
-  /// 分组内右键 → NodeMenu(新建节点 + 自动入组) + 底部"取消分组/复制分组";
-  /// 多选右键 → NodeContextMenu(分组/复制/删除);空白 → NodeMenu(新建节点)
+  /// Package 右键 → Package 菜单；多选右键 → Package/复制/删除；
+  /// 空白 → NodeMenu(新建节点)。
   Widget _buildMenuLayer() {
     final nodeMenu = _nodeMenuFor;
     final groupMenuId = _groupMenuFor;
     Widget? menu;
     if (groupMenuId != null) {
-      // 分组内右键:合并菜单 = 新建节点 + 底部分组操作
       NodeGroup? g;
       for (final x in store.groups) {
         if (x.id == groupMenuId) {
@@ -4036,49 +3827,22 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           break;
         }
       }
-      if (g != null) {
-        if (g.isPackage) {
-          menu = PackageContextMenu(
-            position: _menuPos!,
-            onSave: () => _savePackageToLibrary(g!.id),
-            onDissolve: _ungroupFromGroupMenu,
-          );
-        } else {
-          menu = NodeMenu(
-            position: _menuPos!,
-            onPick: _pickNode,
-            onClose: _closeMenu,
-            bottomSlot: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                CtxMenuItem(
-                  icon: Icons.group_remove_outlined,
-                  label: L.t('取消分组'),
-                  onTap: _ungroupFromGroupMenu,
-                ),
-                CtxMenuItem(
-                  icon: Icons.copy_outlined,
-                  label: L.t('复制分组'),
-                  onTap: _duplicateGroupFromMenu,
-                ),
-              ],
-            ),
-          );
-        }
+      if (g != null && g.isPackage) {
+        menu = PackageContextMenu(
+          position: _menuPos!,
+          onSave: () => _savePackageToLibrary(g!.id),
+          onDissolve: _dissolvePackageFromMenu,
+        );
       }
     } else if (nodeMenu != null) {
       menu = NodeContextMenu(
         position: _menuPos!,
-        canGroup: nodeMenu.length >= 2,
-        canUngroup: nodeMenu.any((id) => store.groupOf(id) != null),
+        canPackage: nodeMenu.length >= 2,
         onRunNode: () {
           store.runPipelineDirty(nodeMenu);
           _closeMenu();
         },
-        onGroup: _groupSelection,
         onPackage: _packageSelection,
-        onUngroup: _ungroupSelection,
         onDuplicate: _duplicateSelection,
         onDelete: _deleteSelectionFromMenu,
       );
