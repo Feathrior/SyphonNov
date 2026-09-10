@@ -155,6 +155,8 @@ class _EdgesPainter extends CustomPainter {
   // 预计算锚点:edgeId → (源锚点, 目标锚点)。
   // 一次性遍历节点端口统计,避免逐边重复 O(E) 扫描(连线多时性能关键)
   late final Map<String, ({Offset a, Offset b})> _anchors;
+  late final Map<String, NodeGroup> _collapsedPackageByNode;
+  late final Map<String, Rect> _packageRects;
 
   _EdgesPainter({
     required List<GraphNode> nodes,
@@ -180,6 +182,16 @@ class _EdgesPainter extends CustomPainter {
     this.slashTrail = const [],
     this.slashTrailProgress = 1,
   }) : nodeMap = {for (final n in nodes) n.id: n} {
+    _collapsedPackageByNode = {
+      for (final group in groups)
+        if (group.isPackage && group.collapsed)
+          for (final id in group.nodeIds) id: group,
+    };
+    _packageRects = {};
+    for (final group in groups) {
+      final rect = packageProxyRect(group, nodes, edges);
+      if (rect != null) _packageRects[group.id] = rect;
+    }
     _initAnchors();
   }
 
@@ -188,6 +200,7 @@ class _EdgesPainter extends CustomPainter {
   void _initAnchors() {
     _anchors = <String, ({Offset a, Offset b})>{};
     for (final n in nodeMap.values) {
+      if (_collapsedPackageByNode.containsKey(n.id)) continue;
       final cfg = getConfig(n.configId);
       if (cfg == null) continue;
       final w = nodeVisualWidth(n);
@@ -238,6 +251,11 @@ class _EdgesPainter extends CustomPainter {
       final src = nodeMap[e.source];
       final tgt = nodeMap[e.target];
       if (src == null || tgt == null) continue;
+      final sourcePackage = _collapsedPackageByNode[e.source];
+      final targetPackage = _collapsedPackageByNode[e.target];
+      if (sourcePackage != null && sourcePackage.id == targetPackage?.id) {
+        continue;
+      }
       _paintEdge(canvas, e, src, tgt);
     }
     // 连线拖拽中:三次贝塞尔曲线预览(与正式连线同曲率,虚线区分);
@@ -276,8 +294,20 @@ class _EdgesPainter extends CustomPainter {
 
   void _paintEdge(Canvas canvas, GraphEdge e, GraphNode src, GraphNode tgt) {
     final anchor = _anchors[e.id];
-    final a = anchor?.a ?? edgeSourceAnchor(e, src, edges);
-    final b = anchor?.b ?? edgeTargetAnchor(e, tgt, edges);
+    final sourcePackage = _collapsedPackageByNode[e.source];
+    final targetPackage = _collapsedPackageByNode[e.target];
+    final sourceRect = sourcePackage == null
+        ? null
+        : _packageRects[sourcePackage.id];
+    final targetRect = targetPackage == null
+        ? null
+        : _packageRects[targetPackage.id];
+    final a = sourceRect == null || sourcePackage == null
+        ? anchor?.a ?? edgeSourceAnchor(e, src, edges)
+        : _packageAnchor(sourcePackage, sourceRect, e, isSource: true);
+    final b = targetRect == null || targetPackage == null
+        ? anchor?.b ?? edgeTargetAnchor(e, tgt, edges)
+        : _packageAnchor(targetPackage, targetRect, e, isSource: false);
     final mid = e.mid;
     final samples = edgeSamples(a: a, b: b, mid: mid);
     if (samples.length < 2) return;
@@ -349,6 +379,25 @@ class _EdgesPainter extends CustomPainter {
     }
   }
 
+  Offset _packageAnchor(
+    NodeGroup group,
+    Rect rect,
+    GraphEdge edge, {
+    required bool isSource,
+  }) {
+    final ports = isSource
+        ? packageOutputPorts(group, nodeMap.values.toList(), edges)
+        : packageInputPorts(group, nodeMap.values.toList(), edges);
+    final nodeId = isSource ? edge.source : edge.target;
+    final socketId = isSource ? edge.sourceHandle : edge.targetHandle;
+    final port = ports
+        .where((item) => item.nodeId == nodeId && item.socketId == socketId)
+        .firstOrNull;
+    return port == null
+        ? (isSource ? rect.centerRight : rect.centerLeft)
+        : packagePortAnchor(rect, ports, port, isSource: isSource);
+  }
+
   /// 连线基础色 = 源端口颜色(kSocketColor 映射);找不到端口时回退 React 默认色 #7c8db5
   Color _edgeColor(GraphEdge e, GraphNode src) {
     final cfg = getConfig(src.configId);
@@ -380,14 +429,21 @@ class _EdgesPainter extends CustomPainter {
     final padTop = 22.0 / zoom; // 顶部更多空间容纳内嵌标签
     final radius = 10.0 / zoom;
     final strokeWidth = 1.2 / zoom;
-    final stroke = Paint()
-      ..color = accent.withValues(alpha: 0.55)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth;
-    final fill = Paint()..color = accent.withValues(alpha: 0.05);
-    final labelBg = Color.lerp(accent, Colors.black, isDark ? 0.55 : 0.28)!;
-    final coverPaint = Paint()..color = accent.withValues(alpha: 0.05);
     for (final g in groups) {
+      if (g.isPackage && g.collapsed) continue;
+      final groupAccent = g.isPackage ? const Color(0xFF8A9099) : accent;
+      final stroke = Paint()
+        ..color = groupAccent.withValues(alpha: 0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth;
+      final fill = Paint()
+        ..color = groupAccent.withValues(alpha: g.isPackage ? .035 : .05);
+      final labelBg = Color.lerp(
+        groupAccent,
+        Colors.black,
+        isDark ? 0.55 : 0.28,
+      )!;
+      final coverPaint = Paint()..color = fill.color;
       Rect? box;
       for (final id in g.nodeIds) {
         final n = nodeMap[id];
@@ -416,7 +472,23 @@ class _EdgesPainter extends CustomPainter {
       final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
       // 1) 完整圆角填充 + 完整圆角描边(天然正确,无方向问题)
       canvas.drawRRect(rrect, fill);
-      canvas.drawRRect(rrect, stroke);
+      if (g.isPackage) {
+        _drawDashedPath(
+          canvas,
+          [
+            rect.topLeft,
+            rect.topRight,
+            rect.bottomRight,
+            rect.bottomLeft,
+            rect.topLeft,
+          ],
+          stroke.color,
+          strokeWidth,
+          dash: [7 / zoom, 5 / zoom],
+        );
+      } else {
+        canvas.drawRRect(rrect, stroke);
+      }
 
       // 2) 标签参数
       final tp = TextPainter(
@@ -749,6 +821,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   bool _dragSnapshotted = false; // 本次拖动是否已记录撤销快照(首次实际位移时才记录)
   String? _resizingViewerId;
   bool _viewerResizeSnapshotted = false;
+  String? _draggingPackageId;
   int _downButtons = 0; // 本次按下包含的鼠标按钮(区分左/右键 up:右键不触发空白清选)
   bool _spaceDown = false;
   bool _panFromNode = false; // 背景 pan 起点落在节点内部:忽略平移(节点内拖动不移动背景)
@@ -867,6 +940,35 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     addNodeFromGlobal(configId, global);
   }
 
+  void createPackageAtViewportCenter(Map<String, dynamic> template) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final center = _toFlow(box.size.center(Offset.zero));
+    store.instantiatePackage(template, center - const Offset(130, 55));
+    _focusNode.requestFocus();
+  }
+
+  void _startPackageDrag(NodeGroup group) {
+    _focusNode.requestFocus();
+    store.setMultiSelected(group.nodeIds.toSet());
+    store.snapshotNow();
+    _draggingPackageId = group.id;
+  }
+
+  void _updatePackageDrag(NodeGroup group, Offset screenDelta) {
+    if (_draggingPackageId != group.id) return;
+    final delta = screenDelta / _zoom;
+    store.moveNodesTo(group.nodeIds.toSet(), {
+      for (final id in group.nodeIds) id: _nodePos(id) + delta,
+    });
+  }
+
+  void _endPackageDrag(NodeGroup group) {
+    if (_draggingPackageId != group.id) return;
+    _draggingPackageId = null;
+    store.finishLayoutChange();
+  }
+
   void _bump() {
     _revision++;
     if (mounted) setState(() {});
@@ -952,10 +1054,44 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   bool _pointInAnyNode(Offset flow) {
     for (final n in store.nodes) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final r = n.position & nodeSize(n, store.edges);
       if (r.contains(flow)) return true;
     }
     return false;
+  }
+
+  bool _nodeHiddenByCollapsedPackage(String nodeId) => store.groups.any(
+    (group) =>
+        group.isPackage && group.collapsed && group.nodeIds.contains(nodeId),
+  );
+
+  NodeGroup? _collapsedPackageForNode(String nodeId) => store.groups
+      .where(
+        (group) =>
+            group.isPackage &&
+            group.collapsed &&
+            group.nodeIds.contains(nodeId),
+      )
+      .firstOrNull;
+
+  Offset _packageAnchorForEdge(
+    NodeGroup group,
+    Rect rect,
+    GraphEdge edge, {
+    required bool isSource,
+  }) {
+    final ports = isSource
+        ? packageOutputPorts(group, store.nodes, store.edges)
+        : packageInputPorts(group, store.nodes, store.edges);
+    final nodeId = isSource ? edge.source : edge.target;
+    final socketId = isSource ? edge.sourceHandle : edge.targetHandle;
+    final port = ports
+        .where((item) => item.nodeId == nodeId && item.socketId == socketId)
+        .firstOrNull;
+    return port == null
+        ? (isSource ? rect.centerRight : rect.centerLeft)
+        : packagePortAnchor(rect, ports, port, isSource: isSource);
   }
 
   /// 节点拖拽(画布层统一管理,绕开手势竞技场)
@@ -1026,6 +1162,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   /// 分组包围盒:成员矩形 + 组内连线断点 + 14px/zoom 内边距(世界坐标;
   /// 与 _EdgesPainter._paintGroupFrames 一致)
   Rect? _groupRect(NodeGroup g) {
+    final proxy = packageProxyRect(g, store.nodes, store.edges);
+    if (proxy != null) return proxy;
     Rect? box;
     for (final id in g.nodeIds) {
       for (final n in store.nodes) {
@@ -1448,6 +1586,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     best;
     var bestDist = threshold;
     for (final n in store.nodes) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       if (n.id == conn.nodeId) continue;
       final cfg = getConfig(n.configId);
       if (cfg == null) continue;
@@ -1477,6 +1616,41 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             socketId: rows[i].id,
             isSource: !isTargetInput,
             type: socks[i].type,
+            anchor: pos,
+            conversion: convertible,
+          );
+        }
+      }
+    }
+    for (final group in store.groups.reversed) {
+      if (!group.isPackage || !group.collapsed) continue;
+      if (group.nodeIds.contains(conn.nodeId)) continue;
+      final rect = packageProxyRect(group, store.nodes, store.edges);
+      if (rect == null) continue;
+      final isTargetInput = conn.isSource;
+      final ports = isTargetInput
+          ? packageInputPorts(group, store.nodes, store.edges)
+          : packageOutputPorts(group, store.nodes, store.edges);
+      for (final port in ports) {
+        final pos = packagePortAnchor(
+          rect,
+          ports,
+          port,
+          isSource: !isTargetInput,
+        );
+        final distance = (pos - flowPos).distance;
+        final compatible = isCompatible(conn.type, port.type);
+        final convertible =
+            !compatible &&
+            allowConversion &&
+            _conversionPath(conn, port.type) != null;
+        if (distance < bestDist && (compatible || convertible)) {
+          bestDist = distance;
+          best = (
+            nodeId: port.nodeId,
+            socketId: port.socketId,
+            isSource: !isTargetInput,
+            type: port.type,
             anchor: pos,
             conversion: convertible,
           );
@@ -1550,8 +1724,45 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   _handleAt(Offset flow) {
     const hw = 11.0; // handle 宽
     final m = 5.0 / _zoom; // 屏幕恒定 5px 命中边距
+    for (final group in store.groups.reversed) {
+      final rect = packageProxyRect(group, store.nodes, store.edges);
+      if (rect == null) continue;
+      final inputs = packageInputPorts(group, store.nodes, store.edges);
+      final outputs = packageOutputPorts(group, store.nodes, store.edges);
+      for (final port in inputs) {
+        final anchor = packagePortAnchor(rect, inputs, port, isSource: false);
+        if (Rect.fromCircle(
+          center: anchor,
+          radius: hw / 2 + m,
+        ).contains(flow)) {
+          return (
+            nodeId: port.nodeId,
+            socketId: port.socketId,
+            isSource: false,
+            type: port.type,
+            anchor: anchor,
+          );
+        }
+      }
+      for (final port in outputs) {
+        final anchor = packagePortAnchor(rect, outputs, port, isSource: true);
+        if (Rect.fromCircle(
+          center: anchor,
+          radius: hw / 2 + m,
+        ).contains(flow)) {
+          return (
+            nodeId: port.nodeId,
+            socketId: port.socketId,
+            isSource: true,
+            type: port.type,
+            anchor: anchor,
+          );
+        }
+      }
+    }
     // 逆序遍历:后绘制的节点位于图层上方,其端口判定区优先(与渲染顺序一致)
     for (final n in store.nodes.reversed) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final size = nodeSize(n, store.edges);
       for (final s in inputSockets(n, store.edges)) {
         final hh = handleH(portCount(n.id, s.id, store.edges));
@@ -1716,6 +1927,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // 统一管理,绕开手势竞技场)。逆序遍历:后绘制的节点在图层上方,应优先命中
     // (与渲染顺序一致)。主体内按下仅完成选中,不拖动节点。
     for (final n in store.nodes.reversed) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final size = nodeSize(n, store.edges);
       final r = n.position & size;
       if (r.contains(flow)) {
@@ -2001,8 +2213,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     final rect = Rect.fromPoints(a, b);
     final sel = <String>[];
     for (final n in store.nodes) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final r = n.position & nodeSize(n, store.edges);
       if (rect.overlaps(r)) sel.add(n.id);
+    }
+    for (final group in store.groups) {
+      final proxy = packageProxyRect(group, store.nodes, store.edges);
+      if (proxy != null && rect.overlaps(proxy)) sel.addAll(group.nodeIds);
     }
     if (sel.isEmpty) {
       store.setMultiSelected({});
@@ -2025,8 +2242,28 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       final src = nodeMap[e.source];
       final tgt = nodeMap[e.target];
       if (src == null || tgt == null) continue;
-      final a = edgeSourceAnchor(e, src, store.edges);
-      final b = edgeTargetAnchor(e, tgt, store.edges);
+      final sourcePackage = _collapsedPackageForNode(e.source);
+      final targetPackage = _collapsedPackageForNode(e.target);
+      if (sourcePackage != null && sourcePackage.id == targetPackage?.id) {
+        continue;
+      }
+      final sourceRect = sourcePackage == null
+          ? null
+          : packageProxyRect(sourcePackage, store.nodes, store.edges);
+      final targetRect = targetPackage == null
+          ? null
+          : packageProxyRect(targetPackage, store.nodes, store.edges);
+      final a = sourceRect == null || sourcePackage == null
+          ? edgeSourceAnchor(e, src, store.edges)
+          : _packageAnchorForEdge(sourcePackage, sourceRect, e, isSource: true);
+      final b = targetRect == null || targetPackage == null
+          ? edgeTargetAnchor(e, tgt, store.edges)
+          : _packageAnchorForEdge(
+              targetPackage,
+              targetRect,
+              e,
+              isSource: false,
+            );
       final hit = closestOnEdge(a: a, b: b, mid: e.mid, p: flowPos);
       if (hit != null &&
           hit.dist < threshold &&
@@ -2077,7 +2314,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // (端口连线手势在节点卡内部,此处只处理冒泡到背景的 pan)
     _panFromNode = _pointInAnyNode(_toFlow(d.localPosition));
     // 节点/多选/分组拖动中(分组标签在节点外,无法靠 _pointInAnyNode 命中):绝不平移、不框选
-    if (_draggingId != null) _panFromNode = true;
+    if (_draggingId != null || _draggingPackageId != null) {
+      _panFromNode = true;
+    }
     // 连线拖拽中(handle 可能溢出节点边缘,不在节点矩形内):绝不平移、不框选
     if (_connecting != null) _panFromNode = true;
     // 分割点拖拽中:与节点拖拽同理,不平移背景、不框选(否则断点跟着画布漂移)
@@ -2135,6 +2374,82 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     if (sel == null || sel.length < 2) return;
     store.createGroup(sel.toList());
     _closeMenu();
+  }
+
+  Future<void> _packageSelection() async {
+    final sel = _nodeMenuFor;
+    if (sel == null || sel.length < 2) return;
+    final controller = TextEditingController(text: 'Package');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('创建 Package'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Package 名称'),
+          onSubmitted: (value) => Navigator.of(ctx).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null) return;
+    store.createPackage(sel.toList(), name);
+    _closeMenu();
+  }
+
+  void _savePackageToLibrary(String groupId) {
+    final value = store.packageTemplate(groupId);
+    if (value == null) return;
+    SettingsStore.instance.savePackage(value);
+    store.addLog('ok', 'Package 已保存到库');
+    _closeMenu();
+  }
+
+  void _instantiateSavedPackage(Map<String, dynamic> value) {
+    final menu = _menuPos;
+    if (menu == null) return;
+    store.instantiatePackage(value, _toFlow(menu));
+    _closeMenu();
+  }
+
+  Widget? _savedPackageMenu() {
+    final items = SettingsStore.instance.packageLibrary;
+    if (items.isEmpty) return null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 5, 10, 3),
+          child: Text(
+            'PACKAGE 库',
+            style: TextStyle(
+              color: SyphonTheme.of(context).textFaint,
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              letterSpacing: .8,
+            ),
+          ),
+        ),
+        for (final item in items.take(8))
+          CtxMenuItem(
+            icon: Icons.inventory_2_outlined,
+            label: '${item['name'] ?? 'Package'}',
+            onTap: () => _instantiateSavedPackage(item),
+          ),
+      ],
+    );
   }
 
   void _ungroupSelection() {
@@ -2628,11 +2943,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           final nodes = store.nodes;
           final edges = store.edges;
           final selected = store.selectedId;
+          final visibleNodes = nodes
+              .where((node) => !_nodeHiddenByCollapsedPackage(node.id))
+              .toList();
           final paintNodes = selected == null
-              ? nodes
+              ? visibleNodes
               : [
-                  ...nodes.where((node) => node.id != selected),
-                  ...nodes.where((node) => node.id == selected),
+                  ...visibleNodes.where((node) => node.id != selected),
+                  ...visibleNodes.where((node) => node.id == selected),
                 ];
           return Transform(
             transform: Matrix4.identity()
@@ -2644,6 +2962,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               children: [
                 _buildBgLayer(t),
                 _buildEdgesLayer(t, nodes, edges),
+                for (final group in store.groups)
+                  if (group.isPackage && group.collapsed)
+                    _buildPackageLayer(group, t),
                 for (final n in paintNodes) _buildNodeLayer(n),
               ],
             ),
@@ -2770,6 +3091,143 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildPackageLayer(NodeGroup group, SyphonTheme t) {
+    final rect = packageProxyRect(group, store.nodes, store.edges);
+    if (rect == null) return const SizedBox.shrink();
+    final selected = group.nodeIds.every(store.multiSelected.contains);
+    final inputs = packageInputPorts(group, store.nodes, store.edges);
+    final outputs = packageOutputPorts(group, store.nodes, store.edges);
+    return Positioned(
+      key: ValueKey('package-node-${group.id}'),
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          _focusNode.requestFocus();
+          store.setMultiSelected(group.nodeIds.toSet());
+        },
+        onDoubleTap: () => store.setPackageCollapsed(group.id, false),
+        onPanStart: (_) => _startPackageDrag(group),
+        onPanUpdate: (details) => _updatePackageDrag(group, details.delta),
+        onPanEnd: (_) => _endPackageDrag(group),
+        onPanCancel: () => _endPackageDrag(group),
+        child: AnimatedContainer(
+          duration: MotionTokens.standard(context),
+          decoration: BoxDecoration(
+            color: const Color(0xFF8A9099).withValues(alpha: .12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? t.accent : const Color(0xFF8A9099),
+              width: selected ? 2 : 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: .12),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                left: 78,
+                right: 78,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.inventory_2_outlined,
+                      size: 24,
+                      color: Color(0xFF8A9099),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      group.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: t.text,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${group.nodeIds.length} 节点',
+                      style: TextStyle(color: t.textFaint, fontSize: 9),
+                    ),
+                  ],
+                ),
+              ),
+              for (var index = 0; index < inputs.length; index++)
+                _packagePortVisual(
+                  inputs[index],
+                  index,
+                  isSource: false,
+                  theme: t,
+                ),
+              for (var index = 0; index < outputs.length; index++)
+                _packagePortVisual(
+                  outputs[index],
+                  index,
+                  isSource: true,
+                  theme: t,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _packagePortVisual(
+    PackagePort port,
+    int index, {
+    required bool isSource,
+    required SyphonTheme theme,
+  }) {
+    final dot = Container(
+      width: 11,
+      height: 11,
+      decoration: BoxDecoration(
+        color: socketColor(port.type),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: theme.bgSurface, width: 1),
+      ),
+    );
+    final label = Flexible(
+      child: Text(
+        port.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: theme.textDim, fontSize: 9),
+      ),
+    );
+    return Positioned(
+      left: isSource ? null : -5.5,
+      right: isSource ? -5.5 : null,
+      top: 37.5 + index * 22,
+      width: 82,
+      height: 18,
+      child: IgnorePointer(
+        child: Row(
+          mainAxisAlignment: isSource
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: isSource
+              ? [label, const SizedBox(width: 5), dot]
+              : [dot, const SizedBox(width: 5), label],
+        ),
+      ),
+    );
+  }
+
   /// 框选矩形(屏幕坐标,不随世界缩放)
   Widget _buildBoxSelect(SyphonTheme t) {
     return Positioned(
@@ -2884,9 +3342,24 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              if (g.isPackage)
+                CtxMenuItem(
+                  icon: g.collapsed ? Icons.unfold_more : Icons.unfold_less,
+                  label: g.collapsed ? '展开 Package' : '折叠 Package',
+                  onTap: () {
+                    store.setPackageCollapsed(g!.id, !g.collapsed);
+                    _closeMenu();
+                  },
+                ),
+              if (g.isPackage)
+                CtxMenuItem(
+                  icon: Icons.save_outlined,
+                  label: '保存到 Package 库',
+                  onTap: () => _savePackageToLibrary(g!.id),
+                ),
               CtxMenuItem(
                 icon: Icons.group_remove_outlined,
-                label: L.t('取消分组'),
+                label: g.isPackage ? '解散 Package' : L.t('取消分组'),
                 onTap: _ungroupFromGroupMenu,
               ),
               CtxMenuItem(
@@ -2908,6 +3381,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           _closeMenu();
         },
         onGroup: _groupSelection,
+        onPackage: _packageSelection,
         onUngroup: _ungroupSelection,
         onDuplicate: _duplicateSelection,
         onDelete: _deleteSelectionFromMenu,
@@ -2917,6 +3391,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         position: _menuPos!,
         onPick: _pickNode,
         onClose: _closeMenu,
+        bottomSlot: _savedPackageMenu(),
       );
     }
     return GestureDetector(
@@ -2955,7 +3430,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       return KeyEventResult.handled;
     }
     if (event is KeyDownEvent || event is KeyRepeatEvent) {
-      if (SettingsStore.instance.matchesShortcut('delete', event)) {
+      if (SettingsStore.instance.matchesShortcut('delete', event) ||
+          event.logicalKey == LogicalKeyboardKey.delete ||
+          event.logicalKey == LogicalKeyboardKey.backspace) {
         // 节点菜单打开期间(焦点在搜索框,已被上方 _focusInTextField 守卫放行;
         // 此分支仅覆盖焦点仍在画布的兜底场景):退格/删除不删除选中节点。
         if (_menuPos != null) return KeyEventResult.handled;

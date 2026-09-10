@@ -256,20 +256,37 @@ class NodeGroup {
   final String id;
   final String name;
   final List<String> nodeIds;
+  final bool isPackage;
+  final bool collapsed;
 
   const NodeGroup({
     required this.id,
     required this.name,
     required this.nodeIds,
+    this.isPackage = false,
+    this.collapsed = false,
   });
 
-  NodeGroup copyWith({String? name, List<String>? nodeIds}) => NodeGroup(
+  NodeGroup copyWith({
+    String? name,
+    List<String>? nodeIds,
+    bool? isPackage,
+    bool? collapsed,
+  }) => NodeGroup(
     id: id,
     name: name ?? this.name,
     nodeIds: nodeIds ?? this.nodeIds,
+    isPackage: isPackage ?? this.isPackage,
+    collapsed: collapsed ?? this.collapsed,
   );
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'nodeIds': nodeIds};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'nodeIds': nodeIds,
+    if (isPackage) 'kind': 'package',
+    if (isPackage) 'collapsed': collapsed,
+  };
 
   factory NodeGroup.fromJson(Map<String, dynamic> j) => NodeGroup(
     id: '${j['id'] ?? genId('g')}',
@@ -277,20 +294,30 @@ class NodeGroup {
     nodeIds: j['nodeIds'] is List
         ? (j['nodeIds'] as List).map((e) => '$e').toList()
         : const [],
+    isPackage: j['kind'] == 'package',
+    collapsed: j['kind'] == 'package' && j['collapsed'] != false,
   );
 
-  static NodeGroup deepCopy(NodeGroup g) =>
-      NodeGroup(id: g.id, name: g.name, nodeIds: List.of(g.nodeIds));
+  static NodeGroup deepCopy(NodeGroup g) => NodeGroup(
+    id: g.id,
+    name: g.name,
+    nodeIds: List.of(g.nodeIds),
+    isPackage: g.isPackage,
+    collapsed: g.collapsed,
+  );
 
   @override
   bool operator ==(Object other) =>
       other is NodeGroup &&
       other.id == id &&
       other.name == name &&
+      other.isPackage == isPackage &&
+      other.collapsed == collapsed &&
       listEquals(other.nodeIds, nodeIds);
 
   @override
-  int get hashCode => Object.hash(id, name, Object.hashAll(nodeIds));
+  int get hashCode =>
+      Object.hash(id, name, isPackage, collapsed, Object.hashAll(nodeIds));
 }
 
 /// 连线端口颜色
@@ -609,6 +636,8 @@ class GraphStore extends ChangeNotifier {
       id: genId('g'),
       name: '${g.name} 副本',
       nodeIds: clones.map((c) => c.id).toList(),
+      isPackage: g.isPackage,
+      collapsed: g.collapsed,
     );
     nodes = [...nodes, ...clones];
     edges = [...edges, ...newEdges];
@@ -659,7 +688,13 @@ class GraphStore extends ChangeNotifier {
     _clipGroups = [
       for (final g in groups)
         if (g.nodeIds.isNotEmpty && g.nodeIds.every(src.containsKey))
-          NodeGroup(id: g.id, name: g.name, nodeIds: List.of(g.nodeIds)),
+          NodeGroup(
+            id: g.id,
+            name: g.name,
+            nodeIds: List.of(g.nodeIds),
+            isPackage: g.isPackage,
+            collapsed: g.collapsed,
+          ),
     ];
     // 原内容包围盒左上角(粘贴定位锚点)
     var minX = double.infinity;
@@ -718,6 +753,8 @@ class GraphStore extends ChangeNotifier {
             id: genId('g'),
             name: g.name,
             nodeIds: [for (final id in g.nodeIds) idMap[id]!],
+            isPackage: g.isPackage,
+            collapsed: g.collapsed,
           ),
         );
       }
@@ -842,6 +879,194 @@ class GraphStore extends ChangeNotifier {
     addLog('ok', '已将 ${ids.length} 个节点创建为「分组 $_groupCounter」');
     structureVersion++;
     notifyListeners();
+  }
+
+  /// 将所选子图收纳为可折叠 Package。执行图保持原样，折叠仅影响画布呈现。
+  String? createPackage(List<String> nodeIds, String name) {
+    final ids = nodeIds
+        .where((id) => nodes.any((node) => node.id == id))
+        .toSet()
+        .toList();
+    if (ids.length < 2) return null;
+    final trimmed = name.trim().isEmpty ? 'Package' : name.trim();
+    snapshotNow();
+    final selected = ids.toSet();
+    groups = groups
+        .map(
+          (group) => group.copyWith(
+            nodeIds: group.nodeIds
+                .where((id) => !selected.contains(id))
+                .toList(),
+          ),
+        )
+        .where((group) => group.nodeIds.isNotEmpty)
+        .toList();
+    final group = NodeGroup(
+      id: genId('pkg'),
+      name: trimmed,
+      nodeIds: ids,
+      isPackage: true,
+      collapsed: true,
+    );
+    groups = [...groups, group];
+    selectedId = ids.first;
+    multiSelected = selected;
+    addLog('ok', '已将 ${ids.length} 个节点打包为「$trimmed」');
+    structureVersion++;
+    notifyListeners();
+    return group.id;
+  }
+
+  void setPackageCollapsed(String groupId, bool collapsed) {
+    final target = groups.where((group) => group.id == groupId).firstOrNull;
+    if (target == null || !target.isPackage || target.collapsed == collapsed) {
+      return;
+    }
+    snapshotNow();
+    groups = [
+      for (final group in groups)
+        group.id == groupId ? group.copyWith(collapsed: collapsed) : group,
+    ];
+    structureVersion++;
+    notifyListeners();
+  }
+
+  /// 生成与具体节点 ID 解耦的 Package 模板，只保存所选内部节点和内部连线。
+  Map<String, dynamic>? packageTemplate(String groupId) {
+    final group = groups.where((item) => item.id == groupId).firstOrNull;
+    if (group == null || !group.isPackage || group.nodeIds.isEmpty) return null;
+    final ids = group.nodeIds.toSet();
+    final members = nodes.where((node) => ids.contains(node.id)).toList();
+    if (members.isEmpty) return null;
+    final minX = members.map((node) => node.position.dx).reduce(math.min);
+    final minY = members.map((node) => node.position.dy).reduce(math.min);
+    final origin = Offset(minX, minY);
+    return {
+      'id': genId('package_template'),
+      'name': group.name,
+      'nodes': [
+        for (final node in members)
+          {
+            ...node.toJson(),
+            'position': {
+              'x': node.position.dx - origin.dx,
+              'y': node.position.dy - origin.dy,
+            },
+          },
+      ],
+      'edges': [
+        for (final edge in edges)
+          if (ids.contains(edge.source) && ids.contains(edge.target))
+            {
+              ...edge.toJson(),
+              if (edge.mid != null)
+                'mid': {
+                  'x': edge.mid!.dx - origin.dx,
+                  'y': edge.mid!.dy - origin.dy,
+                },
+            },
+      ],
+    };
+  }
+
+  /// 从 Package 库实例化一份独立子图，并以折叠 Package 形式放入画布。
+  String? instantiatePackage(Map<String, dynamic> template, Offset anchor) {
+    final rawNodes = template['nodes'];
+    if (rawNodes is! List || rawNodes.length < 2) return null;
+    final idMap = <String, String>{};
+    final clones = <GraphNode>[];
+    for (final raw in rawNodes) {
+      if (raw is! Map) return null;
+      final json = Map<String, dynamic>.from(raw);
+      final oldId = '${json['id'] ?? ''}';
+      final configId = '${json['configId'] ?? ''}';
+      if (oldId.isEmpty ||
+          idMap.containsKey(oldId) ||
+          getConfig(configId) == null) {
+        return null;
+      }
+      final pos = json['position'];
+      if (pos is! Map || pos['x'] is! num || pos['y'] is! num) return null;
+      final newId = genId();
+      idMap[oldId] = newId;
+      clones.add(
+        GraphNode(
+          id: newId,
+          configId: configId,
+          params: json['params'] is Map
+              ? Map<String, dynamic>.from(json['params'] as Map)
+              : <String, dynamic>{},
+          exposed: json['exposed'] is List
+              ? (json['exposed'] as List)
+                    .map<String>((value) => '$value')
+                    .toList()
+              : const [],
+          collapsed: json['collapsed'] == true,
+          position:
+              anchor +
+              Offset(
+                (pos['x'] as num).toDouble(),
+                (pos['y'] as num).toDouble(),
+              ),
+        ),
+      );
+    }
+    final cloneEdges = <GraphEdge>[];
+    final rawEdges = template['edges'];
+    if (rawEdges is List) {
+      for (final raw in rawEdges) {
+        if (raw is! Map) continue;
+        final json = Map<String, dynamic>.from(raw);
+        final source = idMap['${json['source'] ?? ''}'];
+        final target = idMap['${json['target'] ?? ''}'];
+        if (source == null || target == null) continue;
+        final mid = json['mid'];
+        cloneEdges.add(
+          GraphEdge(
+            id: genId('e'),
+            source: source,
+            target: target,
+            sourceHandle: json['sourceHandle'] == null
+                ? null
+                : '${json['sourceHandle']}',
+            targetHandle: json['targetHandle'] == null
+                ? null
+                : '${json['targetHandle']}',
+            mid: mid is Map && mid['x'] is num && mid['y'] is num
+                ? anchor +
+                      Offset(
+                        (mid['x'] as num).toDouble(),
+                        (mid['y'] as num).toDouble(),
+                      )
+                : null,
+          ),
+        );
+      }
+    }
+    snapshotNow();
+    final name = '${template['name'] ?? 'Package'}'.trim();
+    final group = NodeGroup(
+      id: genId('pkg'),
+      name: name.isEmpty ? 'Package' : name,
+      nodeIds: clones.map((node) => node.id).toList(),
+      isPackage: true,
+      collapsed: true,
+    );
+    nodes = [...nodes, ...clones];
+    edges = [...edges, ...cloneEdges];
+    groups = [...groups, group];
+    selectedId = clones.first.id;
+    multiSelected = clones.map((node) => node.id).toSet();
+    addLog('ok', '已从 Package 库创建「${group.name}」');
+    structureVersion++;
+    notifyListeners();
+    if (autoRun) {
+      runAfterGraphChange(
+        changedIds: clones.map((node) => node.id).toSet(),
+        edgeChanged: cloneEdges.isNotEmpty,
+      );
+    }
+    return group.id;
   }
 
   /// 将已有节点加入指定分组(节点已在该组或组不存在时忽略)
@@ -1174,7 +1399,7 @@ class GraphStore extends ChangeNotifier {
       'version': workflowFormatVersion,
       'provenance': {
         'application': 'SyphonNov',
-        'applicationVersion': '0.4.3',
+        'applicationVersion': '0.4.4',
         'numericSemantics': 'full-precision',
       },
       'nodes': nodes.map((n) => n.toJson()).toList(),

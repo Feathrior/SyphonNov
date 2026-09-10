@@ -47,6 +47,7 @@ class SettingsStore extends ChangeNotifier {
   bool snapNodePlacement = false;
   List<String> favoriteNodeIds = [];
   List<String> recentNodeIds = [];
+  List<Map<String, dynamic>> packageLibrary = [];
   Map<String, String> shortcutBindings = {...defaultShortcutBindings};
 
   /// 最近打开/保存的画布文件路径(新→旧,去重,最多 10 条)
@@ -77,6 +78,12 @@ class SettingsStore extends ChangeNotifier {
           snapNodePlacement = j['snapNodePlacement'] == true;
           favoriteNodeIds = _stringList(j['favoriteNodeIds'], 24);
           recentNodeIds = _stringList(j['recentNodeIds'], 8);
+          if (j['packageLibrary'] is List) {
+            packageLibrary = [
+              for (final value in j['packageLibrary'] as List)
+                if (value is Map) Map<String, dynamic>.from(value),
+            ];
+          }
           final shortcuts = j['shortcutBindings'];
           if (shortcuts is Map) {
             for (final entry in shortcuts.entries) {
@@ -153,6 +160,25 @@ class SettingsStore extends ChangeNotifier {
       configId,
       ...recentNodeIds.where((id) => id != configId),
     ].take(8).toList();
+    _write();
+    notifyListeners();
+  }
+
+  void savePackage(Map<String, dynamic> value) {
+    final id = '${value['id'] ?? ''}';
+    if (id.isEmpty) return;
+    packageLibrary = [
+      Map<String, dynamic>.from(value),
+      ...packageLibrary.where((item) => '${item['id']}' != id),
+    ];
+    _write();
+    notifyListeners();
+  }
+
+  void deletePackage(String id) {
+    final next = packageLibrary.where((item) => '${item['id']}' != id).toList();
+    if (next.length == packageLibrary.length) return;
+    packageLibrary = next;
     _write();
     notifyListeners();
   }
@@ -243,6 +269,7 @@ class SettingsStore extends ChangeNotifier {
       'snapNodePlacement': snapNodePlacement,
       'favoriteNodeIds': favoriteNodeIds,
       'recentNodeIds': recentNodeIds,
+      'packageLibrary': packageLibrary,
       'shortcutBindings': shortcutBindings,
     });
     try {

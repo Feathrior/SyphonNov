@@ -221,6 +221,120 @@ Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
   return Size(w, h);
 }
 
+typedef PackagePort = ({
+  String nodeId,
+  String socketId,
+  String name,
+  SocketType type,
+});
+
+List<PackagePort> packageInputPorts(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  final ids = group.nodeIds.toSet();
+  final internallyConnected = {
+    for (final edge in edges)
+      if (ids.contains(edge.source) && ids.contains(edge.target))
+        '${edge.target}\u0000${edge.targetHandle}',
+  };
+  final externallyConnected = {
+    for (final edge in edges)
+      if (!ids.contains(edge.source) && ids.contains(edge.target))
+        '${edge.target}\u0000${edge.targetHandle}',
+  };
+  return [
+    for (final node in nodes)
+      if (ids.contains(node.id))
+        for (final socket
+            in getConfig(node.configId)?.inputs ?? const <Socket>[])
+          if (!internallyConnected.contains('${node.id}\u0000${socket.id}') ||
+              externallyConnected.contains('${node.id}\u0000${socket.id}'))
+            (
+              nodeId: node.id,
+              socketId: socket.id,
+              name: socket.name,
+              type: socket.type,
+            ),
+  ];
+}
+
+List<PackagePort> packageOutputPorts(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  final ids = group.nodeIds.toSet();
+  final internallyConnected = {
+    for (final edge in edges)
+      if (ids.contains(edge.source) && ids.contains(edge.target))
+        '${edge.source}\u0000${edge.sourceHandle}',
+  };
+  final externallyConnected = {
+    for (final edge in edges)
+      if (ids.contains(edge.source) && !ids.contains(edge.target))
+        '${edge.source}\u0000${edge.sourceHandle}',
+  };
+  return [
+    for (final node in nodes)
+      if (ids.contains(node.id))
+        for (final socket
+            in getConfig(node.configId)?.outputs ?? const <Socket>[])
+          if (!internallyConnected.contains('${node.id}\u0000${socket.id}') ||
+              externallyConnected.contains('${node.id}\u0000${socket.id}'))
+            (
+              nodeId: node.id,
+              socketId: socket.id,
+              name: socket.name,
+              type: socket.type,
+            ),
+  ];
+}
+
+Size packageNodeVisualSize(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  final rows = math.max(
+    packageInputPorts(group, nodes, edges).length,
+    packageOutputPorts(group, nodes, edges).length,
+  );
+  return Size(260, math.max(110, 54 + rows * 22));
+}
+
+Rect? packageProxyRect(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  if (!group.isPackage || !group.collapsed) return null;
+  Rect? bounds;
+  final ids = group.nodeIds.toSet();
+  for (final node in nodes) {
+    if (!ids.contains(node.id)) continue;
+    final rect = node.position & nodeSize(node, edges);
+    bounds = bounds == null ? rect : bounds.expandToInclude(rect);
+  }
+  return bounds == null
+      ? null
+      : bounds.topLeft & packageNodeVisualSize(group, nodes, edges);
+}
+
+Offset packagePortAnchor(
+  Rect rect,
+  List<PackagePort> ports,
+  PackagePort port, {
+  required bool isSource,
+}) {
+  final index = ports.indexWhere(
+    (item) => item.nodeId == port.nodeId && item.socketId == port.socketId,
+  );
+  final y = rect.top + 43 + math.max(0, index) * 22;
+  return Offset(isSource ? rect.right + 1.5 : rect.left - 1.5, y);
+}
+
 /// 将一组新节点从首选位置推出已有节点的占用范围。
 ///
 /// 算法逐个求解最小轴向位移，并把已安置的新节点加入障碍集合。这样 Alt

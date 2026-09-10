@@ -202,21 +202,26 @@ class _AppShellState extends State<_AppShell> {
       ((args['x'] as num?)?.toDouble() ?? 0) / dpr,
       ((args['y'] as num?)?.toDouble() ?? 0) / dpr,
     );
-    // 取第一个受支持的数据文件;全部不识别也尝试读取第一个
     const exts = {'.csv', '.tsv', '.txt', '.xlsx'};
-    final path = paths.firstWhere(
-      (p) => exts.any((e) => p.toLowerCase().endsWith(e)),
-      orElse: () => paths.first,
-    );
-    try {
-      final text = await dataFileToCsvText(path);
-      _canvasKey.currentState?.dropFileText(
-        pos,
-        text,
-        fileName: fileBaseName(path),
-      );
-    } catch (e) {
-      GraphStore.instance.addLog('error', '导入文件失败:$e');
+    final supported = paths
+        .where((path) => exts.any((ext) => path.toLowerCase().endsWith(ext)))
+        .toList();
+    if (supported.isEmpty) {
+      GraphStore.instance.addLog('error', '拖入的文件格式不受支持');
+      return;
+    }
+    for (var index = 0; index < supported.length; index++) {
+      final path = supported[index];
+      try {
+        final text = await dataFileToCsvText(path);
+        _canvasKey.currentState?.dropFileText(
+          pos + Offset(index * 32.0, index * 32.0),
+          text,
+          fileName: fileBaseName(path),
+        );
+      } catch (e) {
+        GraphStore.instance.addLog('error', '导入文件失败:$e');
+      }
     }
   }
 
@@ -320,7 +325,9 @@ class _AppShellState extends State<_AppShell> {
     }
 
     // Delete/Backspace:删除选中节点(或分割点)
-    if (settings.matchesShortcut('delete', event)) {
+    if (settings.matchesShortcut('delete', event) ||
+        event.logicalKey == LogicalKeyboardKey.delete ||
+        event.logicalKey == LogicalKeyboardKey.backspace) {
       _canvasKey.currentState?.deleteSelection();
       return KeyEventResult.handled;
     }
@@ -383,6 +390,8 @@ class _AppShellState extends State<_AppShell> {
               child: NodeShelf(
                 onCreateNode: (id) =>
                     _canvasKey.currentState?.addNodeAtViewportCenter(id),
+                onCreatePackage: (value) => _canvasKey.currentState
+                    ?.createPackageAtViewportCenter(value),
                 onDropNode: (id, position) =>
                     _canvasKey.currentState?.addNodeFromGlobal(id, position) ??
                     false,

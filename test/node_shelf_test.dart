@@ -26,6 +26,7 @@ void main() {
     SettingsStore.instance.snapNodePlacement = false;
     SettingsStore.instance.favoriteNodeIds = [];
     SettingsStore.instance.recentNodeIds = [];
+    SettingsStore.instance.packageLibrary = [];
   });
 
   tearDown(() {
@@ -70,6 +71,30 @@ void main() {
       tester.getSize(spine).height,
       greaterThan(tester.getSize(spine).width),
     );
+  });
+
+  testWidgets('short categories size to their spines and labels stay upright', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final pointer = TestPointer(32, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      pointer.hover(tester.getCenter(find.text('数据初步'))),
+    );
+    await tester.pump();
+    final overlay = find.byKey(const Key('node-library-overlay'));
+    expect(overlay, findsOneWidget);
+    expect(tester.getSize(overlay).width, lessThan(360));
+    expect(
+      find.descendant(of: overlay, matching: find.byType(RotatedBox)),
+      findsNothing,
+    );
+    final verticalLabels = tester
+        .widgetList<Text>(
+          find.descendant(of: overlay, matching: find.byType(Text)),
+        )
+        .where((text) => (text.data ?? '').contains('\n'));
+    expect(verticalLabels, isNotEmpty);
   });
 
   testWidgets('canvas accepts one global drop and rejects outside release', (

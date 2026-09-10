@@ -23,6 +23,7 @@ typedef NodeDragCallback =
 /// 顶部节点提示条。折叠条固定高度，节点库通过 Overlay 展开，不参与画布布局。
 class NodeShelf extends StatefulWidget {
   final ValueChanged<String> onCreateNode;
+  final ValueChanged<Map<String, dynamic>> onCreatePackage;
   final NodeDropCallback onDropNode;
   final NodeDragCallback onDragUpdate;
   final VoidCallback onDragCancel;
@@ -30,6 +31,7 @@ class NodeShelf extends StatefulWidget {
   const NodeShelf({
     super.key,
     required this.onCreateNode,
+    required this.onCreatePackage,
     required this.onDropNode,
     required this.onDragUpdate,
     required this.onDragCancel,
@@ -44,6 +46,7 @@ class _NodeShelfState extends State<NodeShelf> {
   OverlayEntry? _entry;
   Timer? _leaveTimer;
   Category _category = Category.input;
+  bool _packageMode = false;
   Offset? _lastDragGlobal;
   bool _dragging = false;
   bool _closing = false;
@@ -64,6 +67,22 @@ class _NodeShelfState extends State<NodeShelf> {
     _leaveTimer?.cancel();
     _closing = false;
     _category = category;
+    _packageMode = false;
+    if (_entry == null) {
+      _entry = OverlayEntry(builder: _buildOverlay);
+      Overlay.of(context).insert(_entry!);
+      HardwareKeyboard.instance.addHandler(_handleGlobalKey);
+      _keyHandlerInstalled = true;
+    } else {
+      _entry!.markNeedsBuild();
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _openPackages() {
+    _leaveTimer?.cancel();
+    _closing = false;
+    _packageMode = true;
     if (_entry == null) {
       _entry = OverlayEntry(builder: _buildOverlay);
       Overlay.of(context).insert(_entry!);
@@ -185,6 +204,12 @@ class _NodeShelfState extends State<NodeShelf> {
                   ),
                   const SizedBox(width: 6),
                 ],
+                _PackagePill(
+                  active: _entry != null && _packageMode,
+                  onEnter: _openPackages,
+                  onExit: _scheduleClose,
+                  onTap: _openPackages,
+                ),
                 const Spacer(),
                 Text(
                   L.t('悬停展开 · 拖拽创建'),
@@ -200,7 +225,14 @@ class _NodeShelfState extends State<NodeShelf> {
 
   Widget _buildOverlay(BuildContext overlayContext) {
     final screen = MediaQuery.sizeOf(overlayContext);
-    final width = (screen.width - SyphonDims.propsW - 32).clamp(360.0, 680.0);
+    final count = _packageMode
+        ? SettingsStore.instance.packageLibrary.length
+        : kNodeConfigs.where((cfg) => cfg.category == _category).length;
+    final available = (screen.width - SyphonDims.propsW - 32).clamp(
+      160.0,
+      680.0,
+    );
+    final width = (count * 55.0 + 24).clamp(160.0, available);
     return Positioned.fill(
       child: Stack(
         clipBehavior: Clip.none,
@@ -214,63 +246,74 @@ class _NodeShelfState extends State<NodeShelf> {
             child: MouseRegion(
               onEnter: (_) => _leaveTimer?.cancel(),
               onExit: (_) => _scheduleClose(),
-              child: _NodeLibrary(
-                width: width,
-                visible: !_closing,
-                category: _category,
-                onLibraryChanged: () => _entry?.markNeedsBuild(),
-                onPick: (id) {
-                  SettingsStore.instance.recordNodeUse(id);
-                  widget.onCreateNode(id);
-                  _removeOverlay();
-                },
-                onDragStarted: () {
-                  _dragging = true;
-                  _dragCanceled = false;
-                  _lastDragGlobal = null;
-                  _leaveTimer?.cancel();
-                  _installPointerRoute();
-                },
-                onDragUpdate: (cfg, position) {
-                  _lastDragGlobal = position;
-                  widget.onDragUpdate(cfg.id, cfg.category, position);
-                },
-                onDragEnd: (cfg) {
-                  final position = _lastDragGlobal;
-                  final accepted =
-                      !_dragCanceled &&
-                      position != null &&
-                      widget.onDropNode(cfg.id, position);
-                  _dragging = false;
-                  _dragCanceled = false;
-                  _lastDragGlobal = null;
-                  if (_pointerRouteInstalled) {
-                    GestureBinding.instance.pointerRouter.removeGlobalRoute(
-                      _handleGlobalPointer,
-                    );
-                    _pointerRouteInstalled = false;
-                  }
-                  widget.onDragCancel();
-                  if (accepted) {
-                    SettingsStore.instance.recordNodeUse(cfg.id);
-                    _removeOverlay();
-                  } else {
-                    _entry?.markNeedsBuild();
-                  }
-                },
-                onDragCancel: () {
-                  _dragging = false;
-                  _dragCanceled = false;
-                  _lastDragGlobal = null;
-                  if (_pointerRouteInstalled) {
-                    GestureBinding.instance.pointerRouter.removeGlobalRoute(
-                      _handleGlobalPointer,
-                    );
-                    _pointerRouteInstalled = false;
-                  }
-                  widget.onDragCancel();
-                },
-              ),
+              child: _packageMode
+                  ? _PackageLibrary(
+                      width: width,
+                      visible: !_closing,
+                      onPick: (value) {
+                        widget.onCreatePackage(value);
+                        _removeOverlay();
+                      },
+                      onDelete: (id) {
+                        SettingsStore.instance.deletePackage(id);
+                        _entry?.markNeedsBuild();
+                      },
+                    )
+                  : _NodeLibrary(
+                      width: width,
+                      visible: !_closing,
+                      category: _category,
+                      onLibraryChanged: () => _entry?.markNeedsBuild(),
+                      onPick: (id) {
+                        SettingsStore.instance.recordNodeUse(id);
+                        widget.onCreateNode(id);
+                        _removeOverlay();
+                      },
+                      onDragStarted: () {
+                        _dragging = true;
+                        _dragCanceled = false;
+                        _lastDragGlobal = null;
+                        _leaveTimer?.cancel();
+                        _installPointerRoute();
+                      },
+                      onDragUpdate: (cfg, position) {
+                        _lastDragGlobal = position;
+                        widget.onDragUpdate(cfg.id, cfg.category, position);
+                      },
+                      onDragEnd: (cfg) {
+                        final position = _lastDragGlobal;
+                        final accepted =
+                            !_dragCanceled &&
+                            position != null &&
+                            widget.onDropNode(cfg.id, position);
+                        _dragging = false;
+                        _dragCanceled = false;
+                        _lastDragGlobal = null;
+                        if (_pointerRouteInstalled) {
+                          GestureBinding.instance.pointerRouter
+                              .removeGlobalRoute(_handleGlobalPointer);
+                          _pointerRouteInstalled = false;
+                        }
+                        widget.onDragCancel();
+                        if (accepted) {
+                          SettingsStore.instance.recordNodeUse(cfg.id);
+                          _removeOverlay();
+                        } else {
+                          _entry?.markNeedsBuild();
+                        }
+                      },
+                      onDragCancel: () {
+                        _dragging = false;
+                        _dragCanceled = false;
+                        _lastDragGlobal = null;
+                        if (_pointerRouteInstalled) {
+                          GestureBinding.instance.pointerRouter
+                              .removeGlobalRoute(_handleGlobalPointer);
+                          _pointerRouteInstalled = false;
+                        }
+                        widget.onDragCancel();
+                      },
+                    ),
             ),
           ),
         ],
@@ -358,6 +401,195 @@ class _CategoryPillState extends State<_CategoryPill> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PackagePill extends StatefulWidget {
+  final bool active;
+  final VoidCallback onEnter;
+  final VoidCallback onExit;
+  final VoidCallback onTap;
+
+  const _PackagePill({
+    required this.active,
+    required this.onEnter,
+    required this.onExit,
+    required this.onTap,
+  });
+
+  @override
+  State<_PackagePill> createState() => _PackagePillState();
+}
+
+class _PackagePillState extends State<_PackagePill> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    final active = _hover || widget.active;
+    const color = Color(0xFF8A9099);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        setState(() => _hover = true);
+        widget.onEnter();
+      },
+      onExit: (_) {
+        setState(() => _hover = false);
+        widget.onExit();
+      },
+      child: InkWell(
+        onTap: widget.onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: AnimatedContainer(
+          key: const Key('node-category-package'),
+          duration: MotionTokens.standard(context),
+          padding: EdgeInsets.symmetric(
+            horizontal: active ? 13 : 10,
+            vertical: 6,
+          ),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: active ? .18 : .08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: color.withValues(alpha: active ? .5 : .2),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.inventory_2_outlined, size: 13, color: color),
+              const SizedBox(width: 6),
+              Text(
+                'Package',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: t.text,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PackageLibrary extends StatelessWidget {
+  final double width;
+  final bool visible;
+  final ValueChanged<Map<String, dynamic>> onPick;
+  final ValueChanged<String> onDelete;
+
+  const _PackageLibrary({
+    required this.width,
+    required this.visible,
+    required this.onPick,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    final items = SettingsStore.instance.packageLibrary;
+    return Material(
+      type: MaterialType.transparency,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: visible ? 1 : 0),
+        duration: MotionTokens.standard(context),
+        curve: MotionTokens.emphasized,
+        builder: (context, value, child) => BlurScaleTransition(
+          animation: AlwaysStoppedAnimation(value),
+          alignment: Alignment.topLeft,
+          child: child!,
+        ),
+        child: Container(
+          key: const Key('package-library-overlay'),
+          width: width,
+          height: 250,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: t.bgFloat.withValues(alpha: .985),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: t.strokeStrong),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: t.isDark ? .34 : .14),
+                blurRadius: 36,
+                offset: const Offset(0, 14),
+              ),
+            ],
+          ),
+          child: items.isEmpty
+              ? Center(
+                  child: Text(
+                    '尚未保存 Package',
+                    style: TextStyle(color: t.textFaint),
+                  ),
+                )
+              : ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 7),
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    final name = '${item['name'] ?? 'Package'}';
+                    return InkWell(
+                      key: ValueKey('package-spine-${item['id']}'),
+                      onTap: () => onPick(item),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        width: 48,
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 10,
+                          horizontal: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF8A9099).withValues(alpha: .14),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: const Color(
+                              0xFF8A9099,
+                            ).withValues(alpha: .42),
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            const Icon(
+                              Icons.inventory_2_outlined,
+                              size: 16,
+                              color: Color(0xFF8A9099),
+                            ),
+                            const SizedBox(height: 8),
+                            Expanded(
+                              child: _VerticalSpineLabel(name, color: t.text),
+                            ),
+                            IconButton(
+                              key: ValueKey('delete-package-${item['id']}'),
+                              tooltip: '从 Package 库删除',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints.tightFor(
+                                width: 24,
+                                height: 24,
+                              ),
+                              icon: Icon(
+                                Icons.delete_outline,
+                                size: 15,
+                                color: t.textFaint,
+                              ),
+                              onPressed: () => onDelete('${item['id']}'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
         ),
       ),
     );
@@ -542,22 +774,7 @@ class _NodeTileState extends State<_NodeTile> {
           ),
           const SizedBox(height: 10),
           Expanded(
-            child: RotatedBox(
-              quarterTurns: 3,
-              child: Center(
-                child: Text(
-                  L.t(widget.cfg.label),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: t.text,
-                  ),
-                ),
-              ),
-            ),
+            child: _VerticalSpineLabel(L.t(widget.cfg.label), color: t.text),
           ),
           const SizedBox(height: 8),
           GestureDetector(
@@ -596,6 +813,32 @@ class _NodeTileState extends State<_NodeTile> {
             hoverColor: Colors.transparent,
             child: tile,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VerticalSpineLabel extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _VerticalSpineLabel(this.label, {required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    final vertical = label.runes.map(String.fromCharCode).join('\n');
+    return Center(
+      child: Text(
+        vertical,
+        maxLines: 9,
+        overflow: TextOverflow.ellipsis,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontSize: 12,
+          height: 1.05,
+          fontWeight: FontWeight.w600,
+          color: color,
         ),
       ),
     );

@@ -19,6 +19,7 @@ class NodeContextMenu extends StatelessWidget {
   final bool canUngroup; // 所选节点中有成员处于分组内才可取消分组
   final VoidCallback? onRunNode;
   final VoidCallback onGroup;
+  final VoidCallback onPackage;
   final VoidCallback onUngroup;
   final VoidCallback onDuplicate;
   final VoidCallback onDelete;
@@ -30,6 +31,7 @@ class NodeContextMenu extends StatelessWidget {
     required this.canUngroup,
     this.onRunNode,
     required this.onGroup,
+    required this.onPackage,
     required this.onUngroup,
     required this.onDuplicate,
     required this.onDelete,
@@ -75,6 +77,12 @@ class NodeContextMenu extends StatelessWidget {
               label: L.t('分组'),
               enabled: canGroup,
               onTap: onGroup,
+            ),
+            CtxMenuItem(
+              icon: Icons.inventory_2_outlined,
+              label: '打包为 Package',
+              enabled: canGroup,
+              onTap: onPackage,
             ),
             CtxMenuItem(
               icon: Icons.group_remove_outlined,

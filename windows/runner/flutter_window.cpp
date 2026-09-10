@@ -200,15 +200,14 @@ void FlutterWindow::HandleFileDrop(HDROP hDrop) {
   for (UINT i = 0; i < fileCount; i++) {
     const UINT len = DragQueryFile(hDrop, i, nullptr, 0);
     if (len == 0) continue;
-    std::wstring buf(len, L'\0');
+    std::wstring buf(len + 1, L'\0');
     DragQueryFile(hDrop, i, buf.data(), len + 1);
+    buf.resize(len);
     paths.emplace_back(flutter::EncodableValue(Utf8FromWide(buf)));
   }
-  // Drop point: DragQueryPoint returns screen coordinates; convert to client
-  // coordinates before handing them to Dart
+  // DragQueryPoint already returns client-area coordinates.
   POINT pt{};
   DragQueryPoint(hDrop, &pt);
-  ScreenToClient(GetHandle(), &pt);
   DragFinish(hDrop);
 
   if (paths.empty() || !flutter_controller_) return;
