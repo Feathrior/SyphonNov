@@ -52,7 +52,7 @@ void main() {
       expect(store.nodes.single.params['seed'], isA<int>());
       final saved = jsonDecode(store.saveGraph()) as Map<String, dynamic>;
       expect(saved['formatVersion'], 2);
-      expect(saved['provenance']['applicationVersion'], '0.4.2');
+      expect(saved['provenance']['applicationVersion'], '0.4.3');
     },
   );
 
@@ -182,10 +182,10 @@ void main() {
       );
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 0.4.2+3'),
+        contains('version: 0.4.3+1'),
       );
       final nsi = File('install.nsi').readAsStringSync();
-      expect(nsi, contains('DisplayVersion" "0.4.2"'));
+      expect(nsi, contains('DisplayVersion" "0.4.3"'));
       expect(nsi, isNot(contains('SyphonNov2')));
       expect(File('.github/workflows/windows.yml').existsSync(), isTrue);
     },
