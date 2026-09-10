@@ -95,10 +95,10 @@ class SyphonApp extends StatelessWidget {
             // 细腻过渡动画:菜单/弹窗/ComboBox/InfoBar 等 fluent 控件的动画时长。
             // 层级 faster < fast < medium < slow;fast 90ms——MenuBar 点击到
             // 弹出次级菜单的主要延迟就是它(叠加 easeIn 淡入起始慢),提速后接近原生
-            fasterAnimationDuration: const Duration(milliseconds: 60),
-            fastAnimationDuration: const Duration(milliseconds: 90),
-            mediumAnimationDuration: const Duration(milliseconds: 180),
-            slowAnimationDuration: const Duration(milliseconds: 358),
+            fasterAnimationDuration: const Duration(milliseconds: 75),
+            fastAnimationDuration: const Duration(milliseconds: 110),
+            mediumAnimationDuration: const Duration(milliseconds: 230),
+            slowAnimationDuration: const Duration(milliseconds: 420),
           ),
           darkTheme: fluent.FluentThemeData(
             brightness: Brightness.dark,
@@ -108,10 +108,10 @@ class SyphonApp extends StatelessWidget {
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
             menuColor: bgFloat,
-            fasterAnimationDuration: const Duration(milliseconds: 60),
-            fastAnimationDuration: const Duration(milliseconds: 90),
-            mediumAnimationDuration: const Duration(milliseconds: 180),
-            slowAnimationDuration: const Duration(milliseconds: 358),
+            fasterAnimationDuration: const Duration(milliseconds: 75),
+            fastAnimationDuration: const Duration(milliseconds: 110),
+            mediumAnimationDuration: const Duration(milliseconds: 230),
+            slowAnimationDuration: const Duration(milliseconds: 420),
           ),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           // 普通 Text 继承微软雅黑(merge 保留各组件自带的字号/颜色)

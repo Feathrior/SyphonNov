@@ -3134,6 +3134,32 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           child: Stack(
             clipBehavior: Clip.none,
             children: [
+              Positioned(
+                left: 10,
+                top: 10,
+                child: Text(
+                  inputs.isEmpty ? '无前置输入' : '前置输入',
+                  key: ValueKey('package-input-label-${group.id}'),
+                  style: TextStyle(
+                    color: t.textFaint,
+                    fontSize: 8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 10,
+                top: 10,
+                child: Text(
+                  outputs.isEmpty ? '无后续输出' : '后续输出',
+                  key: ValueKey('package-output-label-${group.id}'),
+                  style: TextStyle(
+                    color: t.textFaint,
+                    fontSize: 8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
               Positioned.fill(
                 left: 78,
                 right: 78,
@@ -3210,6 +3236,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       ),
     );
     return Positioned(
+      key: ValueKey(
+        'package-${isSource ? 'output' : 'input'}-${port.nodeId}-${port.socketId}',
+      ),
       left: isSource ? null : -5.5,
       right: isSource ? -5.5 : null,
       top: 37.5 + index * 22,

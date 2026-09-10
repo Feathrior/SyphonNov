@@ -92,6 +92,65 @@ void main() {
     },
   );
 
+  test('Package exposes stable predecessor and successor interfaces', () {
+    final store = GraphStore.instance;
+    final source = store.addNode(
+      'table_input',
+      const Offset(0, 40),
+      triggerRun: false,
+    );
+    final first = store.addNode(
+      'extract_columns',
+      const Offset(260, 40),
+      triggerRun: false,
+    );
+    final last = store.addNode(
+      'extract_rows',
+      const Offset(520, 40),
+      triggerRun: false,
+    );
+    final sink = store.addNode(
+      'data_output',
+      const Offset(780, 40),
+      triggerRun: false,
+    );
+    store.onConnect(
+      source: source,
+      target: first,
+      sourceHandle: 'out0',
+      targetHandle: 'in0',
+      triggerRun: false,
+    );
+    store.onConnect(
+      source: first,
+      target: last,
+      sourceHandle: 'out0',
+      targetHandle: 'in0',
+      triggerRun: false,
+    );
+    store.onConnect(
+      source: last,
+      target: sink,
+      sourceHandle: 'out0',
+      targetHandle: 'in0',
+      triggerRun: false,
+    );
+
+    final packageId = store.createPackage([first, last], '前后接口');
+    final package = store.groups.singleWhere((group) => group.id == packageId);
+    final inputs = packageInputPorts(package, store.nodes, store.edges);
+    final outputs = packageOutputPorts(package, store.nodes, store.edges);
+    expect(inputs, hasLength(1));
+    expect(inputs.single.nodeId, first);
+    expect(inputs.single.socketId, 'in0');
+    expect(inputs.single.name, contains('提取列'));
+    expect(outputs, hasLength(1));
+    expect(outputs.single.nodeId, last);
+    expect(outputs.single.socketId, 'out0');
+    expect(outputs.single.name, contains('提取行'));
+    expect(store.edges, hasLength(3));
+  });
+
   testWidgets('file drop creates a named table input node', (tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
@@ -139,6 +198,16 @@ void main() {
     final proxy = find.byKey(ValueKey('package-node-$packageId'));
     expect(proxy, findsOneWidget);
     expect(find.byType(NodeCard), findsNothing);
+    expect(
+      find.byKey(ValueKey('package-input-label-$packageId')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(ValueKey('package-output-label-$packageId')),
+      findsOneWidget,
+    );
+    expect(find.byKey(ValueKey('package-input-$second-in0')), findsOneWidget);
+    expect(find.byKey(ValueKey('package-output-$first-out0')), findsOneWidget);
     await tester.tapAt(tester.getCenter(proxy), buttons: kSecondaryButton);
     await tester.pump();
     await tester.pump();

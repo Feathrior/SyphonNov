@@ -14,10 +14,10 @@ class MotionTokens {
   static const exit = Cubic(0.4, 0, 1, 1);
   static const emphasized = Cubic(0.16, 1, 0.3, 1);
 
-  static Duration quick(BuildContext context) => _duration(context, 90, 60);
+  static Duration quick(BuildContext context) => _duration(context, 110, 70);
   static Duration standard(BuildContext context) =>
-      _duration(context, 180, 140);
-  static Duration spatial(BuildContext context) => _duration(context, 260, 220);
+      _duration(context, 230, 170);
+  static Duration spatial(BuildContext context) => _duration(context, 320, 250);
 
   static Duration _duration(BuildContext context, int full, int reduced) {
     final setting = SettingsStore.instance.motionMode;
@@ -25,7 +25,7 @@ class MotionTokens {
         MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     if (setting == MotionMode.off) return Duration.zero;
     if (setting == MotionMode.reduced || systemReduced) {
-      return Duration(milliseconds: reduced == 60 ? 0 : reduced);
+      return Duration(milliseconds: reduced == 70 ? 0 : reduced);
     }
     return Duration(milliseconds: full);
   }

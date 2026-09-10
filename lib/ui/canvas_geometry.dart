@@ -254,7 +254,8 @@ List<PackagePort> packageInputPorts(
             (
               nodeId: node.id,
               socketId: socket.id,
-              name: socket.name,
+              name:
+                  '${getConfig(node.configId)?.label ?? node.configId} · ${socket.name}',
               type: socket.type,
             ),
   ];
@@ -286,7 +287,8 @@ List<PackagePort> packageOutputPorts(
             (
               nodeId: node.id,
               socketId: socket.id,
-              name: socket.name,
+              name:
+                  '${getConfig(node.configId)?.label ?? node.configId} · ${socket.name}',
               type: socket.type,
             ),
   ];

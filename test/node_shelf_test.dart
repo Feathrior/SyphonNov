@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:syphon_nov/main.dart';
+import 'package:syphon_nov/models/data.dart' show Category;
+import 'package:syphon_nov/models/registry.dart';
 import 'package:syphon_nov/store/graph_store.dart';
 import 'package:syphon_nov/store/settings_store.dart';
 import 'package:syphon_nov/ui/node_canvas.dart';
@@ -97,6 +99,61 @@ void main() {
     expect(verticalLabels, isNotEmpty);
   });
 
+  testWidgets(
+    'category changes animate the shelf width and preserve fixed order',
+    (tester) async {
+      final cleanNodes = kNodeConfigs
+          .where((config) => config.category == Category.clean)
+          .toList();
+      expect(cleanNodes.length, greaterThan(1));
+      SettingsStore.instance.favoriteNodeIds = [cleanNodes[1].id];
+      SettingsStore.instance.recentNodeIds = [cleanNodes[1].id];
+      await pumpApp(tester);
+      final pointer = TestPointer(33, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        pointer.hover(tester.getCenter(find.text('数据初步'))),
+      );
+      await tester.pumpAndSettle();
+      final sizeTransition = find.byKey(
+        const Key('node-library-size-transition'),
+      );
+      final initialWidth = tester.getSize(sizeTransition).width;
+      expect(
+        tester
+            .getCenter(find.byKey(ValueKey('node-spine-${cleanNodes[0].id}')))
+            .dx,
+        lessThan(
+          tester
+              .getCenter(find.byKey(ValueKey('node-spine-${cleanNodes[1].id}')))
+              .dx,
+        ),
+      );
+
+      await tester.sendEventToBinding(
+        pointer.hover(tester.getCenter(find.text('数据可视化'))),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 150));
+      final middleWidth = tester.getSize(sizeTransition).width;
+      await tester.pumpAndSettle();
+      final finalWidth = tester.getSize(sizeTransition).width;
+      expect(middleWidth, greaterThan(initialWidth));
+      expect(middleWidth, lessThan(finalWidth));
+      expect(
+        tester.widget<AnimatedContainer>(sizeTransition).duration,
+        const Duration(milliseconds: 320),
+      );
+      expect(
+        tester
+            .widget<AnimatedSwitcher>(
+              find.byKey(const Key('node-library-content-transition')),
+            )
+            .duration,
+        const Duration(milliseconds: 230),
+      );
+    },
+  );
+
   testWidgets('canvas accepts one global drop and rejects outside release', (
     tester,
   ) async {
@@ -124,6 +181,16 @@ void main() {
     final shelf = tester.element(find.byKey(const Key('node-shelf')));
     expect(MediaQuery.maybeOf(shelf), isNotNull);
     expect(MotionTokens.standard(shelf), Duration.zero);
+  });
+
+  testWidgets('full motion uses the relaxed interaction timing', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final shelf = tester.element(find.byKey(const Key('node-shelf')));
+    expect(MotionTokens.quick(shelf), const Duration(milliseconds: 110));
+    expect(MotionTokens.standard(shelf), const Duration(milliseconds: 230));
+    expect(MotionTokens.spatial(shelf), const Duration(milliseconds: 320));
   });
 
   for (final scale in [1.0, 1.25, 1.5]) {

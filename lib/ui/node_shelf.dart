@@ -246,74 +246,107 @@ class _NodeShelfState extends State<NodeShelf> {
             child: MouseRegion(
               onEnter: (_) => _leaveTimer?.cancel(),
               onExit: (_) => _scheduleClose(),
-              child: _packageMode
-                  ? _PackageLibrary(
-                      width: width,
-                      visible: !_closing,
-                      onPick: (value) {
-                        widget.onCreatePackage(value);
-                        _removeOverlay();
-                      },
-                      onDelete: (id) {
-                        SettingsStore.instance.deletePackage(id);
-                        _entry?.markNeedsBuild();
-                      },
-                    )
-                  : _NodeLibrary(
-                      width: width,
-                      visible: !_closing,
-                      category: _category,
-                      onLibraryChanged: () => _entry?.markNeedsBuild(),
-                      onPick: (id) {
-                        SettingsStore.instance.recordNodeUse(id);
-                        widget.onCreateNode(id);
-                        _removeOverlay();
-                      },
-                      onDragStarted: () {
-                        _dragging = true;
-                        _dragCanceled = false;
-                        _lastDragGlobal = null;
-                        _leaveTimer?.cancel();
-                        _installPointerRoute();
-                      },
-                      onDragUpdate: (cfg, position) {
-                        _lastDragGlobal = position;
-                        widget.onDragUpdate(cfg.id, cfg.category, position);
-                      },
-                      onDragEnd: (cfg) {
-                        final position = _lastDragGlobal;
-                        final accepted =
-                            !_dragCanceled &&
-                            position != null &&
-                            widget.onDropNode(cfg.id, position);
-                        _dragging = false;
-                        _dragCanceled = false;
-                        _lastDragGlobal = null;
-                        if (_pointerRouteInstalled) {
-                          GestureBinding.instance.pointerRouter
-                              .removeGlobalRoute(_handleGlobalPointer);
-                          _pointerRouteInstalled = false;
-                        }
-                        widget.onDragCancel();
-                        if (accepted) {
-                          SettingsStore.instance.recordNodeUse(cfg.id);
-                          _removeOverlay();
-                        } else {
-                          _entry?.markNeedsBuild();
-                        }
-                      },
-                      onDragCancel: () {
-                        _dragging = false;
-                        _dragCanceled = false;
-                        _lastDragGlobal = null;
-                        if (_pointerRouteInstalled) {
-                          GestureBinding.instance.pointerRouter
-                              .removeGlobalRoute(_handleGlobalPointer);
-                          _pointerRouteInstalled = false;
-                        }
-                        widget.onDragCancel();
-                      },
+              child: AnimatedContainer(
+                key: const Key('node-library-size-transition'),
+                width: width,
+                duration: MotionTokens.spatial(overlayContext),
+                curve: MotionTokens.emphasized,
+                child: AnimatedSwitcher(
+                  key: const Key('node-library-content-transition'),
+                  duration: MotionTokens.standard(overlayContext),
+                  reverseDuration: MotionTokens.quick(overlayContext),
+                  switchInCurve: MotionTokens.enter,
+                  switchOutCurve: MotionTokens.exit,
+                  layoutBuilder: (current, previous) => Stack(
+                    alignment: Alignment.topLeft,
+                    children: [...previous, ?current],
+                  ),
+                  transitionBuilder: (child, animation) => BlurScaleTransition(
+                    animation: animation,
+                    alignment: Alignment.topLeft,
+                    beginScale: .985,
+                    maxBlur: 5,
+                    child: child,
+                  ),
+                  child: KeyedSubtree(
+                    key: ValueKey(
+                      _packageMode ? 'package-library' : _category.name,
                     ),
+                    child: _packageMode
+                        ? _PackageLibrary(
+                            width: width,
+                            visible: !_closing,
+                            onPick: (value) {
+                              widget.onCreatePackage(value);
+                              _removeOverlay();
+                            },
+                            onDelete: (id) {
+                              SettingsStore.instance.deletePackage(id);
+                              _entry?.markNeedsBuild();
+                            },
+                          )
+                        : _NodeLibrary(
+                            width: width,
+                            visible: !_closing,
+                            category: _category,
+                            onLibraryChanged: () => _entry?.markNeedsBuild(),
+                            onPick: (id) {
+                              SettingsStore.instance.recordNodeUse(id);
+                              widget.onCreateNode(id);
+                              _removeOverlay();
+                            },
+                            onDragStarted: () {
+                              _dragging = true;
+                              _dragCanceled = false;
+                              _lastDragGlobal = null;
+                              _leaveTimer?.cancel();
+                              _installPointerRoute();
+                            },
+                            onDragUpdate: (cfg, position) {
+                              _lastDragGlobal = position;
+                              widget.onDragUpdate(
+                                cfg.id,
+                                cfg.category,
+                                position,
+                              );
+                            },
+                            onDragEnd: (cfg) {
+                              final position = _lastDragGlobal;
+                              final accepted =
+                                  !_dragCanceled &&
+                                  position != null &&
+                                  widget.onDropNode(cfg.id, position);
+                              _dragging = false;
+                              _dragCanceled = false;
+                              _lastDragGlobal = null;
+                              if (_pointerRouteInstalled) {
+                                GestureBinding.instance.pointerRouter
+                                    .removeGlobalRoute(_handleGlobalPointer);
+                                _pointerRouteInstalled = false;
+                              }
+                              widget.onDragCancel();
+                              if (accepted) {
+                                SettingsStore.instance.recordNodeUse(cfg.id);
+                                _removeOverlay();
+                              } else {
+                                _entry?.markNeedsBuild();
+                              }
+                            },
+                            onDragCancel: () {
+                              _dragging = false;
+                              _dragCanceled = false;
+                              _lastDragGlobal = null;
+                              if (_pointerRouteInstalled) {
+                                GestureBinding.instance.pointerRouter
+                                    .removeGlobalRoute(_handleGlobalPointer);
+                                _pointerRouteInstalled = false;
+                              }
+                              widget.onDragCancel();
+                            },
+                          ),
+                  ),
+                ),
+              ),
             ),
           ),
         ],
@@ -623,21 +656,11 @@ class _NodeLibrary extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
     final settings = SettingsStore.instance;
-    final source = kNodeConfigs.where((cfg) => cfg.category == category);
-    final items = source.toList()
-      ..sort((a, b) {
-        final af = settings.favoriteNodeIds.contains(a.id) ? 0 : 1;
-        final bf = settings.favoriteNodeIds.contains(b.id) ? 0 : 1;
-        if (af != bf) return af.compareTo(bf);
-        final ar = settings.recentNodeIds.indexOf(a.id);
-        final br = settings.recentNodeIds.indexOf(b.id);
-        if (ar >= 0 || br >= 0) {
-          if (ar < 0) return 1;
-          if (br < 0) return -1;
-          return ar.compareTo(br);
-        }
-        return a.label.compareTo(b.label);
-      });
+    // 顶栏是空间记忆入口：始终遵循注册表顺序，收藏和最近使用只记录状态，
+    // 不再移动书脊，避免用户每次创建节点后目标位置发生变化。
+    final items = kNodeConfigs
+        .where((cfg) => cfg.category == category)
+        .toList(growable: false);
 
     return Material(
       type: MaterialType.transparency,
