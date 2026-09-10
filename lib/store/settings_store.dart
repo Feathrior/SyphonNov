@@ -45,6 +45,9 @@ class SettingsStore extends ChangeNotifier {
   bool demoLoaded = false;
   MotionMode motionMode = MotionMode.full;
   bool snapNodePlacement = false;
+  bool nodeShelfEnabled = true;
+  bool contextNodeMenuEnabled = true;
+  bool radialNodeMenuEnabled = true;
   List<String> favoriteNodeIds = [];
   List<String> recentNodeIds = [];
   List<Map<String, dynamic>> packageLibrary = [];
@@ -76,6 +79,9 @@ class SettingsStore extends ChangeNotifier {
             orElse: () => MotionMode.full,
           );
           snapNodePlacement = j['snapNodePlacement'] == true;
+          nodeShelfEnabled = j['nodeShelfEnabled'] != false;
+          contextNodeMenuEnabled = j['contextNodeMenuEnabled'] != false;
+          radialNodeMenuEnabled = j['radialNodeMenuEnabled'] != false;
           favoriteNodeIds = _stringList(j['favoriteNodeIds'], 24);
           recentNodeIds = _stringList(j['recentNodeIds'], 8);
           if (j['packageLibrary'] is List) {
@@ -143,6 +149,24 @@ class SettingsStore extends ChangeNotifier {
 
   void setSnapNodePlacement(bool value) {
     snapNodePlacement = value;
+    _write();
+    notifyListeners();
+  }
+
+  void setNodeShelfEnabled(bool value) {
+    nodeShelfEnabled = value;
+    _write();
+    notifyListeners();
+  }
+
+  void setContextNodeMenuEnabled(bool value) {
+    contextNodeMenuEnabled = value;
+    _write();
+    notifyListeners();
+  }
+
+  void setRadialNodeMenuEnabled(bool value) {
+    radialNodeMenuEnabled = value;
     _write();
     notifyListeners();
   }
@@ -267,6 +291,9 @@ class SettingsStore extends ChangeNotifier {
       'recentFiles': recentFiles,
       'motionMode': motionMode.name,
       'snapNodePlacement': snapNodePlacement,
+      'nodeShelfEnabled': nodeShelfEnabled,
+      'contextNodeMenuEnabled': contextNodeMenuEnabled,
+      'radialNodeMenuEnabled': radialNodeMenuEnabled,
       'favoriteNodeIds': favoriteNodeIds,
       'recentNodeIds': recentNodeIds,
       'packageLibrary': packageLibrary,

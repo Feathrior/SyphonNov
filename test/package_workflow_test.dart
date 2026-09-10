@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter/gestures.dart' show kSecondaryButton;
+import 'package:flutter/material.dart' show IgnorePointer;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -7,6 +8,7 @@ import 'package:syphon_nov/main.dart';
 import 'package:syphon_nov/store/graph_store.dart';
 import 'package:syphon_nov/store/settings_store.dart';
 import 'package:syphon_nov/ui/canvas_geometry.dart';
+import 'package:syphon_nov/ui/context_menu.dart';
 import 'package:syphon_nov/ui/node_canvas.dart';
 import 'package:syphon_nov/ui/node_card.dart';
 
@@ -196,8 +198,16 @@ void main() {
     await tester.pump();
 
     final proxy = find.byKey(ValueKey('package-node-$packageId'));
+    IgnorePointer memberPointer(String nodeId) => tester.widget<IgnorePointer>(
+      find.descendant(
+        of: find.byKey(ValueKey('package-member-motion-$nodeId')),
+        matching: find.byType(IgnorePointer),
+      ),
+    );
     expect(proxy, findsOneWidget);
-    expect(find.byType(NodeCard), findsNothing);
+    expect(find.byType(NodeCard), findsNWidgets(2));
+    expect(memberPointer(first).ignoring, isTrue);
+    expect(memberPointer(second).ignoring, isTrue);
     expect(
       find.byKey(ValueKey('package-input-label-$packageId')),
       findsOneWidget,
@@ -208,14 +218,70 @@ void main() {
     );
     expect(find.byKey(ValueKey('package-input-$second-in0')), findsOneWidget);
     expect(find.byKey(ValueKey('package-output-$first-out0')), findsOneWidget);
+    await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+    await tester.pump();
+    expect(proxy.hitTestable(), findsNothing);
+    await tester.pumpAndSettle();
+    expect(memberPointer(first).ignoring, isFalse);
+    expect(memberPointer(second).ignoring, isFalse);
+    expect(find.byKey(ValueKey('package-region-$packageId')), findsOneWidget);
+    expect(
+      find.byKey(ValueKey('package-toggle-expanded-$packageId')),
+      findsOneWidget,
+    );
+
+    await tester.tap(
+      find.byKey(ValueKey('package-toggle-expanded-$packageId')),
+    );
+    await tester.pumpAndSettle();
+    expect(proxy.hitTestable(), findsOneWidget);
+    expect(memberPointer(first).ignoring, isTrue);
+    expect(memberPointer(second).ignoring, isTrue);
+
     await tester.tapAt(tester.getCenter(proxy), buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.text('保存到 Package 库'), findsOneWidget);
+    expect(find.text('解散 Package'), findsOneWidget);
+    expect(find.byType(NodeMenu), findsNothing);
+  });
+
+  testWidgets('collapsed Package follows the pointer during drag', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final first = GraphStore.instance.addNode(
+      'table_input',
+      const Offset(120, 90),
+      triggerRun: false,
+    );
+    final second = GraphStore.instance.addNode(
+      'table_to_scatter',
+      const Offset(440, 90),
+      triggerRun: false,
+    );
+    final packageId = GraphStore.instance.createPackage([
+      first,
+      second,
+    ], '可拖动区域');
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+
+    final proxy = find.byKey(ValueKey('package-node-$packageId'));
+    final before = tester.getTopLeft(proxy);
+    final gesture = await tester.startGesture(tester.getCenter(proxy));
+    await gesture.moveBy(const Offset(20, 0));
     await tester.pump();
+    await gesture.moveBy(const Offset(60, 35));
     await tester.pump();
-    expect(find.text('展开 Package'), findsOneWidget);
-    await tester.tap(find.text('展开 Package'));
-    await tester.pump();
-    expect(proxy, findsNothing);
-    expect(find.byType(NodeCard), findsNWidgets(2));
+    final during = tester.getTopLeft(proxy);
+    expect(during.dx, closeTo(before.dx + 60, 1));
+    expect(during.dy, closeTo(before.dy + 35, 1));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(proxy), during);
   });
 
   testWidgets('physical Delete remains available after rebinding deletion', (

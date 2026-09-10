@@ -168,6 +168,39 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       ),
                       t,
                     ),
+                    const SizedBox(height: 18),
+                    _sectionTitle(L.t('节点呼出方式'), t),
+                    const SizedBox(height: 4),
+                    _row(
+                      L.t('上边栏'),
+                      L.t('显示顶部节点书脊，可悬停展开并拖入画布'),
+                      fluent.Checkbox(
+                        checked: settings.nodeShelfEnabled,
+                        onChanged: (value) =>
+                            settings.setNodeShelfEnabled(value ?? false),
+                      ),
+                      t,
+                    ),
+                    _row(
+                      L.t('右键菜单'),
+                      L.t('快速单击画布右键时显示传统节点列表'),
+                      fluent.Checkbox(
+                        checked: settings.contextNodeMenuEnabled,
+                        onChanged: (value) =>
+                            settings.setContextNodeMenuEnabled(value ?? false),
+                      ),
+                      t,
+                    ),
+                    _row(
+                      L.t('右键圆环'),
+                      L.t('按住右键或向外滑动，通过方向手势创建节点'),
+                      fluent.Checkbox(
+                        checked: settings.radialNodeMenuEnabled,
+                        onChanged: (value) =>
+                            settings.setRadialNodeMenuEnabled(value ?? false),
+                      ),
+                      t,
+                    ),
                   ],
                 ),
               ),

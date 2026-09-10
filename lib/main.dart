@@ -383,25 +383,29 @@ class _AppShellState extends State<_AppShell> {
                 ],
               ),
             ),
-            Positioned(
-              top: SyphonDims.toolbarH,
-              left: 0,
-              right: 0,
-              child: NodeShelf(
-                onCreateNode: (id) =>
-                    _canvasKey.currentState?.addNodeAtViewportCenter(id),
-                onCreatePackage: (value) => _canvasKey.currentState
-                    ?.createPackageAtViewportCenter(value),
-                onDropNode: (id, position) =>
-                    _canvasKey.currentState?.addNodeFromGlobal(id, position) ??
-                    false,
-                onDragUpdate: (id, category, position) => _canvasKey
-                    .currentState
-                    ?.updateExternalNodeDrag(id, category, position),
-                onDragCancel: () =>
-                    _canvasKey.currentState?.cancelExternalNodeDrag(),
+            if (SettingsStore.instance.nodeShelfEnabled)
+              Positioned(
+                top: SyphonDims.toolbarH,
+                left: 0,
+                right: 0,
+                child: NodeShelf(
+                  onCreateNode: (id) =>
+                      _canvasKey.currentState?.addNodeAtViewportCenter(id),
+                  onCreatePackage: (value) => _canvasKey.currentState
+                      ?.createPackageAtViewportCenter(value),
+                  onDropNode: (id, position) =>
+                      _canvasKey.currentState?.addNodeFromGlobal(
+                        id,
+                        position,
+                      ) ??
+                      false,
+                  onDragUpdate: (id, category, position) => _canvasKey
+                      .currentState
+                      ?.updateExternalNodeDrag(id, category, position),
+                  onDragCancel: () =>
+                      _canvasKey.currentState?.cancelExternalNodeDrag(),
+                ),
               ),
-            ),
             // 顶栏层:悬浮于所有图层之上
             Toolbar(
               boxSelect: _boxSelect,

@@ -135,6 +135,13 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 150));
       final middleWidth = tester.getSize(sizeTransition).width;
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('node-library-overlay')),
+          matching: find.byType(ImageFiltered),
+        ),
+        findsNothing,
+      );
       await tester.pumpAndSettle();
       final finalWidth = tester.getSize(sizeTransition).width;
       expect(middleWidth, greaterThan(initialWidth));

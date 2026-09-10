@@ -261,12 +261,13 @@ class _NodeShelfState extends State<NodeShelf> {
                     alignment: Alignment.topLeft,
                     children: [...previous, ?current],
                   ),
-                  transitionBuilder: (child, animation) => BlurScaleTransition(
-                    animation: animation,
-                    alignment: Alignment.topLeft,
-                    beginScale: .985,
-                    maxBlur: 5,
-                    child: child,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(
+                      scale: Tween(begin: .992, end: 1.0).animate(animation),
+                      alignment: Alignment.topLeft,
+                      child: child,
+                    ),
                   ),
                   child: KeyedSubtree(
                     key: ValueKey(
@@ -536,93 +537,100 @@ class _PackageLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => BlurScaleTransition(
-          animation: AlwaysStoppedAnimation(value),
-          alignment: Alignment.topLeft,
-          child: child!,
-        ),
-        child: Container(
-          key: const Key('package-library-overlay'),
-          width: width,
-          height: 250,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: t.bgFloat.withValues(alpha: .985),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: t.strokeStrong),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: t.isDark ? .34 : .14),
-                blurRadius: 36,
-                offset: const Offset(0, 14),
-              ),
-            ],
+        builder: (context, value, child) => Opacity(
+          opacity: value,
+          child: Transform.scale(
+            scale: .985 + .015 * value,
+            alignment: Alignment.topLeft,
+            child: child,
           ),
-          child: items.isEmpty
-              ? Center(
-                  child: Text(
-                    '尚未保存 Package',
-                    style: TextStyle(color: t.textFaint),
-                  ),
-                )
-              : ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: items.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 7),
-                  itemBuilder: (context, index) {
-                    final item = items[index];
-                    final name = '${item['name'] ?? 'Package'}';
-                    return InkWell(
-                      key: ValueKey('package-spine-${item['id']}'),
-                      onTap: () => onPick(item),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        width: 48,
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 10,
-                          horizontal: 7,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF8A9099).withValues(alpha: .14),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
+        ),
+        child: RepaintBoundary(
+          child: Container(
+            key: const Key('package-library-overlay'),
+            width: width,
+            height: 250,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: t.bgFloat.withValues(alpha: .985),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: t.strokeStrong),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: t.isDark ? .34 : .14),
+                  blurRadius: 36,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: items.isEmpty
+                ? Center(
+                    child: Text(
+                      '尚未保存 Package',
+                      style: TextStyle(color: t.textFaint),
+                    ),
+                  )
+                : ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: items.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 7),
+                    itemBuilder: (context, index) {
+                      final item = items[index];
+                      final name = '${item['name'] ?? 'Package'}';
+                      return InkWell(
+                        key: ValueKey('package-spine-${item['id']}'),
+                        onTap: () => onPick(item),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          width: 48,
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 10,
+                            horizontal: 7,
+                          ),
+                          decoration: BoxDecoration(
                             color: const Color(
                               0xFF8A9099,
-                            ).withValues(alpha: .42),
+                            ).withValues(alpha: .14),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: const Color(
+                                0xFF8A9099,
+                              ).withValues(alpha: .42),
+                            ),
+                          ),
+                          child: Column(
+                            children: [
+                              const Icon(
+                                Icons.inventory_2_outlined,
+                                size: 16,
+                                color: Color(0xFF8A9099),
+                              ),
+                              const SizedBox(height: 8),
+                              Expanded(
+                                child: _VerticalSpineLabel(name, color: t.text),
+                              ),
+                              IconButton(
+                                key: ValueKey('delete-package-${item['id']}'),
+                                tooltip: '从 Package 库删除',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 24,
+                                  height: 24,
+                                ),
+                                icon: Icon(
+                                  Icons.delete_outline,
+                                  size: 15,
+                                  color: t.textFaint,
+                                ),
+                                onPressed: () => onDelete('${item['id']}'),
+                              ),
+                            ],
                           ),
                         ),
-                        child: Column(
-                          children: [
-                            const Icon(
-                              Icons.inventory_2_outlined,
-                              size: 16,
-                              color: Color(0xFF8A9099),
-                            ),
-                            const SizedBox(height: 8),
-                            Expanded(
-                              child: _VerticalSpineLabel(name, color: t.text),
-                            ),
-                            IconButton(
-                              key: ValueKey('delete-package-${item['id']}'),
-                              tooltip: '从 Package 库删除',
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints.tightFor(
-                                width: 24,
-                                height: 24,
-                              ),
-                              icon: Icon(
-                                Icons.delete_outline,
-                                size: 15,
-                                color: t.textFaint,
-                              ),
-                              onPressed: () => onDelete('${item['id']}'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
+                      );
+                    },
+                  ),
+          ),
         ),
       ),
     );
@@ -668,62 +676,67 @@ class _NodeLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => BlurScaleTransition(
-          animation: AlwaysStoppedAnimation(value),
-          alignment: Alignment.topLeft,
-          child: child!,
-        ),
-        child: Container(
-          key: const Key('node-library-overlay'),
-          width: width,
-          height: 250,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: t.bgFloat.withValues(alpha: 0.985),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: t.strokeStrong),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: t.isDark ? 0.34 : 0.14),
-                blurRadius: 36,
-                offset: const Offset(0, 14),
-              ),
-            ],
+        builder: (context, value, child) => Opacity(
+          opacity: value,
+          child: Transform.scale(
+            scale: .985 + .015 * value,
+            alignment: Alignment.topLeft,
+            child: child,
           ),
-          child: Column(
-            children: [
-              Expanded(
-                child: items.isEmpty
-                    ? Center(
-                        child: Text(
-                          L.t('无匹配节点'),
-                          style: TextStyle(color: t.textFaint),
-                        ),
-                      )
-                    : ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
-                        itemCount: items.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 7),
-                        itemBuilder: (context, index) => _NodeTile(
-                          cfg: items[index],
-                          favorite: settings.favoriteNodeIds.contains(
-                            items[index].id,
+        ),
+        child: RepaintBoundary(
+          child: Container(
+            key: const Key('node-library-overlay'),
+            width: width,
+            height: 250,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: t.bgFloat.withValues(alpha: 0.985),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: t.strokeStrong),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: t.isDark ? 0.34 : 0.14),
+                  blurRadius: 36,
+                  offset: const Offset(0, 14),
+                ),
+              ],
+            ),
+            child: Column(
+              children: [
+                Expanded(
+                  child: items.isEmpty
+                      ? Center(
+                          child: Text(
+                            L.t('无匹配节点'),
+                            style: TextStyle(color: t.textFaint),
                           ),
-                          onFavorite: () {
-                            settings.toggleFavoriteNode(items[index].id);
-                            onLibraryChanged();
-                          },
-                          onPick: () => onPick(items[index].id),
-                          onDragStarted: onDragStarted,
-                          onDragUpdate: (position) =>
-                              onDragUpdate(items[index], position),
-                          onDragEnd: () => onDragEnd(items[index]),
-                          onDragCancel: onDragCancel,
+                        )
+                      : ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
+                          itemCount: items.length,
+                          separatorBuilder: (_, _) => const SizedBox(width: 7),
+                          itemBuilder: (context, index) => _NodeTile(
+                            cfg: items[index],
+                            favorite: settings.favoriteNodeIds.contains(
+                              items[index].id,
+                            ),
+                            onFavorite: () {
+                              settings.toggleFavoriteNode(items[index].id);
+                              onLibraryChanged();
+                            },
+                            onPick: () => onPick(items[index].id),
+                            onDragStarted: onDragStarted,
+                            onDragUpdate: (position) =>
+                                onDragUpdate(items[index], position),
+                            onDragEnd: () => onDragEnd(items[index]),
+                            onDragCancel: onDragCancel,
+                          ),
                         ),
-                      ),
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
       ),

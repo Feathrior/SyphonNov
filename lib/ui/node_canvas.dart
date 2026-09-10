@@ -25,6 +25,7 @@ import 'mini_map.dart';
 import 'motion.dart';
 import 'node_card.dart';
 import 'node_context_menus.dart';
+import 'radial_node_menu.dart';
 import 'theme.dart';
 
 // ==================== 背景网格 ====================
@@ -79,6 +80,46 @@ class _BgPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BgPainter old) =>
       old.bg != bg || old.dot != dot || old.pan != pan || old.zoom != zoom;
+}
+
+class _PackageRegionPainter extends CustomPainter {
+  final Color color;
+  final double zoom;
+
+  const _PackageRegionPainter({required this.color, required this.zoom});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final radius = Radius.circular(10 / zoom);
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(rect, radius);
+    canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: .105));
+    final path = Path()..addRRect(rrect);
+    final paint = Paint()
+      ..color = color.withValues(alpha: .78)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.35 / zoom;
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      final dash = 7 / zoom;
+      final gap = 5 / zoom;
+      while (distance < metric.length) {
+        canvas.drawPath(
+          metric.extractPath(
+            distance,
+            math.min(distance + dash, metric.length),
+          ),
+          paint,
+        );
+        distance += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PackageRegionPainter oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.zoom != zoom;
 }
 
 // ==================== 连线绘制 ====================
@@ -430,14 +471,15 @@ class _EdgesPainter extends CustomPainter {
     final radius = 10.0 / zoom;
     final strokeWidth = 1.2 / zoom;
     for (final g in groups) {
-      if (g.isPackage && g.collapsed) continue;
+      // Package 使用独立的可动画区域层；普通分组仍由本画笔处理。
+      if (g.isPackage) continue;
       final groupAccent = g.isPackage ? const Color(0xFF8A9099) : accent;
       final stroke = Paint()
         ..color = groupAccent.withValues(alpha: 0.6)
         ..style = PaintingStyle.stroke
         ..strokeWidth = strokeWidth;
       final fill = Paint()
-        ..color = groupAccent.withValues(alpha: g.isPackage ? .035 : .05);
+        ..color = groupAccent.withValues(alpha: g.isPackage ? .085 : .05);
       final labelBg = Color.lerp(
         groupAccent,
         Colors.black,
@@ -510,7 +552,9 @@ class _EdgesPainter extends CustomPainter {
       final lblHeight = lblH / zoom;
       final lblWidth = tp.width + 2 * lblPad / zoom;
       final lblL = rect.left + lblMargin / zoom;
-      final lblT = rect.top - lblTopOverlap / zoom;
+      final lblT = g.isPackage
+          ? rect.top + 5 / zoom
+          : rect.top - lblTopOverlap / zoom;
       final lblR = lblL + lblWidth;
 
       // 3) 用 fill 色在标签位置覆盖顶边的 stroke,制造"断开"效果
@@ -522,7 +566,7 @@ class _EdgesPainter extends CustomPainter {
         lblR + 0.5 / zoom,
         rect.top + strokeWidth / 2 + 0.2 / zoom,
       );
-      canvas.drawRect(cover, coverPaint);
+      if (!g.isPackage) canvas.drawRect(cover, coverPaint);
 
       // 4) 画标签:深色小矩形 + 白字
       final lblRect = RRect.fromRectAndRadius(
@@ -855,6 +899,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   _Conn? _pendingConn;
   Set<String>? _nodeMenuFor; // 多选右键菜单对应的节点集(与 _menuPos 配合)
   String? _groupMenuFor; // 分组右键菜单对应的分组 id(与 _menuPos 配合)
+  Timer? _radialHoldTimer;
+  Offset? _rightPressScreen;
+  Offset _radialPointer = Offset.zero;
+  bool _radialVisible = false;
+  int? _radialSection;
+  int? _radialDetail;
+  List<RadialNodeItem> _radialItems = const [];
+  bool _radialArmed = false;
 
   // 分组标签双击重命名检测(双击 = 两次快速按下标签)
   DateTime? _lastGroupLabelDownAt;
@@ -1161,8 +1213,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   /// 分组包围盒:成员矩形 + 组内连线断点 + 14px/zoom 内边距(世界坐标;
   /// 与 _EdgesPainter._paintGroupFrames 一致)
-  Rect? _groupRect(NodeGroup g) {
-    final proxy = packageProxyRect(g, store.nodes, store.edges);
+  Rect? _groupRect(NodeGroup g, {bool expandedGeometry = false}) {
+    final proxy = expandedGeometry
+        ? null
+        : packageProxyRect(g, store.nodes, store.edges);
     if (proxy != null) return proxy;
     Rect? box;
     for (final id in g.nodeIds) {
@@ -1901,9 +1955,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         _bump();
         return;
       }
-      _menuPos = e.localPosition;
-      _pendingConn = null;
-      _bump();
+      final settings = SettingsStore.instance;
+      if (settings.radialNodeMenuEnabled) {
+        _beginRadialGesture(e.localPosition);
+      } else if (settings.contextNodeMenuEnabled) {
+        _menuPos = e.localPosition;
+        _pendingConn = null;
+        _bump();
+      }
       return;
     }
     // 主键命中端口 handle:开始连线拖拽(画布层命中,见 _handleAt 注释)
@@ -2013,6 +2072,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   void _onBackgroundMove(PointerMoveEvent e) {
     if (_resizingViewerId != null) return;
+    if (_rightPressScreen != null) {
+      _updateRadialGesture(e.localPosition);
+      return;
+    }
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 预览窗拖拽进行中:画布层忽略(拖出面板后 up 位置在面板外,仍需此标志守卫)
@@ -2123,6 +2186,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   void _onBackgroundUp(PointerUpEvent e) {
     if (_resizingViewerId != null) return;
+    if (_rightPressScreen != null) {
+      _finishRadialGesture(e.localPosition);
+      _downPosScreen = null;
+      return;
+    }
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 预览窗内的松开/预览窗拖拽结束(可能拖出面板后松开):画布层忽略,
@@ -2310,6 +2378,16 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // 菜单打开期间:pan 手势与 Listener 指针事件是两条独立路径,
     // 菜单弹出瞬间可能仍有残余 pan 手势在竞技场中,此处一并忽略(防反复重建)
     if (_menuPos != null) return;
+    final flow = _toFlow(d.localPosition);
+    for (final group in store.groups) {
+      if (!group.isPackage || !group.collapsed) continue;
+      final proxy = packageProxyRect(group, store.nodes, store.edges);
+      if (proxy != null && proxy.contains(flow)) {
+        _startPackageDrag(group);
+        _panFromNode = true;
+        return;
+      }
+    }
     // 记录起点是否落在节点内部:节点内部拖动不移动背景
     // (端口连线手势在节点卡内部,此处只处理冒泡到背景的 pan)
     _panFromNode = _pointInAnyNode(_toFlow(d.localPosition));
@@ -2335,6 +2413,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   void _onBackgroundPanUpdate(DragUpdateDetails d) {
     if (_menuPos != null) return;
+    final packageId = _draggingPackageId;
+    if (packageId != null) {
+      final group = store.groups
+          .where((item) => item.id == packageId)
+          .firstOrNull;
+      if (group != null) _updatePackageDrag(group, d.delta);
+      return;
+    }
     if (_boxDragging) {
       _boxEnd = d.localPosition;
       _bump();
@@ -2349,6 +2435,16 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   void _onBackgroundPanEnd(DragEndDetails d) {
     if (_menuPos != null) return;
+    final packageId = _draggingPackageId;
+    if (packageId != null) {
+      final group = store.groups
+          .where((item) => item.id == packageId)
+          .firstOrNull;
+      if (group != null) _endPackageDrag(group);
+      _panFromNode = false;
+      _bump();
+      return;
+    }
     _panFromNode = false;
     if (_boxDragging) {
       _finishBoxSelect(_boxEnd ?? _boxStart ?? Offset.zero);
@@ -2357,6 +2453,102 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _boxEnd = null;
     }
     _bump();
+  }
+
+  void _beginRadialGesture(Offset localPosition) {
+    _rightPressScreen = localPosition;
+    _radialPointer = localPosition;
+    _radialVisible = false;
+    _radialSection = null;
+    _radialDetail = null;
+    _radialItems = const [];
+    _radialArmed = false;
+    _radialHoldTimer?.cancel();
+    _radialHoldTimer = Timer(const Duration(milliseconds: 170), () {
+      if (!mounted || _rightPressScreen == null) return;
+      _radialVisible = true;
+      _updateRadialGesture(_radialPointer);
+    });
+  }
+
+  void _updateRadialGesture(Offset localPosition) {
+    final center = _rightPressScreen;
+    if (center == null) return;
+    _radialPointer = localPosition;
+    final delta = localPosition - center;
+    if (!_radialVisible && delta.distance >= 12) {
+      _radialHoldTimer?.cancel();
+      _radialVisible = true;
+    }
+    if (!_radialVisible) return;
+    final section = radialSectionIndex(delta);
+    final items = section == null
+        ? const <RadialNodeItem>[]
+        : radialItemsFor(
+            radialNodeSections[section],
+            SettingsStore.instance.packageLibrary,
+          );
+    final detail = section == null
+        ? null
+        : radialDetailIndex(delta, section, items.length);
+    _radialSection = section;
+    _radialItems = items;
+    _radialDetail = detail;
+    _radialArmed =
+        delta.distance >= radialCommitRadius &&
+        detail != null &&
+        detail < items.length;
+    _bump();
+  }
+
+  void _finishRadialGesture(Offset localPosition) {
+    final center = _rightPressScreen;
+    if (center == null) return;
+    _radialHoldTimer?.cancel();
+    final wasVisible = _radialVisible;
+    if (wasVisible) _updateRadialGesture(localPosition);
+    final item = _radialArmed && _radialDetail != null
+        ? _radialItems[_radialDetail!]
+        : null;
+    _rightPressScreen = null;
+    _radialVisible = false;
+    _radialSection = null;
+    _radialDetail = null;
+    _radialItems = const [];
+    _radialArmed = false;
+    if (item != null) {
+      if (item.isPackage) {
+        final value = SettingsStore.instance.packageLibrary
+            .where((entry) => '${entry['id']}' == item.id)
+            .firstOrNull;
+        if (value != null) {
+          store.instantiatePackage(
+            value,
+            _toFlow(localPosition) - const Offset(130, 55),
+          );
+        }
+      } else {
+        final box = context.findRenderObject();
+        if (box is RenderBox && box.hasSize) {
+          addNodeFromGlobal(item.id, box.localToGlobal(localPosition));
+          SettingsStore.instance.recordNodeUse(item.id);
+        }
+      }
+    } else if (!wasVisible && SettingsStore.instance.contextNodeMenuEnabled) {
+      _menuPos = center;
+      _pendingConn = null;
+    }
+    _bump();
+  }
+
+  void _cancelRadialGesture() {
+    _radialHoldTimer?.cancel();
+    _rightPressScreen = null;
+    _radialVisible = false;
+    _radialSection = null;
+    _radialDetail = null;
+    _radialItems = const [];
+    _radialArmed = false;
   }
 
   void _closeMenu() {
@@ -2690,6 +2882,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _radialHoldTimer?.cancel();
     _cutTicker.dispose();
     _conversionLayoutController.dispose();
     _zoomNotifier.dispose();
@@ -2821,6 +3014,27 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               reverseDuration: MotionTokens.quick(context),
               switchInCurve: MotionTokens.emphasized,
               switchOutCurve: MotionTokens.exit,
+              child: !_radialVisible || _rightPressScreen == null
+                  ? const SizedBox.shrink(
+                      key: ValueKey('radial-node-menu-empty'),
+                    )
+                  : RadialNodeMenu(
+                      key: const ValueKey('radial-node-menu-visible'),
+                      center: _rightPressScreen!,
+                      pointer: _radialPointer,
+                      sectionIndex: _radialSection,
+                      detailIndex: _radialDetail,
+                      detailItems: _radialItems,
+                      armed: _radialArmed,
+                    ),
+            ),
+          ),
+          Positioned.fill(
+            child: AnimatedSwitcher(
+              duration: MotionTokens.standard(context),
+              reverseDuration: MotionTokens.quick(context),
+              switchInCurve: MotionTokens.emphasized,
+              switchOutCurve: MotionTokens.exit,
               transitionBuilder: (child, animation) =>
                   PopupMotionScope(animation: animation, child: child),
               child: _menuPos == null
@@ -2943,14 +3157,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           final nodes = store.nodes;
           final edges = store.edges;
           final selected = store.selectedId;
-          final visibleNodes = nodes
-              .where((node) => !_nodeHiddenByCollapsedPackage(node.id))
-              .toList();
           final paintNodes = selected == null
-              ? visibleNodes
+              ? nodes
               : [
-                  ...visibleNodes.where((node) => node.id != selected),
-                  ...visibleNodes.where((node) => node.id == selected),
+                  ...nodes.where((node) => node.id != selected),
+                  ...nodes.where((node) => node.id == selected),
                 ];
           return Transform(
             transform: Matrix4.identity()
@@ -2961,11 +3172,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               clipBehavior: Clip.none,
               children: [
                 _buildBgLayer(t),
+                for (final group in store.groups)
+                  if (group.isPackage) _buildPackageBackgroundLayer(group, t),
                 _buildEdgesLayer(t, nodes, edges),
                 for (final group in store.groups)
-                  if (group.isPackage && group.collapsed)
-                    _buildPackageLayer(group, t),
+                  if (group.isPackage) _buildPackageLayer(group, t),
                 for (final n in paintNodes) _buildNodeLayer(n),
+                for (final group in store.groups)
+                  if (group.isPackage) _buildExpandedPackageToggle(group, t),
               ],
             ),
           );
@@ -3086,129 +3300,361 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             .where((node) => node.id == n.id)
             .firstOrNull;
         if (current == null) return const SizedBox.shrink();
-        return Transform.translate(offset: current.position, child: child);
+        final package = store.groups
+            .where(
+              (group) => group.isPackage && group.nodeIds.contains(current.id),
+            )
+            .firstOrNull;
+        if (package == null) {
+          return Transform.translate(offset: current.position, child: child);
+        }
+        final hidden = package.collapsed;
+        return TweenAnimationBuilder<double>(
+          key: ValueKey('package-member-motion-${current.id}'),
+          tween: Tween(end: hidden ? 0 : 1),
+          duration: MotionTokens.spatial(context),
+          curve: MotionTokens.emphasized,
+          builder: (context, value, positionedChild) => IgnorePointer(
+            ignoring: hidden,
+            child: Opacity(
+              opacity: value,
+              child: Transform.scale(
+                scale: .94 + .06 * value,
+                alignment: Alignment.topLeft,
+                child: positionedChild,
+              ),
+            ),
+          ),
+          child: Transform.translate(offset: current.position, child: child),
+        );
+      },
+    );
+  }
+
+  Widget _buildPackageBackgroundLayer(NodeGroup group, SyphonTheme t) {
+    return AnimatedBuilder(
+      key: ValueKey('package-region-layout-${group.id}'),
+      animation: store.layoutRevision,
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final rect = _groupRect(current, expandedGeometry: true);
+        if (rect == null) return const SizedBox.shrink();
+        return Positioned(
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              key: ValueKey('package-region-${current.id}'),
+              opacity: current.collapsed ? 0 : 1,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: AnimatedScale(
+                scale: current.collapsed ? .97 : 1,
+                duration: MotionTokens.spatial(context),
+                curve: MotionTokens.emphasized,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _PackageRegionPainter(
+                          color: const Color(0xFF8A9099),
+                          zoom: _zoom,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 7 / _zoom,
+                      top: 5 / _zoom,
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 6 / _zoom,
+                          vertical: 2 / _zoom,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF777D86).withValues(alpha: .88),
+                          borderRadius: BorderRadius.circular(4 / _zoom),
+                        ),
+                        child: Text(
+                          current.name,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11 / _zoom,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildExpandedPackageToggle(NodeGroup group, SyphonTheme t) {
+    return AnimatedBuilder(
+      key: ValueKey('package-expanded-control-layout-${group.id}'),
+      animation: store.layoutRevision,
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final rect = _groupRect(current, expandedGeometry: true);
+        if (rect == null) return const SizedBox.shrink();
+        final size = 24 / _zoom;
+        return Positioned(
+          left: rect.right - size - 6 / _zoom,
+          top: rect.top + 5 / _zoom,
+          width: size,
+          height: size,
+          child: IgnorePointer(
+            ignoring: current.collapsed,
+            child: AnimatedOpacity(
+              opacity: current.collapsed ? 0 : 1,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: Tooltip(
+                message: '收起 Package',
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    key: ValueKey('package-toggle-expanded-${current.id}'),
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => store.setPackageCollapsed(current.id, true),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8A9099).withValues(alpha: .2),
+                        borderRadius: BorderRadius.circular(6 / _zoom),
+                        border: Border.all(
+                          color: const Color(0xFF8A9099).withValues(alpha: .5),
+                          width: 1 / _zoom,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.unfold_less_rounded,
+                        size: 15 / _zoom,
+                        color: t.textDim,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
       },
     );
   }
 
   Widget _buildPackageLayer(NodeGroup group, SyphonTheme t) {
-    final rect = packageProxyRect(group, store.nodes, store.edges);
-    if (rect == null) return const SizedBox.shrink();
-    final selected = group.nodeIds.every(store.multiSelected.contains);
-    final inputs = packageInputPorts(group, store.nodes, store.edges);
-    final outputs = packageOutputPorts(group, store.nodes, store.edges);
-    return Positioned(
-      key: ValueKey('package-node-${group.id}'),
-      left: rect.left,
-      top: rect.top,
-      width: rect.width,
-      height: rect.height,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () {
-          _focusNode.requestFocus();
-          store.setMultiSelected(group.nodeIds.toSet());
-        },
-        onDoubleTap: () => store.setPackageCollapsed(group.id, false),
-        onPanStart: (_) => _startPackageDrag(group),
-        onPanUpdate: (details) => _updatePackageDrag(group, details.delta),
-        onPanEnd: (_) => _endPackageDrag(group),
-        onPanCancel: () => _endPackageDrag(group),
-        child: AnimatedContainer(
-          duration: MotionTokens.standard(context),
-          decoration: BoxDecoration(
-            color: const Color(0xFF8A9099).withValues(alpha: .12),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: selected ? t.accent : const Color(0xFF8A9099),
-              width: selected ? 2 : 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: .12),
-                blurRadius: 18,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Positioned(
-                left: 10,
-                top: 10,
-                child: Text(
-                  inputs.isEmpty ? '无前置输入' : '前置输入',
-                  key: ValueKey('package-input-label-${group.id}'),
-                  style: TextStyle(
-                    color: t.textFaint,
-                    fontSize: 8,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Positioned(
-                right: 10,
-                top: 10,
-                child: Text(
-                  outputs.isEmpty ? '无后续输出' : '后续输出',
-                  key: ValueKey('package-output-label-${group.id}'),
-                  style: TextStyle(
-                    color: t.textFaint,
-                    fontSize: 8,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Positioned.fill(
-                left: 78,
-                right: 78,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.inventory_2_outlined,
-                      size: 24,
-                      color: Color(0xFF8A9099),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      group.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: t.text,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
+    return AnimatedBuilder(
+      key: ValueKey('package-layout-${group.id}'),
+      animation: store.layoutRevision,
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final compact = current.copyWith(collapsed: true);
+        final rect = packageProxyRect(compact, store.nodes, store.edges);
+        if (rect == null) return const SizedBox.shrink();
+        final selected = current.nodeIds.every(store.multiSelected.contains);
+        final inputs = packageInputPorts(current, store.nodes, store.edges);
+        final outputs = packageOutputPorts(current, store.nodes, store.edges);
+        return Positioned(
+          key: ValueKey('package-node-${group.id}'),
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: IgnorePointer(
+            ignoring: !current.collapsed,
+            child: AnimatedOpacity(
+              opacity: current.collapsed ? 1 : 0,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: AnimatedScale(
+                scale: current.collapsed ? 1 : .92,
+                duration: MotionTokens.spatial(context),
+                curve: MotionTokens.emphasized,
+                alignment: Alignment.topLeft,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.move,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      _focusNode.requestFocus();
+                      store.setMultiSelected(current.nodeIds.toSet());
+                    },
+                    child: AnimatedContainer(
+                      duration: MotionTokens.standard(context),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8A9099).withValues(alpha: .12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: selected ? t.accent : const Color(0xFF8A9099),
+                          width: selected ? 2 : 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: .12),
+                            blurRadius: 18,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Positioned(
+                            left: 10,
+                            top: 10,
+                            child: Text(
+                              inputs.isEmpty ? '无前置输入' : '前置输入',
+                              key: ValueKey('package-input-label-${group.id}'),
+                              style: TextStyle(
+                                color: t.textFaint,
+                                fontSize: 8,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            right: 10,
+                            top: 10,
+                            child: Text(
+                              outputs.isEmpty ? '无后续输出' : '后续输出',
+                              key: ValueKey('package-output-label-${group.id}'),
+                              style: TextStyle(
+                                color: t.textFaint,
+                                fontSize: 8,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Positioned.fill(
+                            left: 78,
+                            right: 78,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.inventory_2_outlined,
+                                  size: 24,
+                                  color: Color(0xFF8A9099),
+                                ),
+                                const SizedBox(height: 5),
+                                Text(
+                                  current.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: t.text,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '${current.nodeIds.length} 节点',
+                                  style: TextStyle(
+                                    color: t.textFaint,
+                                    fontSize: 9,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          for (var index = 0; index < inputs.length; index++)
+                            _packagePortVisual(
+                              inputs[index],
+                              index,
+                              isSource: false,
+                              theme: t,
+                            ),
+                          for (var index = 0; index < outputs.length; index++)
+                            _packagePortVisual(
+                              outputs[index],
+                              index,
+                              isSource: true,
+                              theme: t,
+                            ),
+                          Positioned(
+                            right: 8,
+                            bottom: 8,
+                            child: Tooltip(
+                              message: '展开 Package',
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: GestureDetector(
+                                  key: ValueKey('package-toggle-${current.id}'),
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => store.setPackageCollapsed(
+                                    current.id,
+                                    false,
+                                  ),
+                                  child: Container(
+                                    width: 28,
+                                    height: 24,
+                                    decoration: BoxDecoration(
+                                      color: const Color(
+                                        0xFF8A9099,
+                                      ).withValues(alpha: .16),
+                                      borderRadius: BorderRadius.circular(7),
+                                    ),
+                                    child: const Icon(
+                                      Icons.unfold_more_rounded,
+                                      size: 16,
+                                      color: Color(0xFF737983),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            left: 92,
+                            right: 92,
+                            top: 7,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.drag_indicator_rounded,
+                                  size: 12,
+                                  color: t.textFaint,
+                                ),
+                                const SizedBox(width: 2),
+                                Text(
+                                  '拖动区域',
+                                  style: TextStyle(
+                                    color: t.textFaint,
+                                    fontSize: 8,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '${group.nodeIds.length} 节点',
-                      style: TextStyle(color: t.textFaint, fontSize: 9),
-                    ),
-                  ],
+                  ),
                 ),
               ),
-              for (var index = 0; index < inputs.length; index++)
-                _packagePortVisual(
-                  inputs[index],
-                  index,
-                  isSource: false,
-                  theme: t,
-                ),
-              for (var index = 0; index < outputs.length; index++)
-                _packagePortVisual(
-                  outputs[index],
-                  index,
-                  isSource: true,
-                  theme: t,
-                ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -3363,42 +3809,35 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         }
       }
       if (g != null) {
-        menu = NodeMenu(
-          position: _menuPos!,
-          onPick: _pickNode,
-          onClose: _closeMenu,
-          bottomSlot: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (g.isPackage)
+        if (g.isPackage) {
+          menu = PackageContextMenu(
+            position: _menuPos!,
+            onSave: () => _savePackageToLibrary(g!.id),
+            onDissolve: _ungroupFromGroupMenu,
+          );
+        } else {
+          menu = NodeMenu(
+            position: _menuPos!,
+            onPick: _pickNode,
+            onClose: _closeMenu,
+            bottomSlot: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 CtxMenuItem(
-                  icon: g.collapsed ? Icons.unfold_more : Icons.unfold_less,
-                  label: g.collapsed ? '展开 Package' : '折叠 Package',
-                  onTap: () {
-                    store.setPackageCollapsed(g!.id, !g.collapsed);
-                    _closeMenu();
-                  },
+                  icon: Icons.group_remove_outlined,
+                  label: L.t('取消分组'),
+                  onTap: _ungroupFromGroupMenu,
                 ),
-              if (g.isPackage)
                 CtxMenuItem(
-                  icon: Icons.save_outlined,
-                  label: '保存到 Package 库',
-                  onTap: () => _savePackageToLibrary(g!.id),
+                  icon: Icons.copy_outlined,
+                  label: L.t('复制分组'),
+                  onTap: _duplicateGroupFromMenu,
                 ),
-              CtxMenuItem(
-                icon: Icons.group_remove_outlined,
-                label: g.isPackage ? '解散 Package' : L.t('取消分组'),
-                onTap: _ungroupFromGroupMenu,
-              ),
-              CtxMenuItem(
-                icon: Icons.copy_outlined,
-                label: L.t('复制分组'),
-                onTap: _duplicateGroupFromMenu,
-              ),
-            ],
-          ),
-        );
+              ],
+            ),
+          );
+        }
       }
     } else if (nodeMenu != null) {
       menu = NodeContextMenu(
@@ -3469,7 +3908,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.escape) {
-        if (_menuPos != null) {
+        if (_rightPressScreen != null || _radialVisible) {
+          _cancelRadialGesture();
+          _bump();
+        } else if (_menuPos != null) {
           _closeMenu();
         } else {
           store.selectNode(null);
@@ -3495,6 +3937,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   /// 指针取消(如窗口失焦):清理连线拖拽状态,避免残留预览线
   void _onPointerCancel(PointerCancelEvent e) {
+    if (_rightPressScreen != null || _radialVisible) {
+      _cancelRadialGesture();
+      _bump();
+    }
     if (_connecting != null || _connectDownScreen != null) {
       _connecting = null;
       _connectDownScreen = null;
@@ -3518,6 +3964,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   /// pan 手势取消:清理框选状态
   void _onBackgroundPanCancel() {
+    final packageId = _draggingPackageId;
+    if (packageId != null) {
+      final group = store.groups
+          .where((item) => item.id == packageId)
+          .firstOrNull;
+      if (group != null) _endPackageDrag(group);
+    }
+    _panFromNode = false;
     _boxDragging = false;
     _boxStart = null;
     _boxEnd = null;

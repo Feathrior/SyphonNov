@@ -174,6 +174,58 @@ class GroupContextMenu extends StatelessWidget {
   }
 }
 
+class PackageContextMenu extends StatelessWidget {
+  final Offset position;
+  final VoidCallback onSave;
+  final VoidCallback onDissolve;
+
+  const PackageContextMenu({
+    super.key,
+    required this.position,
+    required this.onSave,
+    required this.onDissolve,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    return ViewportAwareMenu(
+      mouse: position,
+      width: 174,
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: t.bgSurface,
+          border: Border.all(color: t.strokeStrong),
+          borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: .26),
+              blurRadius: 22,
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            CtxMenuItem(
+              icon: Icons.save_outlined,
+              label: '保存到 Package 库',
+              onTap: onSave,
+            ),
+            CtxMenuItem(
+              icon: Icons.inventory_2_outlined,
+              label: '解散 Package',
+              onTap: onDissolve,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// 右键菜单单项:图标 + 名称,悬停高亮,支持禁用态与危险色
 class CtxMenuItem extends StatefulWidget {
   final IconData icon;
