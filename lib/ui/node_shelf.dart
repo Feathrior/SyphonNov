@@ -421,7 +421,7 @@ class _NodeLibrary extends StatelessWidget {
         child: Container(
           key: const Key('node-library-overlay'),
           width: width,
-          height: 286,
+          height: 250,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: t.bgFloat.withValues(alpha: 0.985),
@@ -445,16 +445,11 @@ class _NodeLibrary extends StatelessWidget {
                           style: TextStyle(color: t.textFaint),
                         ),
                       )
-                    : GridView.builder(
-                        padding: const EdgeInsets.only(bottom: 2),
-                        gridDelegate:
-                            const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 220,
-                              mainAxisExtent: 58,
-                              crossAxisSpacing: 7,
-                              mainAxisSpacing: 7,
-                            ),
+                    : ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
                         itemCount: items.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 7),
                         itemBuilder: (context, index) => _NodeTile(
                           cfg: items[index],
                           favorite: settings.favoriteNodeIds.contains(
@@ -514,69 +509,64 @@ class _NodeTileState extends State<_NodeTile> {
     final info = kCategoryInfo[widget.cfg.category]!;
     final color = parseColor(info.color);
     final tile = AnimatedContainer(
+      key: ValueKey('node-spine-${widget.cfg.id}'),
       duration: MotionTokens.standard(context),
       curve: MotionTokens.enter,
-      transform: Matrix4.translationValues(0, _hover ? -1.5 : 0, 0),
-      padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+      width: _hover ? 64 : 48,
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 10),
       decoration: BoxDecoration(
-        color: _hover ? color.withValues(alpha: 0.11) : t.bgRaise,
-        borderRadius: BorderRadius.circular(12),
+        color: _hover ? color.withValues(alpha: 0.22) : t.bgRaise,
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(
           color: _hover ? color.withValues(alpha: 0.42) : t.stroke,
         ),
+        boxShadow: _hover
+            ? [
+                BoxShadow(
+                  color: color.withValues(alpha: .2),
+                  blurRadius: 12,
+                  offset: const Offset(0, 5),
+                ),
+              ]
+            : null,
       ),
-      child: Row(
+      child: Column(
         children: [
           Container(
-            width: 10,
-            height: 10,
+            width: 18,
+            height: 4,
             decoration: BoxDecoration(
               color: color,
-              shape: BoxShape.circle,
-              boxShadow: _hover
-                  ? [
-                      BoxShadow(
-                        color: color.withValues(alpha: .35),
-                        blurRadius: 8,
-                      ),
-                    ]
-                  : null,
+              borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(height: 10),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
+            child: RotatedBox(
+              quarterTurns: 3,
+              child: Center(
+                child: Text(
                   L.t(widget.cfg.label),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: t.text,
                   ),
                 ),
-                Text(
-                  widget.cfg.id,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 9, color: t.textFaint),
-                ),
-              ],
+              ),
             ),
           ),
-          IconButton(
-            tooltip: widget.favorite ? L.t('取消收藏') : L.t('收藏'),
-            icon: Icon(
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap: widget.onFavorite,
+            child: Icon(
               widget.favorite ? Icons.star_rounded : Icons.star_border_rounded,
-              size: 16,
+              size: 15,
               color: widget.favorite ? color : t.textFaint,
             ),
-            onPressed: widget.onFavorite,
-            splashRadius: 15,
           ),
         ],
       ),

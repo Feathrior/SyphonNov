@@ -27,7 +27,7 @@ void main() {
   });
 
   testWidgets(
-    'coordinate sections expand immediately without animated blank area',
+    'coordinate sections expand with a bounded disclosure animation',
     (tester) async {
       await pumpApp(tester);
       GraphStore.instance.addNode('axis_input', Offset.zero, triggerRun: false);
@@ -46,11 +46,12 @@ void main() {
       expect(find.text('X 方向网格线'), findsNothing);
 
       await tester.tap(find.text('坐标轴与网格'));
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 90));
 
       expect(find.text('X 方向网格线'), findsOneWidget);
       expect(find.byType(ExpansionTile), findsNothing);
       expect(tester.takeException(), isNull);
+      await tester.pumpAndSettle();
     },
   );
 

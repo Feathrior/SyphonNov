@@ -22,10 +22,16 @@ import 'viewer.dart';
 class NodeCardCallbacks {
   final void Function(String id) onSelect;
   final void Function(String id) onSecondaryTap;
+  final void Function(String id)? onResizeStart;
+  final void Function(String id, Offset delta)? onResizeUpdate;
+  final void Function(String id)? onResizeEnd;
 
   const NodeCardCallbacks({
     required this.onSelect,
     required this.onSecondaryTap,
+    this.onResizeStart,
+    this.onResizeUpdate,
+    this.onResizeEnd,
   });
 }
 
@@ -37,6 +43,13 @@ class NodeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final store = GraphStore.instance;
+    return ValueListenableBuilder<int>(
+      valueListenable: store.nodeGeometryRevision(nodeId),
+      builder: (context, _, _) => _buildCard(context, store),
+    );
+  }
+
+  Widget _buildCard(BuildContext context, GraphStore store) {
     final node = store.nodeOf(nodeId);
     if (node == null) return const SizedBox.shrink();
     final cfg = getConfig(node.configId);
@@ -74,76 +87,113 @@ class NodeCard extends StatelessWidget {
       behavior: HitTestBehavior.translucent,
       onTap: () => callbacks.onSelect(nodeId),
       onSecondaryTapUp: (_) => callbacks.onSecondaryTap(nodeId),
-      child: Container(
+      child: SizedBox(
         width: size.width,
         height: size.height,
-        decoration: _cardDecoration(t, selected, borderW, zoom),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: Stack(
           children: [
-            // 标题栏:分类色背景,图标/标题/折叠指示一律白字(React .nf-node-header)
-            // 节点拖动由画布层 Listener 统一管理,此处不挂手势(见 NodeCardCallbacks 注释)
-            _buildHeader(
-              cfg,
-              category,
-              node,
-              result,
-              t,
-              headerBg,
-              dark: dark,
-              zoom: zoom,
-            ),
-            // 主体(React .nf-node-body: padding 8px 12px 10px)
-            // 折叠/缩放切换时渐隐渐显;切换器子级强制 topLeft 对齐,
-            // 避免 AnimatedSwitcher 默认居中布局把端口挪到中间
-            Expanded(
-              child: Padding(
-                padding: _bodyPadding(node),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 160),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  layoutBuilder: (currentChild, previousChildren) => Stack(
-                    alignment: Alignment.topLeft,
-                    children: <Widget>[...previousChildren, ?currentChild],
-                  ),
-                  child: collapsed
-                      ? KeyedSubtree(
-                          key: const ValueKey('handles'),
-                          child: _handlesOnly(
-                            node,
-                            inSocks,
-                            outSocks,
-                            edges,
-                            t,
-                            zoom,
-                          ),
-                        )
-                      : KeyedSubtree(
-                          key: const ValueKey('body'),
-                          child: _buildBody(
-                            context,
-                            node,
-                            cfg,
-                            inSocks,
-                            outSocks,
-                            edges,
-                            size,
-                            zoom,
-                            t,
-                            dark,
-                            summary,
-                            outputCount,
-                            result,
-                            contentOpacity: zoomHidden ? 0 : 1,
-                          ),
+            Positioned.fill(
+              child: Container(
+                decoration: _cardDecoration(t, selected, borderW, zoom),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // 标题栏:分类色背景,图标/标题/折叠指示一律白字(React .nf-node-header)
+                    // 节点拖动由画布层 Listener 统一管理,此处不挂手势(见 NodeCardCallbacks 注释)
+                    _buildHeader(
+                      cfg,
+                      category,
+                      node,
+                      result,
+                      t,
+                      headerBg,
+                      dark: dark,
+                      zoom: zoom,
+                    ),
+                    // 主体(React .nf-node-body: padding 8px 12px 10px)
+                    // 折叠/缩放切换时渐隐渐显;切换器子级强制 topLeft 对齐,
+                    // 避免 AnimatedSwitcher 默认居中布局把端口挪到中间
+                    Expanded(
+                      child: Padding(
+                        padding: _bodyPadding(node),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 160),
+                          switchInCurve: Curves.easeOut,
+                          switchOutCurve: Curves.easeIn,
+                          layoutBuilder: (currentChild, previousChildren) =>
+                              Stack(
+                                alignment: Alignment.topLeft,
+                                children: <Widget>[
+                                  ...previousChildren,
+                                  ?currentChild,
+                                ],
+                              ),
+                          child: collapsed
+                              ? KeyedSubtree(
+                                  key: const ValueKey('handles'),
+                                  child: _handlesOnly(
+                                    node,
+                                    inSocks,
+                                    outSocks,
+                                    edges,
+                                    t,
+                                    zoom,
+                                  ),
+                                )
+                              : KeyedSubtree(
+                                  key: const ValueKey('body'),
+                                  child: _buildBody(
+                                    context,
+                                    node,
+                                    cfg,
+                                    inSocks,
+                                    outSocks,
+                                    edges,
+                                    size,
+                                    zoom,
+                                    t,
+                                    dark,
+                                    summary,
+                                    outputCount,
+                                    result,
+                                    contentOpacity: zoomHidden ? 0 : 1,
+                                  ),
+                                ),
                         ),
+                      ),
+                    ),
+                    // 底部错误条:danger 背景 10% 透明(React .nf-error)
+                    if (!node.collapsed && result?.error != null)
+                      _buildErrorBar(result!, t, zoom),
+                  ],
                 ),
               ),
             ),
-            // 底部错误条:danger 背景 10% 透明(React .nf-error)
-            if (!node.collapsed && result?.error != null)
-              _buildErrorBar(result!, t, zoom),
+            if (cfg.isViewer && !collapsed)
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeDownRight,
+                  child: Listener(
+                    key: ValueKey('viewer-resize-$nodeId'),
+                    behavior: HitTestBehavior.opaque,
+                    onPointerDown: (_) => callbacks.onResizeStart?.call(nodeId),
+                    onPointerMove: (event) =>
+                        callbacks.onResizeUpdate?.call(nodeId, event.delta),
+                    onPointerUp: (_) => callbacks.onResizeEnd?.call(nodeId),
+                    onPointerCancel: (_) => callbacks.onResizeEnd?.call(nodeId),
+                    child: Padding(
+                      padding: const EdgeInsets.all(5),
+                      child: Icon(
+                        Icons.drag_handle_rounded,
+                        size: 16,
+                        color: t.textFaint,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),

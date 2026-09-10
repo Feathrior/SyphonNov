@@ -64,6 +64,12 @@ void main() {
     expect(find.byType(ChoiceChip), findsNothing);
     expect(find.text('func_curve'), findsNothing);
     expect(find.text('table_input'), findsNothing);
+    final spine = find.byKey(const ValueKey('node-spine-derivative'));
+    expect(spine, findsOneWidget);
+    expect(
+      tester.getSize(spine).height,
+      greaterThan(tester.getSize(spine).width),
+    );
   });
 
   testWidgets('canvas accepts one global drop and rejects outside release', (

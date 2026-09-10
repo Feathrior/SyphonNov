@@ -229,14 +229,11 @@ class _AppShellState extends State<_AppShell> {
 
   /// 全局级快捷键(输入框聚焦时也优先响应的组合键)
   bool _isGlobalShortcut(KeyEvent event) {
-    final ctrl =
-        HardwareKeyboard.instance.isControlPressed ||
-        HardwareKeyboard.instance.isMetaPressed;
-    if (!ctrl) return false;
-    final k = event.logicalKey;
-    return k == LogicalKeyboardKey.keyZ ||
-        k == LogicalKeyboardKey.keyY ||
-        k == LogicalKeyboardKey.keyG;
+    final settings = SettingsStore.instance;
+    return settings.matchesShortcut('undo', event) ||
+        settings.matchesShortcut('redo', event) ||
+        settings.matchesShortcut('group', event) ||
+        settings.matchesShortcut('ungroup', event);
   }
 
   /// 全局键盘快捷键(对应 React 版 App.tsx 的 keydown 监听):
@@ -252,22 +249,17 @@ class _AppShellState extends State<_AppShell> {
       return KeyEventResult.ignored;
     }
 
-    final ctrl =
-        HardwareKeyboard.instance.isControlPressed ||
-        HardwareKeyboard.instance.isMetaPressed;
-    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final settings = SettingsStore.instance;
 
-    // Ctrl+Z 撤销;Ctrl+Shift+Z 重做
-    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
-      if (shift) {
-        GraphStore.instance.redo();
-      } else {
-        GraphStore.instance.undo();
-      }
+    if (settings.matchesShortcut('undo', event)) {
+      GraphStore.instance.undo();
       return KeyEventResult.handled;
     }
-    // Ctrl+C:复制所选(多选优先,退化单选)
-    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyC) {
+    if (settings.matchesShortcut('redo', event)) {
+      GraphStore.instance.redo();
+      return KeyEventResult.handled;
+    }
+    if (settings.matchesShortcut('copy', event)) {
       final s = GraphStore.instance;
       final ids = <String>{};
       ids.addAll(s.multiSelected);
@@ -275,14 +267,24 @@ class _AppShellState extends State<_AppShell> {
       s.copySelection(ids);
       return KeyEventResult.handled;
     }
-    // Ctrl+V:在鼠标 world 位置粘贴剪贴板内容
-    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyV) {
+    if (settings.matchesShortcut('paste', event)) {
       final world = NodeCanvas.lastMouseWorldPos;
       GraphStore.instance.pasteAt(world);
       return KeyEventResult.handled;
     }
-    // Ctrl+G:将多选节点创建为分组
-    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+    if (settings.matchesShortcut('cut', event)) {
+      final s = GraphStore.instance;
+      final ids = <String>{...s.multiSelected, ?s.selectedId};
+      s.copySelection(ids);
+      s.removeNodes(ids.toList());
+      return KeyEventResult.handled;
+    }
+    if (settings.matchesShortcut('selectAll', event)) {
+      final s = GraphStore.instance;
+      s.setMultiSelected(s.nodes.map((item) => item.id).toSet());
+      return KeyEventResult.handled;
+    }
+    if (settings.matchesShortcut('group', event)) {
       final s = GraphStore.instance;
       final ids = s.multiSelected.isNotEmpty
           ? s.multiSelected.toList()
@@ -292,8 +294,7 @@ class _AppShellState extends State<_AppShell> {
       }
       return KeyEventResult.handled;
     }
-    // Ctrl+Shift+G:解散所选节点所在的分组
-    if (ctrl && shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+    if (settings.matchesShortcut('ungroup', event)) {
       final s = GraphStore.instance;
       if (s.selectedId != null) {
         final gid = s.groupOf(s.selectedId!);
@@ -311,12 +312,6 @@ class _AppShellState extends State<_AppShell> {
       }
       return KeyEventResult.handled;
     }
-    // Ctrl+Y 重做
-    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyY) {
-      GraphStore.instance.redo();
-      return KeyEventResult.handled;
-    }
-
     // Escape:取消选中(画布右键菜单/分割点编辑由 NodeCanvas 自身的 Focus 处理)
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       GraphStore.instance.selectNode(null);
@@ -325,8 +320,7 @@ class _AppShellState extends State<_AppShell> {
     }
 
     // Delete/Backspace:删除选中节点(或分割点)
-    if (event.logicalKey == LogicalKeyboardKey.delete ||
-        event.logicalKey == LogicalKeyboardKey.backspace) {
+    if (settings.matchesShortcut('delete', event)) {
       _canvasKey.currentState?.deleteSelection();
       return KeyEventResult.handled;
     }

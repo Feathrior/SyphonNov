@@ -188,7 +188,7 @@ String paramSummary(GraphNode node, NodeConfig cfg) {
 /// 节点尺寸(根据配置、折叠状态与端口连线数确定)
 Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
   final cfg = getConfig(node.configId);
-  final w = nodeWidth(node.configId);
+  final w = nodeVisualWidth(node);
   if (cfg == null) return Size(w, NodeGeom.headerH + 24);
   final inRows = inputSockets(node, edges);
   final outRows = outputSockets(node, edges);
@@ -209,7 +209,7 @@ Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
     h += NodeGeom.paramLineMargin + NodeGeom.paramLineH;
   }
   if (cfg.isViewer) {
-    h += NodeGeom.viewerMargin + NodeGeom.viewerH;
+    h += NodeGeom.viewerMargin + nodeViewerHeight(node);
   }
   if (cfg.outputs.isNotEmpty) {
     h += NodeGeom.outputsLineMargin + NodeGeom.outputsLineH;
@@ -268,7 +268,7 @@ Map<String, Offset> resolveRepulsiveNodeLayout({
 /// handle 11px 宽、溢出节点边缘 7px,锚点取 handle 中点:
 /// 输出 = 节点右边缘 - 4 + 5.5 = 右 + 1.5;输入 = 节点左边缘 - 7 + 5.5 = 左 - 1.5
 Offset edgeSourceAnchor(GraphEdge edge, GraphNode node, List<GraphEdge> edges) {
-  final w = nodeWidth(node.configId);
+  final w = nodeVisualWidth(node);
   return Offset(
     node.position.dx + w + 1.5,
     node.position.dy + _anchorY(edge, node, edges, isSource: true),

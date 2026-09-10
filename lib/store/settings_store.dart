@@ -5,12 +5,25 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import '../i18n.dart';
 
 enum AppTheme { light, dark }
 
 enum MotionMode { full, reduced, off }
+
+const Map<String, String> defaultShortcutBindings = {
+  'undo': 'Ctrl+Z',
+  'redo': 'Ctrl+Y',
+  'copy': 'Ctrl+C',
+  'paste': 'Ctrl+V',
+  'cut': 'Ctrl+X',
+  'selectAll': 'Ctrl+A',
+  'group': 'Ctrl+G',
+  'ungroup': 'Ctrl+Shift+G',
+  'delete': 'Delete',
+};
 
 class AppSettings {
   bool autoRun;
@@ -34,6 +47,7 @@ class SettingsStore extends ChangeNotifier {
   bool snapNodePlacement = false;
   List<String> favoriteNodeIds = [];
   List<String> recentNodeIds = [];
+  Map<String, String> shortcutBindings = {...defaultShortcutBindings};
 
   /// 最近打开/保存的画布文件路径(新→旧,去重,最多 10 条)
   List<String> recentFiles = [];
@@ -63,6 +77,16 @@ class SettingsStore extends ChangeNotifier {
           snapNodePlacement = j['snapNodePlacement'] == true;
           favoriteNodeIds = _stringList(j['favoriteNodeIds'], 24);
           recentNodeIds = _stringList(j['recentNodeIds'], 8);
+          final shortcuts = j['shortcutBindings'];
+          if (shortcuts is Map) {
+            for (final entry in shortcuts.entries) {
+              if (defaultShortcutBindings.containsKey('${entry.key}') &&
+                  entry.value is String &&
+                  (entry.value as String).isNotEmpty) {
+                shortcutBindings['${entry.key}'] = entry.value as String;
+              }
+            }
+          }
           final rf = j['recentFiles'];
           if (rf is List) {
             recentFiles = rf.whereType<String>().take(10).toList();
@@ -133,6 +157,67 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  String shortcutFor(String action) =>
+      shortcutBindings[action] ?? defaultShortcutBindings[action] ?? '';
+
+  bool matchesShortcut(String action, KeyEvent event) =>
+      shortcutFromEvent(event) == shortcutFor(action);
+
+  void setShortcut(String action, String chord) {
+    if (!defaultShortcutBindings.containsKey(action) || chord.isEmpty) return;
+    final previous = shortcutFor(action);
+    final conflict = shortcutBindings.entries
+        .where((entry) => entry.key != action && entry.value == chord)
+        .firstOrNull;
+    if (conflict != null) shortcutBindings[conflict.key] = previous;
+    shortcutBindings[action] = chord;
+    _write();
+    notifyListeners();
+  }
+
+  void resetShortcuts() {
+    shortcutBindings = {...defaultShortcutBindings};
+    _write();
+    notifyListeners();
+  }
+
+  static String? shortcutFromEvent(KeyEvent event) {
+    final key = event.logicalKey;
+    if ({
+      LogicalKeyboardKey.control,
+      LogicalKeyboardKey.controlLeft,
+      LogicalKeyboardKey.controlRight,
+      LogicalKeyboardKey.shift,
+      LogicalKeyboardKey.shiftLeft,
+      LogicalKeyboardKey.shiftRight,
+      LogicalKeyboardKey.alt,
+      LogicalKeyboardKey.altLeft,
+      LogicalKeyboardKey.altRight,
+      LogicalKeyboardKey.meta,
+      LogicalKeyboardKey.metaLeft,
+      LogicalKeyboardKey.metaRight,
+    }.contains(key)) {
+      return null;
+    }
+    final parts = <String>[];
+    if (HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isMetaPressed) {
+      parts.add('Ctrl');
+    }
+    if (HardwareKeyboard.instance.isAltPressed) parts.add('Alt');
+    if (HardwareKeyboard.instance.isShiftPressed) parts.add('Shift');
+    final label = switch (key) {
+      LogicalKeyboardKey.delete => 'Delete',
+      LogicalKeyboardKey.backspace => 'Backspace',
+      LogicalKeyboardKey.escape => 'Escape',
+      LogicalKeyboardKey.space => 'Space',
+      _ => key.keyLabel.length == 1 ? key.keyLabel.toUpperCase() : key.keyLabel,
+    };
+    if (label.isEmpty) return null;
+    parts.add(label);
+    return parts.join('+');
+  }
+
   static List<String> _stringList(dynamic value, int limit) => value is List
       ? value.whereType<String>().toSet().take(limit).toList()
       : <String>[];
@@ -158,6 +243,7 @@ class SettingsStore extends ChangeNotifier {
       'snapNodePlacement': snapNodePlacement,
       'favoriteNodeIds': favoriteNodeIds,
       'recentNodeIds': recentNodeIds,
+      'shortcutBindings': shortcutBindings,
     });
     try {
       getApplicationSupportDirectory()

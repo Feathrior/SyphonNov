@@ -235,8 +235,42 @@ class _PropertyDisclosure extends StatefulWidget {
   State<_PropertyDisclosure> createState() => _PropertyDisclosureState();
 }
 
-class _PropertyDisclosureState extends State<_PropertyDisclosure> {
+class _PropertyDisclosureState extends State<_PropertyDisclosure>
+    with SingleTickerProviderStateMixin {
   late bool _expanded = widget.initiallyExpanded;
+  late bool _showContent = _expanded;
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    value: _expanded ? 1 : 0,
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration = MotionTokens.standard(context);
+    _controller.reverseDuration = MotionTokens.quick(context);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    final next = !_expanded;
+    setState(() {
+      _expanded = next;
+      if (next) _showContent = true;
+    });
+    if (next) {
+      _controller.forward();
+    } else {
+      _controller.reverse().then((_) {
+        if (mounted && !_expanded) setState(() => _showContent = false);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -257,7 +291,7 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure> {
             expanded: _expanded,
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () => setState(() => _expanded = !_expanded),
+              onTap: _toggle,
               child: SizedBox(
                 height: 36,
                 child: Padding(
@@ -274,12 +308,15 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure> {
                           ),
                         ),
                       ),
-                      Icon(
-                        _expanded
-                            ? Icons.keyboard_arrow_down
-                            : Icons.keyboard_arrow_right,
-                        size: 17,
-                        color: t.textDim,
+                      AnimatedRotation(
+                        turns: _expanded ? .25 : 0,
+                        duration: MotionTokens.standard(context),
+                        curve: MotionTokens.emphasized,
+                        child: Icon(
+                          Icons.keyboard_arrow_right,
+                          size: 17,
+                          color: t.textDim,
+                        ),
                       ),
                     ],
                   ),
@@ -287,12 +324,35 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure> {
               ),
             ),
           ),
-          if (_expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: widget.children,
+          if (_showContent)
+            ClipRect(
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, child) {
+                  final animation = CurvedAnimation(
+                    parent: _controller,
+                    curve: MotionTokens.emphasized,
+                    reverseCurve: MotionTokens.exit,
+                  );
+                  return Align(
+                    alignment: Alignment.topCenter,
+                    heightFactor: animation.value,
+                    child: BlurScaleTransition(
+                      animation: animation,
+                      alignment: Alignment.topCenter,
+                      beginScale: .99,
+                      maxBlur: 4,
+                      child: child!,
+                    ),
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: widget.children,
+                  ),
+                ),
               ),
             ),
         ],

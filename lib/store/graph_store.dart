@@ -109,7 +109,7 @@ class GraphNode {
           ? Map<String, dynamic>.from(j['params'] as Map)
           : {},
       exposed: j['exposed'] is List
-          ? j['exposed']!.map((e) => '$e').toList()
+          ? (j['exposed'] as List).map<String>((e) => '$e').toList()
           : [],
       collapsed: j['collapsed'] == true,
       position: pos is Map
@@ -310,6 +310,21 @@ double nodeWidth(String configId) {
   return cfg.isViewer ? 440 : 260;
 }
 
+const String viewerWidthParam = '_viewerWidth';
+const String viewerHeightParam = '_viewerHeight';
+
+double nodeVisualWidth(GraphNode node) {
+  final cfg = getConfig(node.configId);
+  if (cfg?.isViewer != true) return nodeWidth(node.configId);
+  final value = node.params[viewerWidthParam];
+  return (value is num ? value.toDouble() : 440.0).clamp(360.0, 1000.0);
+}
+
+double nodeViewerHeight(GraphNode node) {
+  final value = node.params[viewerHeightParam];
+  return (value is num ? value.toDouble() : 215.0).clamp(180.0, 720.0);
+}
+
 /// 撤销快照:节点 + 连线 + 分组
 typedef GraphSnapshot = ({
   List<GraphNode> nodes,
@@ -321,6 +336,10 @@ class GraphStore extends ChangeNotifier {
   /// 仅描述节点/断点的几何位移。拖动期间使用独立通知，避免让所有
   /// GraphStore 监听者（尤其三维预览）随每个指针事件重建。
   final ValueNotifier<int> layoutRevision = ValueNotifier<int>(0);
+  final Map<String, ValueNotifier<int>> _nodeGeometryRevisions = {};
+
+  ValueNotifier<int> nodeGeometryRevision(String id) =>
+      _nodeGeometryRevisions.putIfAbsent(id, () => ValueNotifier<int>(0));
   List<GraphNode> nodes = [];
   List<GraphEdge> edges = [];
   List<NodeGroup> groups = []; // 节点分组(Blender 风格,成员整体拖动)
@@ -437,6 +456,30 @@ class GraphStore extends ChangeNotifier {
 
   /// 一次拖动结束后提交布局变化，让保存、缩略图之外的状态只刷新一次。
   void finishLayoutChange() => notifyListeners();
+
+  /// 调整最终可视化节点的预览区域。尺寸属于工作流布局元数据，不触发执行。
+  void resizeViewerNode(String id, double width, double viewerHeight) {
+    var changed = false;
+    nodes = [
+      for (final node in nodes)
+        if (node.id == id && getConfig(node.configId)?.isViewer == true)
+          () {
+            final next = {
+              ...node.params,
+              viewerWidthParam: width.clamp(360.0, 1000.0),
+              viewerHeightParam: viewerHeight.clamp(180.0, 720.0),
+            };
+            changed = true;
+            return node.copyWith(params: next);
+          }()
+        else
+          node,
+    ];
+    if (changed) {
+      nodeGeometryRevision(id).value++;
+      layoutRevision.value++;
+    }
+  }
 
   void removeNodes(List<String> ids) {
     if (ids.isEmpty) return;
@@ -1393,7 +1436,7 @@ class GraphStore extends ChangeNotifier {
     }
     double estH(GraphNode n) {
       final cfg = getConfig(n.configId);
-      if (cfg?.isViewer == true) return 400;
+      if (cfg?.isViewer == true) return nodeViewerHeight(n) + 185;
       final rows =
           (cfg?.inputs.length ?? 0) +
           (cfg?.outputs.length ?? 0) +
@@ -1423,7 +1466,7 @@ class GraphStore extends ChangeNotifier {
       for (final id in ids) {
         for (final n in nodes) {
           if (n.id == id) {
-            if (nodeWidth(n.configId) > w) w = nodeWidth(n.configId);
+            if (nodeVisualWidth(n) > w) w = nodeVisualWidth(n);
             break;
           }
         }
@@ -1456,7 +1499,7 @@ class GraphStore extends ChangeNotifier {
         double w = 260;
         for (final n in nodes) {
           if (n.id == id) {
-            w = nodeWidth(n.configId);
+            w = nodeVisualWidth(n);
             pos[id] = Offset(x + (layerW - w) / 2, y);
             y += estH(n) + gapY;
             break;

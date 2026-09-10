@@ -190,7 +190,7 @@ class _EdgesPainter extends CustomPainter {
     for (final n in nodeMap.values) {
       final cfg = getConfig(n.configId);
       if (cfg == null) continue;
-      final w = nodeWidth(n.configId);
+      final w = nodeVisualWidth(n);
       final inRows = inputSockets(n, edges);
       final outRows = outputSockets(n, edges);
       // 输出锚点(源)
@@ -747,6 +747,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   Map<String, Offset> _dragOrigins = {}; // 各拖动节点按下时的世界坐标(位移基准)
   bool _downAddedNode = false; // 本次按下是否把节点新加入多选(down 与 tap 共用,防重复切换)
   bool _dragSnapshotted = false; // 本次拖动是否已记录撤销快照(首次实际位移时才记录)
+  String? _resizingViewerId;
+  bool _viewerResizeSnapshotted = false;
   int _downButtons = 0; // 本次按下包含的鼠标按钮(区分左/右键 up:右键不触发空白清选)
   bool _spaceDown = false;
   bool _panFromNode = false; // 背景 pan 起点落在节点内部:忽略平移(节点内拖动不移动背景)
@@ -786,7 +788,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   String? _lastGroupLabelDownId;
   Offset _lastGroupLabelDownFlow = Offset.zero;
   // 鼠标最后位置(flow 坐标):Ctrl+V 粘贴定位用(hover/move 时更新)
-  Offset _lastPointerFlow = Offset.zero;
   Offset? _boxStart; // 屏幕坐标
   Offset? _boxEnd;
   Offset? _downPosScreen;
@@ -1319,11 +1320,15 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       );
     }
     store.addLog('ok', '已自动插入转换节点:${logLabels.join('→')}');
-    _startConversionLayout(ids);
+    _startConversionLayout(
+      conn.isSource
+          ? [conn.nodeId, ...ids, target.nodeId]
+          : [target.nodeId, ...ids, conn.nodeId],
+    );
     if (store.autoRun) store.runAfterGraphChange(edgeChanged: true);
   }
 
-  void _startConversionLayout(List<String> ids) {
+  void _startConversionLayout(List<String> orderedIds) {
     if (_conversionLayoutController.isAnimating) {
       _conversionLayoutController.stop();
       if (_conversionLayoutTargets.isNotEmpty) {
@@ -1334,22 +1339,74 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         store.finishLayoutChange();
       }
     }
-    final movingIds = ids.toSet();
-    final moving = <({String id, Offset position, Size size})>[];
+    final movingIds = orderedIds.toSet();
+    final nodesById = {for (final node in store.nodes) node.id: node};
+    final ordered = [
+      for (final id in orderedIds)
+        if (nodesById[id] != null) nodesById[id]!,
+    ];
+    if (ordered.length < 2) return;
+    final sizes = {
+      for (final node in ordered)
+        node.id: nodeSize(node, store.edges, result: store.results[node.id]),
+    };
     final obstacles = <Rect>[];
     for (final node in store.nodes) {
       final size = nodeSize(node, store.edges, result: store.results[node.id]);
-      if (movingIds.contains(node.id)) {
-        moving.add((id: node.id, position: node.position, size: size));
-      } else {
+      if (!movingIds.contains(node.id)) {
         obstacles.add(node.position & size);
       }
     }
-    final targets = resolveRepulsiveNodeLayout(
-      moving: moving,
+
+    final first = ordered.first;
+    final last = ordered.last;
+    final firstCenter = first.position + sizes[first.id]!.center(Offset.zero);
+    final lastCenter = last.position + sizes[last.id]!.center(Offset.zero);
+    final midpoint = (firstCenter + lastCenter) / 2;
+    final delta = lastCenter - firstCenter;
+    const chainGap = 72.0;
+    final horizontal = delta.dx.abs() >= delta.dy.abs();
+    final sign = horizontal
+        ? (delta.dx < 0 ? -1.0 : 1.0)
+        : (delta.dy < 0 ? -1.0 : 1.0);
+    final totalExtent =
+        ordered.fold<double>(
+          0,
+          (sum, node) =>
+              sum +
+              (horizontal ? sizes[node.id]!.width : sizes[node.id]!.height),
+        ) +
+        chainGap * (ordered.length - 1);
+    var cursor =
+        (horizontal ? midpoint.dx : midpoint.dy) - sign * totalExtent / 2;
+    final preferred = <String, Offset>{};
+    for (final node in ordered) {
+      final size = sizes[node.id]!;
+      if (horizontal) {
+        final left = sign > 0 ? cursor : cursor - size.width;
+        preferred[node.id] = Offset(left, midpoint.dy - size.height / 2);
+        cursor += sign * (size.width + chainGap);
+      } else {
+        final top = sign > 0 ? cursor : cursor - size.height;
+        preferred[node.id] = Offset(midpoint.dx - size.width / 2, top);
+        cursor += sign * (size.height + chainGap);
+      }
+    }
+    final groupBounds = ordered
+        .map((node) => preferred[node.id]! & sizes[node.id]!)
+        .reduce((a, b) => a.expandToInclude(b));
+    final groupTarget = resolveRepulsiveNodeLayout(
+      moving: [
+        (id: '_chain', position: groupBounds.topLeft, size: groupBounds.size),
+      ],
       obstacles: obstacles,
-    );
-    final origins = {for (final item in moving) item.id: item.position};
+      gap: 36,
+    )['_chain']!;
+    final groupShift = groupTarget - groupBounds.topLeft;
+    final targets = {
+      for (final node in ordered) node.id: preferred[node.id]! + groupShift,
+    };
+    final origins = {for (final node in ordered) node.id: node.position};
     if (targets.entries.every((e) => origins[e.key] == e.value)) return;
     final duration = MotionTokens.spatial(context);
     if (duration == Duration.zero) {
@@ -1403,7 +1460,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       for (var i = 0; i < rows.length; i++) {
         // 目标端口位置 = handle 中点(与起点锚点一致:输入 左-1.5 / 输出 右+1.5)
         final pos = Offset(
-          n.position.dx + (isTargetInput ? -1.5 : nodeWidth(n.configId) + 1.5),
+          n.position.dx + (isTargetInput ? -1.5 : nodeVisualWidth(n) + 1.5),
           n.position.dy + rows[i].center,
         );
         final d = (pos - flowPos).distance;
@@ -1548,7 +1605,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   /// 悬停更新:端口优先(卡片动画),其次连线悬停高亮(Alt 拆分预览/普通高亮)
   void _updateHover(Offset local) {
     final flow = _toFlow(local);
-    _lastPointerFlow = flow; // Ctrl+V 粘贴定位
     NodeCanvas.lastMouseWorldPos = flow; // 同步到 static 供外部(main.dart)访问
     final h = _handleAt(flow);
     final cur = _sockHover.value;
@@ -1744,6 +1800,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundMove(PointerMoveEvent e) {
+    if (_resizingViewerId != null) return;
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 预览窗拖拽进行中:画布层忽略(拖出面板后 up 位置在面板外,仍需此标志守卫)
@@ -1853,6 +1910,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundUp(PointerUpEvent e) {
+    if (_resizingViewerId != null) return;
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 预览窗内的松开/预览窗拖拽结束(可能拖出面板后松开):画布层忽略,
@@ -2152,29 +2210,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     }
   }
 
-  // ---------------- Ctrl+C / Ctrl+V 复制粘贴(节点/节点组) ----------------
-
-  /// Ctrl+C:复制多选(或单选)节点;所选构成完整分组的节点,分组信息一并复制
-  void _copySelection() {
-    final sel = store.multiSelected.isNotEmpty
-        ? store.multiSelected
-        : (store.selectedId != null ? {store.selectedId!} : <String>{});
-    if (sel.isEmpty) return;
-    store.copySelection(sel);
-  }
-
-  /// Ctrl+V:在鼠标当前位置粘贴剪贴板内容(节点/节点组);无鼠标记录时用视口中心
-  void _pasteSelection() {
-    if (!store.hasClipboard) return;
-    final anchor = _lastPointerFlow == Offset.zero
-        ? Offset(
-            (_canvasSize.width / 2 - _pan.dx) / _zoom,
-            (_canvasSize.height / 2 - _pan.dy) / _zoom,
-          )
-        : _lastPointerFlow;
-    store.pasteAt(anchor);
-  }
-
   void _pickNode(String configId) {
     final menuPos = _menuPos;
     final targetGroup = _groupMenuFor;
@@ -2412,8 +2447,43 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   // ---------------- 交互回调装配 ----------------
 
-  NodeCardCallbacks get _cardCallbacks =>
-      NodeCardCallbacks(onSelect: _onSelect, onSecondaryTap: _onSecondaryTap);
+  NodeCardCallbacks get _cardCallbacks => NodeCardCallbacks(
+    onSelect: _onSelect,
+    onSecondaryTap: _onSecondaryTap,
+    onResizeStart: _onViewerResizeStart,
+    onResizeUpdate: _onViewerResizeUpdate,
+    onResizeEnd: _onViewerResizeEnd,
+  );
+
+  void _onViewerResizeStart(String id) {
+    _draggingId = null;
+    _dragIds = {};
+    _dragOrigins = {};
+    _resizingViewerId = id;
+    _viewerResizeSnapshotted = false;
+  }
+
+  void _onViewerResizeUpdate(String id, Offset screenDelta) {
+    if (_resizingViewerId != id) return;
+    final node = store.nodeOf(id);
+    if (node == null) return;
+    if (!_viewerResizeSnapshotted && screenDelta != Offset.zero) {
+      store.snapshotNow();
+      _viewerResizeSnapshotted = true;
+    }
+    store.resizeViewerNode(
+      id,
+      nodeVisualWidth(node) + screenDelta.dx / _zoom,
+      nodeViewerHeight(node) + screenDelta.dy / _zoom,
+    );
+  }
+
+  void _onViewerResizeEnd(String id) {
+    if (_resizingViewerId != id) return;
+    _resizingViewerId = null;
+    _viewerResizeSnapshotted = false;
+    store.finishLayoutChange();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2884,22 +2954,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _bump();
       return KeyEventResult.handled;
     }
-    // Ctrl+C 复制所选(节点/节点组)/ Ctrl+V 粘贴(仅 down 触发一次,repeat 忽略)
-    if (event is KeyDownEvent &&
-        (HardwareKeyboard.instance.isControlPressed ||
-            HardwareKeyboard.instance.isMetaPressed)) {
-      if (event.logicalKey == LogicalKeyboardKey.keyC) {
-        _copySelection();
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.keyV) {
-        _pasteSelection();
-        return KeyEventResult.handled;
-      }
-    }
     if (event is KeyDownEvent || event is KeyRepeatEvent) {
-      if (event.logicalKey == LogicalKeyboardKey.delete ||
-          event.logicalKey == LogicalKeyboardKey.backspace) {
+      if (SettingsStore.instance.matchesShortcut('delete', event)) {
         // 节点菜单打开期间(焦点在搜索框,已被上方 _focusInTextField 守卫放行;
         // 此分支仅覆盖焦点仍在画布的兜底场景):退格/删除不删除选中节点。
         if (_menuPos != null) return KeyEventResult.handled;

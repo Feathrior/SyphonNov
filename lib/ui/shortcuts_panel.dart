@@ -2,37 +2,47 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../store/settings_store.dart';
 import 'theme.dart';
 
-const List<({String title, List<({String keys, String desc})> items})> _kShortcutGroups = [
+const List<
+  ({String title, List<({String? action, String keys, String desc})> items})
+>
+_kShortcutGroups = [
   (
     title: '编辑',
     items: [
-      (keys: 'Ctrl+Z', desc: '撤销'),
-      (keys: 'Ctrl+Y / Ctrl+Shift+Z', desc: '重做'),
-      (keys: 'Delete / Backspace', desc: '删除选中的节点 / 连线 / 分割点'),
-      (keys: 'Escape', desc: '关闭菜单、设置或快捷键面板'),
+      (action: 'undo', keys: 'Ctrl+Z', desc: '撤销'),
+      (action: 'redo', keys: 'Ctrl+Y', desc: '重做'),
+      (action: 'copy', keys: 'Ctrl+C', desc: '复制所选节点'),
+      (action: 'paste', keys: 'Ctrl+V', desc: '在鼠标位置粘贴'),
+      (action: 'cut', keys: 'Ctrl+X', desc: '剪切所选节点'),
+      (action: 'selectAll', keys: 'Ctrl+A', desc: '选择全部节点'),
+      (action: 'delete', keys: 'Delete', desc: '删除选中的节点 / 连线 / 分割点'),
+      (action: null, keys: 'Escape', desc: '关闭菜单或取消选择'),
     ],
   ),
   (
     title: '画布',
     items: [
-      (keys: 'Ctrl+滚轮', desc: '任意位置缩放画布'),
-      (keys: 'Ctrl+按住左键划过连线', desc: '切断连线'),
-      (keys: 'Shift+拖拽节点到连线上', desc: '把节点插入连线中间(拆分连线)'),
-      (keys: '右键空白处', desc: '打开"新建节点"菜单'),
-      (keys: '右键节点', desc: '折叠 / 展开节点'),
+      (action: 'group', keys: 'Ctrl+G', desc: '将所选节点分组'),
+      (action: 'ungroup', keys: 'Ctrl+Shift+G', desc: '解散所选节点所在分组'),
+      (action: null, keys: 'Ctrl+滚轮', desc: '任意位置缩放画布'),
+      (action: null, keys: 'Ctrl+按住左键划过连线', desc: '切断连线'),
+      (action: null, keys: 'Shift+拖拽节点到连线上', desc: '把节点插入连线中间(拆分连线)'),
+      (action: null, keys: '右键空白处', desc: '打开"新建节点"菜单'),
+      (action: null, keys: '右键节点', desc: '折叠 / 展开节点'),
     ],
   ),
   (
     title: '曲线整理',
     items: [
-      (keys: 'Alt+悬停曲线', desc: '预览拆分点位置'),
-      (keys: 'Alt+点击曲线', desc: '插入分割点(小圆点),曲线外观分为两段'),
-      (keys: '点击小圆点', desc: '单独选中分割点(显示高亮光环)'),
-      (keys: 'Delete', desc: '删除选中的分割点,曲线恢复原始形状'),
-      (keys: '拖拽小圆点', desc: '调整曲线外观'),
+      (action: null, keys: 'Alt+悬停曲线', desc: '预览拆分点位置'),
+      (action: null, keys: 'Alt+点击曲线', desc: '插入分割点(小圆点),曲线外观分为两段'),
+      (action: null, keys: '点击小圆点', desc: '单独选中分割点(显示高亮光环)'),
+      (action: null, keys: '拖拽小圆点', desc: '调整曲线外观'),
     ],
   ),
 ];
@@ -47,39 +57,69 @@ class ShortcutsPanel extends StatefulWidget {
 }
 
 class _ShortcutsPanelState extends State<ShortcutsPanel> {
+  final FocusNode _captureFocus = FocusNode();
+  String? _capturing;
+
+  @override
+  void dispose() {
+    _captureFocus.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _captureKey(FocusNode node, KeyEvent event) {
+    if (_capturing == null || event is! KeyDownEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      setState(() => _capturing = null);
+      return KeyEventResult.handled;
+    }
+    final chord = SettingsStore.shortcutFromEvent(event);
+    if (chord == null) return KeyEventResult.handled;
+    SettingsStore.instance.setShortcut(_capturing!, chord);
+    setState(() => _capturing = null);
+    return KeyEventResult.handled;
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
     // fluent.showDialog 不自动居中,这里用 Center + Padding 模拟原 Dialog 的居中/inset
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 70),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: Container(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height - 140,
-            ),
-            decoration: BoxDecoration(
-              color: t.bgSurface,
-              border: Border.all(color: t.strokeStrong),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.35), blurRadius: 40),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildHeader(t),
-                Divider(height: 1, thickness: 1, color: t.stroke),
-                // 主体:可滚动的快捷键列表
-                _buildShortcutList(context, t),
-                Divider(height: 1, thickness: 1, color: t.stroke),
-                _buildFooter(t),
-              ],
+    return Focus(
+      focusNode: _captureFocus,
+      onKeyEvent: _captureKey,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 70),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height - 140,
+              ),
+              decoration: BoxDecoration(
+                color: t.bgSurface,
+                border: Border.all(color: t.strokeStrong),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.35),
+                    blurRadius: 40,
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildHeader(t),
+                  Divider(height: 1, thickness: 1, color: t.stroke),
+                  // 主体:可滚动的快捷键列表
+                  _buildShortcutList(context, t),
+                  Divider(height: 1, thickness: 1, color: t.stroke),
+                  _buildFooter(t),
+                ],
+              ),
             ),
           ),
         ),
@@ -93,12 +133,33 @@ class _ShortcutsPanelState extends State<ShortcutsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 14, 10, 14),
       child: Row(
         children: [
-          Text('快捷键',
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: t.text)),
+          Text(
+            '快捷键',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: t.text,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            _capturing == null ? '单击按键即可重新绑定' : '请按下新的组合键 · Esc 取消',
+            style: TextStyle(fontSize: 11, color: t.textFaint),
+          ),
           const Spacer(),
+          GestureDetector(
+            onTap: () {
+              SettingsStore.instance.resetShortcuts();
+              setState(() => _capturing = null);
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              child: Text(
+                '恢复默认',
+                style: TextStyle(fontSize: 11, color: t.accent),
+              ),
+            ),
+          ),
           _CloseButton(onPressed: widget.onClose),
         ],
       ),
@@ -132,16 +193,27 @@ class _ShortcutsPanelState extends State<ShortcutsPanel> {
 
   // .nf-shortcut-group:fontSize 11、w600、letterSpacing 0.8、textFaint
   Widget _groupTitle(SyphonTheme t, String title) {
-    return Text(title,
-        style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.8,
-            color: t.textFaint));
+    return Text(
+      title,
+      style: TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.8,
+        color: t.textFaint,
+      ),
+    );
   }
 
   // .nf-shortcut-row:下边框分隔、按键 + 说明
-  Widget _shortcutRow(SyphonTheme t, ({String keys, String desc}) it) {
+  Widget _shortcutRow(
+    SyphonTheme t,
+    ({String? action, String keys, String desc}) it,
+  ) {
+    final editable = it.action != null;
+    final capturing = it.action == _capturing;
+    final keys = editable
+        ? SettingsStore.instance.shortcutFor(it.action!)
+        : it.keys;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 7),
       decoration: BoxDecoration(
@@ -150,11 +222,21 @@ class _ShortcutsPanelState extends State<ShortcutsPanel> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _Kbd(text: it.keys),
+          GestureDetector(
+            onTap: !editable
+                ? null
+                : () {
+                    setState(() => _capturing = it.action);
+                    _captureFocus.requestFocus();
+                  },
+            child: _Kbd(text: capturing ? '请按键…' : keys),
+          ),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(it.desc,
-                style: TextStyle(fontSize: 12, color: t.textDim)),
+            child: Text(
+              it.desc,
+              style: TextStyle(fontSize: 12, color: t.textDim),
+            ),
           ),
         ],
       ),
@@ -167,13 +249,12 @@ class _ShortcutsPanelState extends State<ShortcutsPanel> {
       padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
       child: Row(
         children: [
-          Text('SyphonNov v0.4.3',
-              style: TextStyle(fontSize: 11, color: t.textFaint)),
-          const Spacer(),
-          _PrimaryButton(
-            label: '完成',
-            onPressed: widget.onClose,
+          Text(
+            'SyphonNov v0.4.3',
+            style: TextStyle(fontSize: 11, color: t.textFaint),
           ),
+          const Spacer(),
+          _PrimaryButton(label: '完成', onPressed: widget.onClose),
         ],
       ),
     );
@@ -271,9 +352,14 @@ class _PrimaryButtonState extends State<_PrimaryButton> {
             borderRadius: BorderRadius.circular(SyphonDims.radiusS),
             border: Border.all(color: t.accent),
           ),
-          child: Text(widget.label,
-              style: TextStyle(
-                  fontSize: 12, color: t.onAccent, fontWeight: FontWeight.w600)),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 12,
+              color: t.onAccent,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
       ),
     );
