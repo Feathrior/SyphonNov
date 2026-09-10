@@ -108,7 +108,7 @@ void main() {
     await pumpApp(tester);
     final center = tester.getCenter(find.byType(NodeCanvas));
     final inputItems = radialItemsFor(RadialNodeSection.input, const []);
-    final initialDelta = const Offset(0, -100);
+    final initialDelta = const Offset(0, -130);
     final expectedIndex = radialDetailIndex(
       initialDelta,
       0,

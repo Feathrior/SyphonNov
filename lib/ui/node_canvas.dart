@@ -16,6 +16,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../i18n.dart';
+import '../models/color_utils.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
 import '../store/graph_store.dart';
@@ -136,6 +137,12 @@ class _PackageOverviewPainter extends CustomPainter {
     required this.revision,
   });
 
+  Color _nodeColor(GraphNode node) {
+    final category = getConfig(node.configId)?.category;
+    final hex = category == null ? null : kCategoryInfo[category]?.color;
+    return parseColor(hex, color);
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     if (nodes.isEmpty || size.isEmpty) return;
@@ -174,7 +181,9 @@ class _PackageOverviewPainter extends CustomPainter {
         ..cubicTo((a.dx + b.dx) / 2, a.dy, (a.dx + b.dx) / 2, b.dy, b.dx, b.dy);
       canvas.drawPath(path, edgePaint);
     }
-    for (final rect in nodeRects.values) {
+    for (final node in nodes) {
+      final nodeColor = _nodeColor(node);
+      final rect = nodeRects[node.id]!;
       final mapped = Rect.fromPoints(map(rect.topLeft), map(rect.bottomRight));
       final compact = Rect.fromCenter(
         center: mapped.center,
@@ -185,15 +194,15 @@ class _PackageOverviewPainter extends CustomPainter {
       canvas.drawRRect(
         rrect,
         Paint()
-          ..color = Colors.white.withValues(alpha: .3)
+          ..color = nodeColor.withValues(alpha: .48)
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.3),
       );
       canvas.drawRRect(
         rrect,
         Paint()
-          ..color = color.withValues(alpha: .34)
+          ..color = nodeColor.withValues(alpha: .92)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = .8,
+          ..strokeWidth = 1.1,
       );
     }
   }
@@ -1104,6 +1113,82 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     if (_draggingPackageId != group.id) return;
     _draggingPackageId = null;
     store.finishLayoutChange();
+  }
+
+  void _expandPackage(NodeGroup group) {
+    final members = [
+      for (final node in store.nodes)
+        if (group.nodeIds.contains(node.id)) node,
+    ];
+    if (members.isEmpty) {
+      store.setPackageCollapsed(group.id, false);
+      return;
+    }
+    if (_conversionLayoutController.isAnimating) {
+      _conversionLayoutController.stop();
+      if (_conversionLayoutTargets.isNotEmpty) {
+        store.moveNodesTo(
+          _conversionLayoutTargets.keys.toSet(),
+          _conversionLayoutTargets,
+        );
+        store.finishLayoutChange();
+      }
+    }
+    final ids = group.nodeIds.toSet();
+    final sizes = {
+      for (final node in members)
+        node.id: nodeSize(node, store.edges, result: store.results[node.id]),
+    };
+    final obstacles = [
+      for (final node in store.nodes)
+        if (!ids.contains(node.id))
+          node.position &
+              nodeSize(node, store.edges, result: store.results[node.id]),
+    ];
+    final targets = resolveRepulsiveNodeLayout(
+      moving: [
+        for (final node in members)
+          (id: node.id, position: node.position, size: sizes[node.id]!),
+      ],
+      obstacles: obstacles,
+      gap: 34,
+    );
+    final proxy = packageProxyRect(
+      group.copyWith(collapsed: true),
+      store.nodes,
+      store.edges,
+    );
+    final center =
+        proxy?.center ??
+        members
+                .map(
+                  (node) => node.position + sizes[node.id]!.center(Offset.zero),
+                )
+                .reduce((a, b) => a + b) /
+            members.length.toDouble();
+    final origins = {
+      for (final node in members)
+        node.id: Offset.lerp(
+          center - sizes[node.id]!.center(Offset.zero),
+          targets[node.id]!,
+          .2,
+        )!,
+    };
+
+    store.setPackageCollapsed(group.id, false);
+    store.moveNodesTo(ids, origins);
+    final duration = MotionTokens.spatial(context);
+    if (duration == Duration.zero) {
+      store.moveNodesTo(ids, targets);
+      store.finishLayoutChange();
+      return;
+    }
+    _conversionLayoutOrigins = origins;
+    _conversionLayoutTargets = targets;
+    _conversionLayoutController.duration = Duration(
+      milliseconds: (duration.inMilliseconds * 1.25).round(),
+    );
+    _conversionLayoutController.forward(from: 0);
   }
 
   void _bump() {
@@ -3621,87 +3706,78 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                           ),
                         ],
                       ),
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Positioned(
-                            left: 10,
-                            top: 10,
-                            child: Text(
-                              inputs.isEmpty ? '无前置输入' : '前置输入',
-                              key: ValueKey('package-input-label-${group.id}'),
-                              style: TextStyle(
-                                color: t.textFaint,
-                                fontSize: 8,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          Positioned(
-                            right: 10,
-                            top: 10,
-                            child: Text(
-                              outputs.isEmpty ? '无后续输出' : '后续输出',
-                              key: ValueKey('package-output-label-${group.id}'),
-                              style: TextStyle(
-                                color: t.textFaint,
-                                fontSize: 8,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          for (var index = 0; index < inputs.length; index++)
-                            _packagePortVisual(
-                              inputs[index],
-                              index,
-                              isSource: false,
-                              theme: t,
-                            ),
-                          for (var index = 0; index < outputs.length; index++)
-                            _packagePortVisual(
-                              outputs[index],
-                              index,
-                              isSource: true,
-                              theme: t,
-                            ),
-                          Positioned(
-                            left: 72,
-                            right: 72,
-                            top: 27,
-                            bottom: 8,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
-                              child: BackdropFilter(
-                                filter: ui.ImageFilter.blur(
-                                  sigmaX: 5.5,
-                                  sigmaY: 5.5,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(11),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              Positioned(
+                                left: 10,
+                                top: 10,
+                                child: Text(
+                                  inputs.isEmpty ? '无前置输入' : '前置输入',
+                                  key: ValueKey(
+                                    'package-input-label-${group.id}',
+                                  ),
+                                  style: TextStyle(
+                                    color: t.textFaint,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
-                                child: DecoratedBox(
+                              ),
+                              Positioned(
+                                right: 10,
+                                top: 10,
+                                child: Text(
+                                  outputs.isEmpty ? '无后续输出' : '后续输出',
+                                  key: ValueKey(
+                                    'package-output-label-${group.id}',
+                                  ),
+                                  style: TextStyle(
+                                    color: t.textFaint,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              for (
+                                var index = 0;
+                                index < inputs.length;
+                                index++
+                              )
+                                _packagePortVisual(
+                                  inputs[index],
+                                  index,
+                                  isSource: false,
+                                  theme: t,
+                                ),
+                              for (
+                                var index = 0;
+                                index < outputs.length;
+                                index++
+                              )
+                                _packagePortVisual(
+                                  outputs[index],
+                                  index,
+                                  isSource: true,
+                                  theme: t,
+                                ),
+                              Positioned(
+                                left: 72,
+                                right: 72,
+                                top: 27,
+                                bottom: 8,
+                                child: RepaintBoundary(
                                   key: ValueKey(
                                     'package-glass-overview-${current.id}',
                                   ),
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                      colors: [
-                                        Colors.white.withValues(alpha: .2),
-                                        const Color(
-                                          0xFF8A9099,
-                                        ).withValues(alpha: .08),
-                                        Colors.white.withValues(alpha: .13),
-                                      ],
-                                    ),
-                                    border: Border.all(
-                                      color: Colors.white.withValues(alpha: .3),
-                                      width: .8,
-                                    ),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
                                   child: ImageFiltered(
                                     imageFilter: ui.ImageFilter.blur(
-                                      sigmaX: .55,
-                                      sigmaY: .55,
+                                      sigmaX: .75,
+                                      sigmaY: .75,
                                     ),
                                     child: CustomPaint(
                                       painter: _PackageOverviewPainter(
@@ -3714,89 +3790,90 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                          Positioned(
-                            left: 86,
-                            right: 86,
-                            bottom: 13,
-                            child: IgnorePointer(
-                              child: Text(
-                                '${current.name} · ${current.nodeIds.length}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: t.text,
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w700,
-                                  shadows: [
-                                    Shadow(
-                                      color: t.bgNode.withValues(alpha: .9),
-                                      blurRadius: 5,
+                              Positioned(
+                                left: 86,
+                                right: 86,
+                                bottom: 13,
+                                child: IgnorePointer(
+                                  child: Text(
+                                    '${current.name} · ${current.nodeIds.length}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: t.text,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                      shadows: [
+                                        Shadow(
+                                          color: t.bgNode.withValues(alpha: .9),
+                                          blurRadius: 5,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 8,
+                                bottom: 8,
+                                child: Tooltip(
+                                  message: '展开 Package',
+                                  child: MouseRegion(
+                                    cursor: SystemMouseCursors.click,
+                                    child: GestureDetector(
+                                      key: ValueKey(
+                                        'package-toggle-${current.id}',
+                                      ),
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () => _expandPackage(current),
+                                      child: Container(
+                                        width: 28,
+                                        height: 24,
+                                        decoration: BoxDecoration(
+                                          color: const Color(
+                                            0xFF8A9099,
+                                          ).withValues(alpha: .16),
+                                          borderRadius: BorderRadius.circular(
+                                            7,
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.unfold_more_rounded,
+                                          size: 16,
+                                          color: Color(0xFF737983),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                left: 92,
+                                right: 92,
+                                top: 7,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.drag_indicator_rounded,
+                                      size: 12,
+                                      color: t.textFaint,
+                                    ),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      '拖动区域',
+                                      style: TextStyle(
+                                        color: t.textFaint,
+                                        fontSize: 8,
+                                      ),
                                     ),
                                   ],
                                 ),
                               ),
-                            ),
+                            ],
                           ),
-                          Positioned(
-                            right: 8,
-                            bottom: 8,
-                            child: Tooltip(
-                              message: '展开 Package',
-                              child: MouseRegion(
-                                cursor: SystemMouseCursors.click,
-                                child: GestureDetector(
-                                  key: ValueKey('package-toggle-${current.id}'),
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () => store.setPackageCollapsed(
-                                    current.id,
-                                    false,
-                                  ),
-                                  child: Container(
-                                    width: 28,
-                                    height: 24,
-                                    decoration: BoxDecoration(
-                                      color: const Color(
-                                        0xFF8A9099,
-                                      ).withValues(alpha: .16),
-                                      borderRadius: BorderRadius.circular(7),
-                                    ),
-                                    child: const Icon(
-                                      Icons.unfold_more_rounded,
-                                      size: 16,
-                                      color: Color(0xFF737983),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          Positioned(
-                            left: 92,
-                            right: 92,
-                            top: 7,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  Icons.drag_indicator_rounded,
-                                  size: 12,
-                                  color: t.textFaint,
-                                ),
-                                const SizedBox(width: 2),
-                                Text(
-                                  '拖动区域',
-                                  style: TextStyle(
-                                    color: t.textFaint,
-                                    fontSize: 8,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ),
                   ),

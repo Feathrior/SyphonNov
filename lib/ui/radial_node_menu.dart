@@ -25,9 +25,9 @@ const radialNodeSections = <RadialNodeSection>[
 
 typedef RadialNodeItem = ({String id, String label, bool isPackage});
 
-const double radialInnerRadius = 48;
-const double radialOuterRadius = 66;
-const double radialDetachRadius = 88;
+const double radialInnerRadius = 61;
+const double radialOuterRadius = 82;
+const double radialDetachRadius = 112;
 const double radialDeadRadius = radialInnerRadius - 10;
 
 Category? categoryForRadialSection(RadialNodeSection section) =>
@@ -115,7 +115,7 @@ class RadialNodeMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final radius = math.max(124.0, (pointer - center).distance + 36);
+    final radius = math.max(154.0, (pointer - center).distance + 42);
     final bounds = Rect.fromCircle(center: center, radius: radius);
     final localCenter = center - bounds.topLeft;
     final localPointer = pointer - bounds.topLeft;
@@ -129,44 +129,63 @@ class RadialNodeMenu extends StatelessWidget {
           rect: bounds,
           child: TweenAnimationBuilder<double>(
             tween: Tween(begin: 0, end: 1),
-            duration: MotionTokens.spatial(context),
-            curve: MotionTokens.emphasized,
-            builder: (context, opening, child) => ImageFiltered(
-              imageFilter: ui.ImageFilter.blur(
-                sigmaX: 7 * (1 - opening),
-                sigmaY: 7 * (1 - opening),
-              ),
-              child: Opacity(
-                opacity: opening,
-                child: Transform.scale(
-                  scale: .78 + .22 * opening,
-                  alignment: Alignment.topLeft,
-                  origin: localCenter,
-                  child: child,
-                ),
-              ),
+            duration: Duration(
+              milliseconds: (MotionTokens.spatial(context).inMilliseconds * 1.2)
+                  .round(),
             ),
-            child: TweenAnimationBuilder<double>(
-              key: ValueKey(lockedItem?.id ?? 'radial-attached'),
-              tween: Tween(begin: 0, end: lockedItem == null ? 0 : 1),
-              duration: MotionTokens.spatial(context),
-              curve: Curves.easeOutBack,
-              builder: (context, detachProgress, _) => RepaintBoundary(
-                child: CustomPaint(
-                  key: const Key('radial-node-menu'),
-                  painter: _RadialNodeMenuPainter(
-                    center: localCenter,
-                    pointer: localPointer,
-                    sectionIndex: sectionIndex,
-                    detailIndex: detailIndex,
-                    detailItems: detailItems,
-                    lockedItem: lockedItem,
-                    detachAnchor: localAnchor,
-                    detachProgress: detachProgress,
-                    theme: t,
+            curve: MotionTokens.emphasized,
+            builder: (context, opening, child) {
+              final eased = Curves.easeOutCubic.transform(opening);
+              return ImageFiltered(
+                imageFilter: ui.ImageFilter.blur(
+                  sigmaX: 12 * (1 - eased),
+                  sigmaY: 12 * (1 - eased),
+                ),
+                child: Opacity(
+                  opacity: Curves.easeOut.transform(opening),
+                  child: Transform.rotate(
+                    angle: -.075 * (1 - eased),
+                    origin: localCenter,
+                    child: Transform.scale(
+                      scale: .42 + .58 * eased,
+                      alignment: Alignment.topLeft,
+                      origin: localCenter,
+                      child: child,
+                    ),
                   ),
                 ),
-              ),
+              );
+            },
+            child: TweenAnimationBuilder<double>(
+              key: ValueKey('radial-hover-${sectionIndex ?? -1}'),
+              tween: Tween(begin: 0, end: sectionIndex == null ? 0 : 1),
+              duration: MotionTokens.standard(context),
+              curve: MotionTokens.emphasized,
+              builder: (context, hoverProgress, child) =>
+                  TweenAnimationBuilder<double>(
+                    key: ValueKey(lockedItem?.id ?? 'radial-attached'),
+                    tween: Tween(begin: 0, end: lockedItem == null ? 0 : 1),
+                    duration: MotionTokens.spatial(context),
+                    curve: Curves.easeOutBack,
+                    builder: (context, detachProgress, _) => RepaintBoundary(
+                      child: CustomPaint(
+                        key: const Key('radial-node-menu'),
+                        painter: _RadialNodeMenuPainter(
+                          center: localCenter,
+                          pointer: localPointer,
+                          sectionIndex: sectionIndex,
+                          detailIndex: detailIndex,
+                          detailItems: detailItems,
+                          lockedItem: lockedItem,
+                          detachAnchor: localAnchor,
+                          detachProgress: detachProgress,
+                          hoverProgress: hoverProgress,
+                          theme: t,
+                        ),
+                      ),
+                    ),
+                  ),
+              child: const SizedBox.shrink(),
             ),
           ),
         ),
@@ -184,6 +203,7 @@ class _RadialNodeMenuPainter extends CustomPainter {
   final RadialNodeItem? lockedItem;
   final Offset? detachAnchor;
   final double detachProgress;
+  final double hoverProgress;
   final SyphonTheme theme;
 
   const _RadialNodeMenuPainter({
@@ -195,6 +215,7 @@ class _RadialNodeMenuPainter extends CustomPainter {
     required this.lockedItem,
     required this.detachAnchor,
     required this.detachProgress,
+    required this.hoverProgress,
     required this.theme,
   });
 
@@ -204,11 +225,7 @@ class _RadialNodeMenuPainter extends CustomPainter {
     return parseColor(kCategoryInfo[category]!.color);
   }
 
-  String _sectionLabel(int index) {
-    if (index == 5) return 'PKG';
-    final category = categoryForRadialSection(radialNodeSections[index])!;
-    return L.t(kCategoryInfo[category]!.label);
-  }
+  static const _sectionSymbols = ['↓', '◇', 'Σ', '⇄', '◉', '⧉'];
 
   Path _sector(double inner, double outer, double start, double sweep) {
     final outerRect = Rect.fromCircle(center: center, radius: outer);
@@ -217,6 +234,43 @@ class _RadialNodeMenuPainter extends CustomPainter {
       ..arcTo(outerRect, start, sweep, false)
       ..arcTo(innerRect, start + sweep, -sweep, false)
       ..close();
+  }
+
+  Path _hoverSector(double start, double sectorSweep, double pointerAngle) {
+    const samples = 28;
+    double radiusAt(double angle, {required bool outer}) {
+      var distance = (angle - pointerAngle).abs();
+      if (distance > math.pi) distance = math.pi * 2 - distance;
+      final normalized = (distance / (sectorSweep * .48)).clamp(0.0, 1.0);
+      final gaussian = math.exp(-5.2 * normalized * normalized);
+      final impulse = hoverProgress * gaussian;
+      return outer
+          ? radialOuterRadius + 18 * impulse
+          : radialInnerRadius - 4.5 * impulse;
+    }
+
+    final path = Path();
+    for (var index = 0; index <= samples; index++) {
+      final angle = start + sectorSweep * index / samples;
+      final point =
+          center +
+          Offset(math.cos(angle), math.sin(angle)) *
+              radiusAt(angle, outer: true);
+      if (index == 0) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+    for (var index = samples; index >= 0; index--) {
+      final angle = start + sectorSweep * index / samples;
+      final point =
+          center +
+          Offset(math.cos(angle), math.sin(angle)) *
+              radiusAt(angle, outer: false);
+      path.lineTo(point.dx, point.dy);
+    }
+    return path..close();
   }
 
   void _drawCentered(Canvas canvas, String text, Offset at, TextStyle style) {
@@ -233,29 +287,17 @@ class _RadialNodeMenuPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     const sweep = math.pi * 2 / 6;
-    canvas.drawCircle(
-      center,
-      radialOuterRadius + 5,
-      Paint()
-        ..color = Colors.black.withValues(alpha: theme.isDark ? .28 : .14)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
-    );
-    canvas.drawCircle(
-      center,
-      radialInnerRadius - 4,
-      Paint()..color = theme.bgSurface.withValues(alpha: .88),
-    );
-
     for (var index = 0; index < 6; index++) {
       final selected = sectionIndex == index;
       final color = _sectionColor(index);
       final start = -math.pi / 2 - sweep / 2 + index * sweep + .025;
-      final path = _sector(
-        selected ? radialInnerRadius - 3 : radialInnerRadius,
-        selected ? radialOuterRadius + 6 : radialOuterRadius,
-        start,
-        sweep - .05,
+      final pointerAngle = math.atan2(
+        pointer.dy - center.dy,
+        pointer.dx - center.dx,
       );
+      final path = selected
+          ? _hoverSector(start, sweep - .05, pointerAngle)
+          : _sector(radialInnerRadius, radialOuterRadius, start, sweep - .05);
       if (selected) {
         canvas.drawPath(
           path,
@@ -271,11 +313,11 @@ class _RadialNodeMenuPainter extends CustomPainter {
       final angle = -math.pi / 2 + index * sweep;
       _drawCentered(
         canvas,
-        _sectionLabel(index),
-        center + Offset(math.cos(angle), math.sin(angle)) * 56.5,
+        _sectionSymbols[index],
+        center + Offset(math.cos(angle), math.sin(angle)) * 71.5,
         TextStyle(
           color: Colors.white.withValues(alpha: selected ? 1 : .82),
-          fontSize: 7.5,
+          fontSize: 12,
           fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
         ),
       );
@@ -301,16 +343,24 @@ class _RadialNodeMenuPainter extends CustomPainter {
         detailIndex == null || detailIndex! >= detailItems.length
         ? null
         : detailItems[detailIndex!];
-    _drawCentered(
-      canvas,
-      lockedItem?.label ?? selectedItem?.label ?? '滑向色环',
-      center,
-      TextStyle(
-        color: theme.text,
-        fontSize: lockedItem == null ? 8.5 : 9,
-        fontWeight: lockedItem == null ? FontWeight.w500 : FontWeight.w700,
-      ),
-    );
+    final shownItem = lockedItem ?? selectedItem;
+    if (shownItem != null && sectionIndex != null) {
+      final angle = -math.pi / 2 + sectionIndex! * sweep;
+      final labelRadius = radialOuterRadius + 39 + 10 * hoverProgress;
+      _drawCentered(
+        canvas,
+        shownItem.label,
+        center + Offset(math.cos(angle), math.sin(angle)) * labelRadius,
+        TextStyle(
+          color: theme.text,
+          fontSize: 13.5,
+          fontWeight: FontWeight.w700,
+          shadows: [
+            Shadow(color: theme.bgCanvas.withValues(alpha: .9), blurRadius: 10),
+          ],
+        ),
+      );
+    }
 
     final delta = pointer - center;
     if (delta.distance < radialDeadRadius || sectionIndex == null) return;
@@ -371,5 +421,6 @@ class _RadialNodeMenuPainter extends CustomPainter {
       oldDelegate.lockedItem != lockedItem ||
       oldDelegate.detachAnchor != detachAnchor ||
       oldDelegate.detachProgress != detachProgress ||
+      oldDelegate.hoverProgress != hoverProgress ||
       oldDelegate.theme != theme;
 }

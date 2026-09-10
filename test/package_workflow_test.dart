@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter/gestures.dart' show kSecondaryButton;
-import 'package:flutter/material.dart' show IgnorePointer;
+import 'package:flutter/material.dart' show DecoratedBox, IgnorePointer;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -205,9 +205,11 @@ void main() {
       ),
     );
     expect(proxy, findsOneWidget);
+    final overview = find.byKey(ValueKey('package-glass-overview-$packageId'));
+    expect(overview, findsOneWidget);
     expect(
-      find.byKey(ValueKey('package-glass-overview-$packageId')),
-      findsOneWidget,
+      find.descendant(of: overview, matching: find.byType(DecoratedBox)),
+      findsNothing,
     );
     expect(find.byType(NodeCard), findsNWidgets(2));
     expect(memberPointer(first).ignoring, isTrue);
@@ -222,10 +224,29 @@ void main() {
     );
     expect(find.byKey(ValueKey('package-input-$second-in0')), findsOneWidget);
     expect(find.byKey(ValueKey('package-output-$first-out0')), findsOneWidget);
+    final beforeExpansion = {
+      for (final node in GraphStore.instance.nodes) node.id: node.position,
+    };
     await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
     await tester.pump();
     expect(proxy.hitTestable(), findsNothing);
+    final duringExpansion = {
+      for (final node in GraphStore.instance.nodes) node.id: node.position,
+    };
+    expect(
+      (duringExpansion[first]! - duringExpansion[second]!).distance,
+      lessThan((beforeExpansion[first]! - beforeExpansion[second]!).distance),
+    );
     await tester.pumpAndSettle();
+    final afterExpansion = {
+      for (final node in GraphStore.instance.nodes) node.id: node.position,
+    };
+    expect(
+      (afterExpansion[first]! - afterExpansion[second]!).distance,
+      greaterThan(
+        (duringExpansion[first]! - duringExpansion[second]!).distance,
+      ),
+    );
     expect(memberPointer(first).ignoring, isFalse);
     expect(memberPointer(second).ignoring, isFalse);
     expect(find.byKey(ValueKey('package-region-$packageId')), findsOneWidget);
