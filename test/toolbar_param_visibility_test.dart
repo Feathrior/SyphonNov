@@ -68,6 +68,7 @@ void main() {
       Future<void> hover(Finder f) async {
         await tester.sendEventToBinding(ptr.hover(tester.getCenter(f)));
         await tester.pump(const Duration(milliseconds: 120));
+        await tester.pumpAndSettle();
       }
 
       // 未点击任何按钮时,划过四个按钮不应弹出任何次级菜单

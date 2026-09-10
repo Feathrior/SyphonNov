@@ -39,6 +39,7 @@ import '../i18n.dart';
 import '../models/presets.dart';
 import '../store/graph_store.dart';
 import '../store/settings_store.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 // ════════════════════════════════════════════════════════════════════
@@ -524,6 +525,19 @@ class _MenuButtonState extends State<_MenuButton> {
         dismissOnPointerMoveAway: true,
         placementMode: fluent.FlyoutPlacementMode.bottomLeft,
         additionalOffset: 2,
+        transitionDuration: MotionTokens.standard(context),
+        reverseTransitionDuration: MotionTokens.quick(context),
+        transitionCurve: MotionTokens.emphasized,
+        transitionBuilder: (context, animation, placement, child) =>
+            BlurScaleTransition(
+              animation: CurvedAnimation(
+                parent: animation,
+                curve: MotionTokens.emphasized,
+                reverseCurve: MotionTokens.exit,
+              ),
+              alignment: Alignment.topLeft,
+              child: child,
+            ),
         builder: (context) => fluent.MenuFlyout(items: _closeableItems()),
       );
     }

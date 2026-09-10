@@ -16,6 +16,7 @@ import '../models/data.dart' as md;
 import '../models/exec_engine.dart';
 import '../models/registry.dart';
 import '../store/graph_store.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 // ==================== 输出描述 ====================
@@ -1688,7 +1689,11 @@ class PropertiesPanel extends StatelessWidget {
         }
         final cfg = node == null ? null : getConfig(node.configId);
         if (node == null || cfg == null) {
-          return _emptyState(t);
+          return _animatedPanel(
+            context,
+            const ValueKey('properties-empty'),
+            _emptyState(t),
+          );
         }
         final exposedKeys = node.exposed;
         final result = store.results[node.id];
@@ -1697,62 +1702,87 @@ class PropertiesPanel extends StatelessWidget {
         final selId = node.id;
 
         // .nf-props:width 300、bg-surface、border-left 1px stroke
-        return Container(
-          width: SyphonDims.propsW,
-          decoration: BoxDecoration(
-            color: t.bgSurface,
-            border: Border(left: BorderSide(color: t.stroke, width: 1)),
-          ),
-          child: ListView(
-            padding: const EdgeInsets.all(12), // .nf-props-body
-            children: [
-              _buildHead(t, cfg, catColor, catInfo),
-              _buildDesc(t, cfg),
+        return _animatedPanel(
+          context,
+          ValueKey('properties-$selId'),
+          Container(
+            width: SyphonDims.propsW,
+            decoration: BoxDecoration(
+              color: t.bgSurface,
+              border: Border(left: BorderSide(color: t.stroke, width: 1)),
+            ),
+            child: ListView(
+              padding: const EdgeInsets.all(12), // .nf-props-body
+              children: [
+                _buildHead(t, cfg, catColor, catInfo),
+                _buildDesc(t, cfg),
 
-              // 参数
-              if (cfg.params.isNotEmpty)
-                ..._parameterSections(context, t, cfg, node, exposedKeys),
+                // 参数
+                if (cfg.params.isNotEmpty)
+                  ..._parameterSections(context, t, cfg, node, exposedKeys),
 
-              // 输出状态
-              if (cfg.outputs.isNotEmpty)
-                _section(t, '输出状态', [
-                  for (final o in cfg.outputs) _outputRow(t, o, result),
-                  if (result?.error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Text(
-                        '错误:${result!.error}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: t.danger,
-                          height: 1.5,
+                // 输出状态
+                if (cfg.outputs.isNotEmpty)
+                  _section(t, '输出状态', [
+                    for (final o in cfg.outputs) _outputRow(t, o, result),
+                    if (result?.error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          '错误:${result!.error}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: t.danger,
+                            height: 1.5,
+                          ),
                         ),
                       ),
-                    ),
-                ]),
+                  ]),
 
-              // 节点操作
-              _section(t, '节点操作', [
-                // .nf-props-actions:flex gap 6
-                Row(
-                  children: [
-                    _SmButton(
-                      label: '复制',
-                      onPressed: () => store.duplicateNodes([selId]),
-                    ),
-                    const SizedBox(width: 6),
-                    _SmButton(
-                      label: '删除',
-                      danger: true,
-                      onPressed: () => store.removeNodes([selId]),
-                    ),
-                  ],
-                ),
-              ]),
-            ],
+                // 节点操作
+                _section(t, '节点操作', [
+                  // .nf-props-actions:flex gap 6
+                  Row(
+                    children: [
+                      _SmButton(
+                        label: '复制',
+                        onPressed: () => store.duplicateNodes([selId]),
+                      ),
+                      const SizedBox(width: 6),
+                      _SmButton(
+                        label: '删除',
+                        danger: true,
+                        onPressed: () => store.removeNodes([selId]),
+                      ),
+                    ],
+                  ),
+                ]),
+              ],
+            ),
           ),
         );
       },
+    );
+  }
+
+  Widget _animatedPanel(BuildContext context, Key key, Widget child) {
+    return AnimatedSwitcher(
+      duration: MotionTokens.standard(context),
+      reverseDuration: MotionTokens.quick(context),
+      switchInCurve: MotionTokens.emphasized,
+      switchOutCurve: MotionTokens.exit,
+      layoutBuilder: (current, previous) => Stack(
+        alignment: Alignment.topRight,
+        children: [...previous, ?current],
+      ),
+      transitionBuilder: (child, animation) => BlurScaleTransition(
+        animation: animation,
+        alignment: Alignment.centerRight,
+        beginScale: 0.985,
+        maxBlur: 6,
+        child: child,
+      ),
+      child: KeyedSubtree(key: key, child: child),
     );
   }
 

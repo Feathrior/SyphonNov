@@ -41,8 +41,6 @@ class NodeShelf extends StatefulWidget {
 
 class _NodeShelfState extends State<NodeShelf> {
   final LayerLink _link = LayerLink();
-  final TextEditingController _search = TextEditingController();
-  final FocusNode _searchFocus = FocusNode();
   OverlayEntry? _entry;
   Timer? _leaveTimer;
   Category _category = Category.input;
@@ -59,12 +57,10 @@ class _NodeShelfState extends State<NodeShelf> {
     _removeGlobalHandlers();
     _entry?.remove();
     _entry = null;
-    _search.dispose();
-    _searchFocus.dispose();
     super.dispose();
   }
 
-  void _open(Category category, {bool focusSearch = false}) {
+  void _open(Category category) {
     _leaveTimer?.cancel();
     _closing = false;
     _category = category;
@@ -75,11 +71,6 @@ class _NodeShelfState extends State<NodeShelf> {
       _keyHandlerInstalled = true;
     } else {
       _entry!.markNeedsBuild();
-    }
-    if (focusSearch) {
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _searchFocus.requestFocus(),
-      );
     }
     if (mounted) setState(() {});
   }
@@ -103,7 +94,6 @@ class _NodeShelfState extends State<NodeShelf> {
     _entry = null;
     _closing = false;
     _removeGlobalHandlers();
-    _search.clear();
     if (mounted) setState(() {});
   }
 
@@ -191,15 +181,13 @@ class _NodeShelfState extends State<NodeShelf> {
                     active: _entry != null && _category == category,
                     onEnter: () => _open(category),
                     onExit: _scheduleClose,
-                    onTap: () => _open(category, focusSearch: true),
+                    onTap: () => _open(category),
                   ),
                   const SizedBox(width: 6),
                 ],
                 const Spacer(),
-                Icon(Icons.search_rounded, size: 14, color: t.textFaint),
-                const SizedBox(width: 5),
                 Text(
-                  L.t('单击搜索 · 拖拽创建'),
+                  L.t('悬停展开 · 拖拽创建'),
                   style: TextStyle(fontSize: 10, color: t.textFaint),
                 ),
               ],
@@ -230,10 +218,7 @@ class _NodeShelfState extends State<NodeShelf> {
                 width: width,
                 visible: !_closing,
                 category: _category,
-                search: _search,
-                searchFocus: _searchFocus,
-                onSearchChanged: (_) => _entry?.markNeedsBuild(),
-                onSwitchCategory: _open,
+                onLibraryChanged: () => _entry?.markNeedsBuild(),
                 onPick: (id) {
                   SettingsStore.instance.recordNodeUse(id);
                   widget.onCreateNode(id);
@@ -383,10 +368,7 @@ class _NodeLibrary extends StatelessWidget {
   final double width;
   final bool visible;
   final Category category;
-  final TextEditingController search;
-  final FocusNode searchFocus;
-  final ValueChanged<String> onSearchChanged;
-  final ValueChanged<Category> onSwitchCategory;
+  final VoidCallback onLibraryChanged;
   final ValueChanged<String> onPick;
   final VoidCallback onDragStarted;
   final void Function(NodeConfig, Offset) onDragUpdate;
@@ -397,10 +379,7 @@ class _NodeLibrary extends StatelessWidget {
     required this.width,
     required this.visible,
     required this.category,
-    required this.search,
-    required this.searchFocus,
-    required this.onSearchChanged,
-    required this.onSwitchCategory,
+    required this.onLibraryChanged,
     required this.onPick,
     required this.onDragStarted,
     required this.onDragUpdate,
@@ -412,15 +391,7 @@ class _NodeLibrary extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
     final settings = SettingsStore.instance;
-    final query = search.text.trim().toLowerCase();
-    final source = query.isEmpty
-        ? kNodeConfigs.where((cfg) => cfg.category == category)
-        : kNodeConfigs.where((cfg) {
-            final haystack =
-                '${cfg.label} ${cfg.description} ${cfg.id.replaceAll('_', ' ')}'
-                    .toLowerCase();
-            return haystack.contains(query);
-          });
+    final source = kNodeConfigs.where((cfg) => cfg.category == category);
     final items = source.toList()
       ..sort((a, b) {
         final af = settings.favoriteNodeIds.contains(a.id) ? 0 : 1;
@@ -442,18 +413,15 @@ class _NodeLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: .965 + .035 * value,
-            alignment: Alignment.topLeft,
-            child: child,
-          ),
+        builder: (context, value, child) => BlurScaleTransition(
+          animation: AlwaysStoppedAnimation(value),
+          alignment: Alignment.topLeft,
+          child: child!,
         ),
         child: Container(
           key: const Key('node-library-overlay'),
           width: width,
-          height: 342,
+          height: 286,
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: t.bgFloat.withValues(alpha: 0.985),
@@ -469,35 +437,6 @@ class _NodeLibrary extends StatelessWidget {
           ),
           child: Column(
             children: [
-              _SearchField(
-                controller: search,
-                focusNode: searchFocus,
-                onChanged: onSearchChanged,
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                height: 30,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: kAllCategories.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 5),
-                  itemBuilder: (context, index) {
-                    final cat = kAllCategories[index];
-                    final info = kCategoryInfo[cat]!;
-                    return ChoiceChip(
-                      label: Text(
-                        L.t(info.label),
-                        style: const TextStyle(fontSize: 10),
-                      ),
-                      selected: cat == category && query.isEmpty,
-                      onSelected: (_) => onSwitchCategory(cat),
-                      visualDensity: VisualDensity.compact,
-                      showCheckmark: false,
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 8),
               Expanded(
                 child: items.isEmpty
                     ? Center(
@@ -523,7 +462,7 @@ class _NodeLibrary extends StatelessWidget {
                           ),
                           onFavorite: () {
                             settings.toggleFavoriteNode(items[index].id);
-                            onSearchChanged(search.text);
+                            onLibraryChanged();
                           },
                           onPick: () => onPick(items[index].id),
                           onDragStarted: onDragStarted,
@@ -536,57 +475,6 @@ class _NodeLibrary extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SearchField extends StatelessWidget {
-  final TextEditingController controller;
-  final FocusNode focusNode;
-  final ValueChanged<String> onChanged;
-  const _SearchField({
-    required this.controller,
-    required this.focusNode,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    return TextField(
-      key: const Key('node-shelf-search'),
-      controller: controller,
-      focusNode: focusNode,
-      onChanged: onChanged,
-      style: TextStyle(fontSize: 12, color: t.text),
-      decoration: InputDecoration(
-        isDense: true,
-        hintText: L.t('搜索名称、说明或节点 ID'),
-        prefixIcon: Icon(Icons.search_rounded, size: 17, color: t.textFaint),
-        suffixIcon: controller.text.isEmpty
-            ? null
-            : IconButton(
-                icon: const Icon(Icons.close_rounded, size: 16),
-                onPressed: () {
-                  controller.clear();
-                  onChanged('');
-                },
-              ),
-        filled: true,
-        fillColor: t.bgInput,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(11),
-          borderSide: BorderSide(color: t.stroke),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(11),
-          borderSide: BorderSide(color: t.stroke),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(11),
-          borderSide: BorderSide(color: t.accent, width: 1.4),
         ),
       ),
     );

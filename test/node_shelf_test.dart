@@ -45,7 +45,7 @@ void main() {
     }
   });
 
-  testWidgets('hover opens overlay and id search filters registered nodes', (
+  testWidgets('hover opens the selected category without duplicate filters', (
     tester,
   ) async {
     await pumpApp(tester);
@@ -60,12 +60,9 @@ void main() {
       SyphonDims.nodeShelfH,
     );
 
-    await tester.enterText(
-      find.byKey(const Key('node-shelf-search')),
-      'func_curve',
-    );
-    await tester.pump();
-    expect(find.text('func_curve'), findsOneWidget);
+    expect(find.byKey(const Key('node-shelf-search')), findsNothing);
+    expect(find.byType(ChoiceChip), findsNothing);
+    expect(find.text('func_curve'), findsNothing);
     expect(find.text('table_input'), findsNothing);
   });
 

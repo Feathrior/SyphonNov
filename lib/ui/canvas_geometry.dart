@@ -221,6 +221,49 @@ Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
   return Size(w, h);
 }
 
+/// 将一组新节点从首选位置推出已有节点的占用范围。
+///
+/// 算法逐个求解最小轴向位移，并把已安置的新节点加入障碍集合。这样 Alt
+/// 自动补出的转换链保持原有顺序，同时不会堆叠在已有节点或彼此之上。
+Map<String, Offset> resolveRepulsiveNodeLayout({
+  required List<({String id, Offset position, Size size})> moving,
+  required Iterable<Rect> obstacles,
+  double gap = 28,
+  int maxIterations = 96,
+}) {
+  final occupied = obstacles.toList(growable: true);
+  final result = <String, Offset>{};
+  for (final item in moving) {
+    var rect = item.position & item.size;
+    for (var iteration = 0; iteration < maxIterations; iteration++) {
+      Rect? hit;
+      for (final obstacle in occupied) {
+        if (rect.overlaps(obstacle.inflate(gap))) {
+          hit = obstacle.inflate(gap);
+          break;
+        }
+      }
+      if (hit == null) break;
+      final shifts = <Offset>[
+        Offset(hit.left - rect.right, 0),
+        Offset(hit.right - rect.left, 0),
+        Offset(0, hit.top - rect.bottom),
+        Offset(0, hit.bottom - rect.top),
+      ]..sort((a, b) => a.distanceSquared.compareTo(b.distanceSquared));
+      var shift = shifts.first;
+      // 避免恰好贴边时因浮点误差下一轮仍被判为相交。
+      if (shift.dx < 0) shift += const Offset(-0.01, 0);
+      if (shift.dx > 0) shift += const Offset(0.01, 0);
+      if (shift.dy < 0) shift += const Offset(0, -0.01);
+      if (shift.dy > 0) shift += const Offset(0, 0.01);
+      rect = rect.shift(shift);
+    }
+    result[item.id] = rect.topLeft;
+    occupied.add(rect);
+  }
+  return result;
+}
+
 /// 连线端点(世界坐标)。多条连线共用端口时端点纵向均匀排开。
 /// handle 11px 宽、溢出节点边缘 7px,锚点取 handle 中点:
 /// 输出 = 节点右边缘 - 4 + 5.5 = 右 + 1.5;输入 = 节点左边缘 - 7 + 5.5 = 左 - 1.5

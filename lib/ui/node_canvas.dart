@@ -693,8 +693,7 @@ class NodeCanvas extends StatefulWidget {
   State<NodeCanvas> createState() => NodeCanvasState();
 }
 
-class NodeCanvasState extends State<NodeCanvas>
-    with SingleTickerProviderStateMixin {
+class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   final GraphStore store = GraphStore.instance;
   final ValueNotifier<double> _zoomNotifier = ValueNotifier(1);
   final FocusNode _focusNode = FocusNode();
@@ -703,6 +702,9 @@ class NodeCanvasState extends State<NodeCanvas>
 
   // 切断粒子爆裂动画:每帧刷新直到动画结束
   late final Ticker _cutTicker;
+  late final AnimationController _conversionLayoutController;
+  Map<String, Offset> _conversionLayoutOrigins = const {};
+  Map<String, Offset> _conversionLayoutTargets = const {};
   final List<_ParticleBurst> _bursts = []; // 一次手势可爆出多次(每次切断追加一颗)
 
   double _zoom = 1;
@@ -872,6 +874,27 @@ class NodeCanvasState extends State<NodeCanvas>
   @override
   void initState() {
     super.initState();
+    _conversionLayoutController = AnimationController(vsync: this)
+      ..addListener(() {
+        if (_conversionLayoutTargets.isEmpty) return;
+        final progress = MotionTokens.emphasized.transform(
+          _conversionLayoutController.value,
+        );
+        store.moveNodesTo(_conversionLayoutTargets.keys.toSet(), {
+          for (final entry in _conversionLayoutTargets.entries)
+            entry.key: Offset.lerp(
+              _conversionLayoutOrigins[entry.key],
+              entry.value,
+              progress,
+            )!,
+        });
+      })
+      ..addStatusListener((status) {
+        if (status != AnimationStatus.completed) return;
+        store.finishLayoutChange();
+        _conversionLayoutOrigins = const {};
+        _conversionLayoutTargets = const {};
+      });
     // 切断粒子爆裂/刀光动画:每帧刷新直到动画全部结束(渲染层,不改交互逻辑)
     _cutTicker = createTicker((_) {
       if (!mounted) return;
@@ -1296,7 +1319,48 @@ class NodeCanvasState extends State<NodeCanvas>
       );
     }
     store.addLog('ok', '已自动插入转换节点:${logLabels.join('→')}');
+    _startConversionLayout(ids);
     if (store.autoRun) store.runAfterGraphChange(edgeChanged: true);
+  }
+
+  void _startConversionLayout(List<String> ids) {
+    if (_conversionLayoutController.isAnimating) {
+      _conversionLayoutController.stop();
+      if (_conversionLayoutTargets.isNotEmpty) {
+        store.moveNodesTo(
+          _conversionLayoutTargets.keys.toSet(),
+          _conversionLayoutTargets,
+        );
+        store.finishLayoutChange();
+      }
+    }
+    final movingIds = ids.toSet();
+    final moving = <({String id, Offset position, Size size})>[];
+    final obstacles = <Rect>[];
+    for (final node in store.nodes) {
+      final size = nodeSize(node, store.edges, result: store.results[node.id]);
+      if (movingIds.contains(node.id)) {
+        moving.add((id: node.id, position: node.position, size: size));
+      } else {
+        obstacles.add(node.position & size);
+      }
+    }
+    final targets = resolveRepulsiveNodeLayout(
+      moving: moving,
+      obstacles: obstacles,
+    );
+    final origins = {for (final item in moving) item.id: item.position};
+    if (targets.entries.every((e) => origins[e.key] == e.value)) return;
+    final duration = MotionTokens.spatial(context);
+    if (duration == Duration.zero) {
+      store.moveNodesTo(movingIds, targets);
+      store.finishLayoutChange();
+      return;
+    }
+    _conversionLayoutOrigins = origins;
+    _conversionLayoutTargets = targets;
+    _conversionLayoutController.duration = duration;
+    _conversionLayoutController.forward(from: 0);
   }
 
   /// 被拖拽端口 → 目标端口类型 的最短转换链(多步);无转换路径返回 null
@@ -2277,6 +2341,7 @@ class NodeCanvasState extends State<NodeCanvas>
   @override
   void dispose() {
     _cutTicker.dispose();
+    _conversionLayoutController.dispose();
     _zoomNotifier.dispose();
     _dropPreview.dispose();
     _sockHover.dispose();
@@ -2365,7 +2430,22 @@ class NodeCanvasState extends State<NodeCanvas>
         children: [
           Positioned.fill(child: _buildCanvasLayer(t)),
           _buildExternalDropPreview(t),
-          if (_menuPos != null) _buildMenuLayer(),
+          Positioned.fill(
+            child: AnimatedSwitcher(
+              duration: MotionTokens.standard(context),
+              reverseDuration: MotionTokens.quick(context),
+              switchInCurve: MotionTokens.emphasized,
+              switchOutCurve: MotionTokens.exit,
+              transitionBuilder: (child, animation) =>
+                  PopupMotionScope(animation: animation, child: child),
+              child: _menuPos == null
+                  ? const SizedBox.shrink(key: ValueKey('canvas-menu-empty'))
+                  : KeyedSubtree(
+                      key: const ValueKey('canvas-menu-visible'),
+                      child: _buildMenuLayer(),
+                    ),
+            ),
+          ),
         ],
       ),
     );
@@ -2591,22 +2671,20 @@ class NodeCanvasState extends State<NodeCanvas>
   /// 单节点卡片层(独立 RepaintBoundary:hover/拖拽只重绘该卡片层)
   Widget _buildNodeLayer(GraphNode n) {
     return AnimatedBuilder(
+      key: ValueKey('node-layer-${n.id}'),
       animation: store.layoutRevision,
       child: CanvasZoom(
         notifier: _zoomNotifier,
         child: RepaintBoundary(
           child: TweenAnimationBuilder<double>(
             key: ValueKey('node-entry-${n.id}'),
-            tween: Tween(begin: 0.72, end: 1),
+            tween: Tween(begin: 0.0, end: 1.0),
             duration: MotionTokens.spatial(context),
             curve: MotionTokens.emphasized,
-            builder: (context, value, child) => Opacity(
-              opacity: value,
-              child: Transform.scale(
-                scale: value,
-                alignment: Alignment.topLeft,
-                child: child,
-              ),
+            builder: (context, value, child) => BlurScaleTransition(
+              animation: AlwaysStoppedAnimation(value),
+              alignment: Alignment.topLeft,
+              child: child!,
             ),
             child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
           ),
@@ -2771,13 +2849,11 @@ class NodeCanvasState extends State<NodeCanvas>
         onClose: _closeMenu,
       );
     }
-    return Positioned.fill(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _closeMenu,
-        onSecondaryTap: _closeMenu,
-        child: Stack(clipBehavior: Clip.none, children: [?menu]),
-      ),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _closeMenu,
+      onSecondaryTap: _closeMenu,
+      child: Stack(clipBehavior: Clip.none, children: [?menu]),
     );
   }
 
