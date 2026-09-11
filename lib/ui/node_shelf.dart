@@ -336,6 +336,12 @@ class _NodeShelfState extends State<NodeShelf> {
                   // 不同分类之间切换不做"退场→入场"两段动画:时长归零,
                   // 内容直接替换,尺寸过渡交给上面的 AnimatedContainer
                   duration: Duration.zero,
+                  // 必须固定左上对齐:默认 layoutBuilder 是居中的 Stack,
+                  // 宽度一变内容就跟着左右移动,看起来像左边缘在"跃变"
+                  layoutBuilder: (current, previous) => Stack(
+                    alignment: Alignment.topLeft,
+                    children: [...previous, ?current],
+                  ),
                   child: KeyedSubtree(
                     key: ValueKey(
                       _packageMode ? 'package-library' : _category.name,

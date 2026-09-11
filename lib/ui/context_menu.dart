@@ -92,15 +92,15 @@ class _ViewportAwareMenuState extends State<ViewportAwareMenu> {
   Widget build(BuildContext context) {
     final pos = _pos ?? _offscreen;
     final animation = PopupMotionScope.maybeOf(context);
-    // 与节点生成同一套"生长出现":从光标所在的那个角长出来
-    // (菜单向右下弹出时是左上角,翻转时对应换成右上/左下/右下角)
-    final fromRight = pos.dx < widget.mouse.dx;
-    final fromBottom = pos.dy < widget.mouse.dy;
+    // 与节点生成同一套"生长出现"。缩放中心取光标指针本身(菜单从光标处
+    // 长出来,而不是从某个角居中放大);位移方向仍按菜单落在光标的上/下方
+    final fromBottom = pos.dy > widget.mouse.dy;
     final content = animation == null
         ? widget.child
         : BlurScaleTransition(
             animation: animation,
-            alignment: Alignment(fromRight ? -1 : 1, fromBottom ? -1 : 1),
+            alignment: Alignment.topLeft,
+            origin: widget.mouse - pos,
             beginScale: MotionTokens.growBeginScale,
             maxBlur: MotionTokens.growMaxBlur,
             // 菜单的模糊铺满整段:菜单小、放大快,模糊若也提前归零就看不出来
