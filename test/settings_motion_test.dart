@@ -78,6 +78,16 @@ void main() {
       popMotionFrame(.2, maxBlur: nodeBlur).blur,
       lessThan(popMotionFrame(.2, maxBlur: nodeBlur, blurUntil: .4).blur),
     );
+
+    // 菜单:模糊铺满整段 —— 放大到接近原尺寸(50%)时仍应有明显模糊
+    expect(
+      popMotionFrame(.5, maxBlur: MotionTokens.growMaxBlur, blurUntil: MotionTokens.menuBlurUntil).blur,
+      greaterThan(5),
+    );
+    expect(
+      popMotionFrame(1, maxBlur: MotionTokens.growMaxBlur, blurUntil: MotionTokens.menuBlurUntil).blur,
+      0,
+    );
   });
 
   test('animation speed scales hard-coded durations', () {

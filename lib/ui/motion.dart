@@ -92,11 +92,14 @@ class MotionTokens {
   /// - [growBeginScale] 起始缩放(0.08 = 从一点长出来)
   /// - [growMaxBlur] 起始模糊;显形阶段线性消退,幅度克制
   /// - [growReveal] 透明度在前 40% 完成,之后专做缩放回弹
-  /// - [growBlurUntil] 模糊在前 40% 消退完 —— 生长到原尺寸时基本已经清晰
+  /// - [growBlurUntil] 节点的模糊窗口:长到原尺寸时已经清晰
+  /// - [menuBlurUntil] 菜单的模糊窗口:菜单整体尺寸小、放大又快,模糊若也
+  ///   在 40% 处归零,等看清内容时已经没什么可看 —— 所以铺满整段动画
   static const double growBeginScale = .08;
   static const double growMaxBlur = 14;
   static const double growReveal = .4;
   static const double growBlurUntil = .4;
+  static const double menuBlurUntil = 1;
 
   /// 三档动效幅度与系统“减少动态效果”共用同一语义。完整保留全部位移、
   /// 缩放、旋转和模糊；简化只保留 42%；关闭直接落在最终静态状态。

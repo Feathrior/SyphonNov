@@ -42,7 +42,7 @@ void main() {
       transition.beginScale == MotionTokens.growBeginScale &&
       transition.maxBlur == MotionTokens.growMaxBlur &&
       transition.reveal == MotionTokens.growReveal &&
-      transition.blurUntil == MotionTokens.growBlurUntil;
+      transition.blurUntil == MotionTokens.menuBlurUntil;
 
   testWidgets('right-click menu grows like a generated node', (tester) async {
     await pumpApp(tester);

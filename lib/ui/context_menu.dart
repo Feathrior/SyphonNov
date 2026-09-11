@@ -103,7 +103,8 @@ class _ViewportAwareMenuState extends State<ViewportAwareMenu> {
             alignment: Alignment(fromRight ? -1 : 1, fromBottom ? -1 : 1),
             beginScale: MotionTokens.growBeginScale,
             maxBlur: MotionTokens.growMaxBlur,
-            blurUntil: MotionTokens.growBlurUntil,
+            // 菜单的模糊铺满整段:菜单小、放大快,模糊若也提前归零就看不出来
+            blurUntil: MotionTokens.menuBlurUntil,
             reveal: MotionTokens.growReveal,
             beginOffset: Offset(0, fromBottom ? -8 : 8),
             child: widget.child,

@@ -540,7 +540,8 @@ class _MenuButtonState extends State<_MenuButton> {
               alignment: Alignment.topLeft,
               beginScale: MotionTokens.growBeginScale,
               maxBlur: MotionTokens.growMaxBlur,
-              blurUntil: MotionTokens.growBlurUntil,
+              // 与右键菜单一致:模糊铺满整段,菜单放大到能看清时仍在由糊转清
+              blurUntil: MotionTokens.menuBlurUntil,
               reveal: MotionTokens.growReveal,
               child: child,
             ),
