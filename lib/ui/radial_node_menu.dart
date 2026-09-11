@@ -134,8 +134,7 @@ RadialEntranceFrame radialEntranceFrame(
       -math.pi * 1.17 * (1 - turn) +
       .165 * math.sin(rotationTime * math.pi * 2) * (1 - rotationTime);
   final clarity = Curves.easeOutCubic.transform(t);
-  final fullOpacity =
-      .32 + .68 * Curves.easeOut.transform((t / .34).clamp(0.0, 1.0));
+  const fullOpacity = 1.0;
   return RadialEntranceFrame(
     scale: 1 + (fullScale - 1) * strength,
     rotation: fullRotation * strength,
