@@ -52,7 +52,20 @@ class MotionTokens {
   static Duration quick(BuildContext context) => _duration(context, 110, 70);
   static Duration standard(BuildContext context) =>
       _duration(context, 230, 170);
-  static Duration spatial(BuildContext context) => _duration(context, 320, 250);
+  static Duration spatial(BuildContext context) =>
+      _duration(context, 320, 250);
+
+  /// 菜单/浮层退场:比全局节奏再快一倍 —— 收场要干脆
+  static Duration dismiss(BuildContext context) =>
+      _duration(context, 110, 70, times: brisk);
+
+  /// 上边栏弹层这类面板级退场:基础时长更长,同样再快一倍
+  static Duration dismissPanel(BuildContext context) =>
+      _duration(context, 230, 170, times: brisk);
+
+  /// 右键圆环的呼出回弹与圆球分离/收束:比全局节奏再快一倍
+  static Duration radialBounce(BuildContext context) =>
+      _duration(context, 320, 250, times: brisk);
 
   /// 三档动效幅度与系统“减少动态效果”共用同一语义。完整保留全部位移、
   /// 缩放、旋转和模糊；简化只保留 42%；关闭直接落在最终静态状态。
@@ -72,16 +85,27 @@ class MotionTokens {
   /// 三档会一起变慢;想回调只需改这一个数。
   static const double pacing = 2;
 
+  /// "利落"系数:退场、圆环回弹这类希望干脆的过渡,在全局节奏上再乘它
+  /// ([times] 参数)。0.5 = 再快一倍。
+  static const double brisk = .5;
+
   /// 按设置中的动画速度倍率缩放任意动画时长(1.0× 时原样返回)。
   /// 速度越慢,时长越长:适中 0.75× 速度 → 时长 ×1.33,慢速 0.6× → ×1.67。
-  static Duration scaled(Duration base) {
+  /// [times] 用于单个动画的额外加减速(见 [brisk])。
+  static Duration scaled(Duration base, {double times = 1}) {
     if (base <= Duration.zero) return Duration.zero;
-    final factor = SettingsStore.instance.motionSpeed.durationFactor * pacing;
+    final factor =
+        SettingsStore.instance.motionSpeed.durationFactor * pacing * times;
     if (factor == 1) return base;
     return Duration(microseconds: (base.inMicroseconds * factor).round());
   }
 
-  static Duration _duration(BuildContext context, int full, int reduced) {
+  static Duration _duration(
+    BuildContext context,
+    int full,
+    int reduced, {
+    double times = 1,
+  }) {
     final setting = SettingsStore.instance.motionMode;
     final systemReduced =
         MediaQuery.maybeOf(context)?.disableAnimations ?? false;
@@ -90,9 +114,9 @@ class MotionTokens {
       // 简化模式下"快速"过渡直接归零,其余按简化时长(同样受速度倍率影响)
       return reduced == 70
           ? Duration.zero
-          : scaled(Duration(milliseconds: reduced));
+          : scaled(Duration(milliseconds: reduced), times: times);
     }
-    return scaled(Duration(milliseconds: full));
+    return scaled(Duration(milliseconds: full), times: times);
   }
 }
 

@@ -170,7 +170,8 @@ class _NodeShelfState extends State<NodeShelf> {
     if (_entry == null || _dragging || !mounted) return;
     _closing = true;
     _markOverlay();
-    _leaveTimer = Timer(MotionTokens.standard(context), _removeOverlay);
+    // 退场用更短的时长,并与之匹配地移除弹层
+    _leaveTimer = Timer(MotionTokens.dismissPanel(context), _removeOverlay);
   }
 
   void _removeOverlay() {
@@ -331,7 +332,7 @@ class _NodeShelfState extends State<NodeShelf> {
                 child: AnimatedSwitcher(
                   key: const Key('node-library-content-transition'),
                   duration: MotionTokens.standard(overlayContext),
-                  reverseDuration: MotionTokens.quick(overlayContext),
+                  reverseDuration: MotionTokens.dismiss(overlayContext),
                   switchInCurve: MotionTokens.enter,
                   switchOutCurve: MotionTokens.exit,
                   layoutBuilder: (current, previous) => Stack(
@@ -608,7 +609,10 @@ class _PackageLibrary extends StatelessWidget {
       type: MaterialType.transparency,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: visible ? 1 : 0),
-        duration: MotionTokens.standard(context),
+        // 退场比呼出快一倍(与 _beginClose 的移除计时一致)
+        duration: visible
+            ? MotionTokens.standard(context)
+            : MotionTokens.dismissPanel(context),
         curve: MotionTokens.emphasized,
         builder: (context, value, child) {
           final amplitude = MotionTokens.amplitude(context);
@@ -754,7 +758,10 @@ class _NodeLibrary extends StatelessWidget {
       type: MaterialType.transparency,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 0, end: visible ? 1 : 0),
-        duration: MotionTokens.standard(context),
+        // 退场比呼出快一倍(与 _beginClose 的移除计时一致)
+        duration: visible
+            ? MotionTokens.standard(context)
+            : MotionTokens.dismissPanel(context),
         curve: MotionTokens.emphasized,
         builder: (context, value, child) {
           final amplitude = MotionTokens.amplitude(context);

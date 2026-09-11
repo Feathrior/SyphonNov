@@ -526,7 +526,7 @@ class _MenuButtonState extends State<_MenuButton> {
         placementMode: fluent.FlyoutPlacementMode.bottomLeft,
         additionalOffset: 2,
         transitionDuration: MotionTokens.standard(context),
-        reverseTransitionDuration: MotionTokens.quick(context),
+        reverseTransitionDuration: MotionTokens.dismiss(context),
         transitionCurve: MotionTokens.emphasized,
         transitionBuilder: (context, animation, placement, child) =>
             BlurScaleTransition(

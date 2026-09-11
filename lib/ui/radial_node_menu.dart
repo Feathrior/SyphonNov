@@ -191,7 +191,7 @@ class _RadialNodeMenuState extends State<RadialNodeMenu>
   void didChangeDependencies() {
     super.didChangeDependencies();
     _entrance.duration = Duration(
-      milliseconds: (MotionTokens.spatial(context).inMilliseconds * 1.45)
+      milliseconds: (MotionTokens.radialBounce(context).inMilliseconds * 1.45)
           .round(),
     );
     if (!_started) {
@@ -269,7 +269,7 @@ class _RadialNodeMenuState extends State<RadialNodeMenu>
                       begin: 0,
                       end: widget.lockedItem == null ? 0 : 1,
                     ),
-                    duration: MotionTokens.spatial(context),
+                    duration: MotionTokens.radialBounce(context),
                     curve: Curves.easeOutBack,
                     builder: (context, detachProgress, _) => RepaintBoundary(
                       child: CustomPaint(

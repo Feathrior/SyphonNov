@@ -248,7 +248,7 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure>
   void didChangeDependencies() {
     super.didChangeDependencies();
     _controller.duration = MotionTokens.standard(context);
-    _controller.reverseDuration = MotionTokens.quick(context);
+    _controller.reverseDuration = MotionTokens.dismiss(context);
   }
 
   @override
@@ -1829,7 +1829,7 @@ class PropertiesPanel extends StatelessWidget {
   Widget _animatedPanel(BuildContext context, Key key, Widget child) {
     return AnimatedSwitcher(
       duration: MotionTokens.standard(context),
-      reverseDuration: MotionTokens.quick(context),
+      reverseDuration: MotionTokens.dismiss(context),
       switchInCurve: MotionTokens.emphasized,
       switchOutCurve: MotionTokens.exit,
       layoutBuilder: (current, previous) => Stack(

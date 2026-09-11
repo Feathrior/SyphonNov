@@ -3027,7 +3027,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           Positioned.fill(
             child: AnimatedSwitcher(
               duration: MotionTokens.standard(context),
-              reverseDuration: MotionTokens.quick(context),
+              reverseDuration: MotionTokens.dismiss(context),
               switchInCurve: MotionTokens.emphasized,
               switchOutCurve: MotionTokens.exit,
               child: !_radialVisible || _rightPressScreen == null
@@ -3049,7 +3049,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           Positioned.fill(
             child: AnimatedSwitcher(
               duration: MotionTokens.standard(context),
-              reverseDuration: MotionTokens.quick(context),
+              reverseDuration: MotionTokens.dismiss(context),
               switchInCurve: MotionTokens.emphasized,
               switchOutCurve: MotionTokens.exit,
               transitionBuilder: (child, animation) =>
