@@ -12,6 +12,22 @@ import 'package:syphon_nov/ui/motion.dart';
 import 'package:syphon_nov/ui/theme.dart';
 
 void main() {
+  test(
+    'shared pop motion starts small and settles after a light overshoot',
+    () {
+      final start = popMotionFrame(0, beginScale: .18, maxBlur: 16);
+      final middle = popMotionFrame(.6, beginScale: .18, maxBlur: 16);
+      final end = popMotionFrame(1, beginScale: .18, maxBlur: 16);
+      expect(start.scale, .18);
+      expect(start.opacity, 0);
+      expect(start.blur, 16);
+      expect(middle.scale, greaterThan(1));
+      expect(end.scale, closeTo(1, 1e-9));
+      expect(end.opacity, 1);
+      expect(end.blur, 0);
+    },
+  );
+
   Future<void> pumpApp(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1440, 900);
     tester.view.devicePixelRatio = 1;
@@ -178,6 +194,27 @@ void main() {
       isFalse,
     );
     expect(GraphStore.instance.nodes, hasLength(1));
+  });
+
+  testWidgets('dragging a spine uses animated dot feedback', (tester) async {
+    await pumpApp(tester);
+    final pointer = TestPointer(34, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      pointer.hover(tester.getCenter(find.text('数据运算'))),
+    );
+    await tester.pumpAndSettle();
+    final spine = find.byKey(const ValueKey('node-spine-derivative'));
+    final gesture = await tester.startGesture(tester.getCenter(spine));
+    await gesture.moveBy(const Offset(30, 60));
+    await tester.pump(const Duration(milliseconds: 16));
+    final dot = find.byKey(const Key('node-drag-dot'));
+    expect(dot, findsOneWidget);
+    expect(
+      find.ancestor(of: dot, matching: find.byType(ImageFiltered)),
+      findsWidgets,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
   });
 
   testWidgets('disabled motion resolves token durations to zero', (

@@ -1,6 +1,7 @@
 library;
 
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerDownEvent, PointerEvent, kSecondaryMouseButton;
@@ -263,10 +264,16 @@ class _NodeShelfState extends State<NodeShelf> {
                   ),
                   transitionBuilder: (child, animation) => FadeTransition(
                     opacity: animation,
-                    child: ScaleTransition(
-                      scale: Tween(begin: .992, end: 1.0).animate(animation),
-                      alignment: Alignment.topLeft,
-                      child: child,
+                    child: SlideTransition(
+                      position: Tween(
+                        begin: const Offset(.035, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: ScaleTransition(
+                        scale: Tween(begin: .96, end: 1.0).animate(animation),
+                        alignment: Alignment.topLeft,
+                        child: child,
+                      ),
                     ),
                   ),
                   child: KeyedSubtree(
@@ -356,6 +363,32 @@ class _NodeShelfState extends State<NodeShelf> {
   }
 }
 
+class _HoverLift extends StatelessWidget {
+  final bool active;
+  final double distance;
+  final double scale;
+  final Widget child;
+
+  const _HoverLift({
+    required this.active,
+    required this.distance,
+    required this.scale,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+    tween: Tween(end: active ? 1 : 0),
+    duration: MotionTokens.standard(context),
+    curve: Curves.easeOutBack,
+    builder: (context, motion, child) => Transform.translate(
+      offset: Offset(0, -distance * motion),
+      child: Transform.scale(scale: 1 + (scale - 1) * motion, child: child),
+    ),
+    child: child,
+  );
+}
+
 class _CategoryPill extends StatefulWidget {
   final Category category;
   final bool active;
@@ -384,55 +417,60 @@ class _CategoryPillState extends State<_CategoryPill> {
     final info = kCategoryInfo[widget.category]!;
     final color = parseColor(info.color);
     final active = _hover || widget.active;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) {
-        setState(() => _hover = true);
-        widget.onEnter();
-      },
-      onExit: (_) {
-        setState(() => _hover = false);
-        widget.onExit();
-      },
-      child: Semantics(
-        button: true,
-        label: L.t(info.label),
-        child: InkWell(
-          onTap: widget.onTap,
-          mouseCursor: SystemMouseCursors.click,
-          borderRadius: BorderRadius.circular(10),
-          splashColor: Colors.transparent,
-          hoverColor: Colors.transparent,
-          focusColor: color.withValues(alpha: .08),
-          child: AnimatedContainer(
-            key: ValueKey('node-category-${widget.category.name}'),
-            duration: MotionTokens.standard(context),
-            curve: MotionTokens.enter,
-            padding: EdgeInsets.symmetric(
-              horizontal: active ? 13 : 10,
-              vertical: 6,
-            ),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: active ? 0.14 : 0.07),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: color.withValues(alpha: active ? 0.38 : 0.14),
+    return _HoverLift(
+      active: active,
+      distance: 1.5,
+      scale: 1.025,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) {
+          setState(() => _hover = true);
+          widget.onEnter();
+        },
+        onExit: (_) {
+          setState(() => _hover = false);
+          widget.onExit();
+        },
+        child: Semantics(
+          button: true,
+          label: L.t(info.label),
+          child: InkWell(
+            onTap: widget.onTap,
+            mouseCursor: SystemMouseCursors.click,
+            borderRadius: BorderRadius.circular(10),
+            splashColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            focusColor: color.withValues(alpha: .08),
+            child: AnimatedContainer(
+              key: ValueKey('node-category-${widget.category.name}'),
+              duration: MotionTokens.standard(context),
+              curve: MotionTokens.enter,
+              padding: EdgeInsets.symmetric(
+                horizontal: active ? 13 : 10,
+                vertical: 6,
               ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(info.icon, style: TextStyle(fontSize: 11, color: color)),
-                const SizedBox(width: 6),
-                Text(
-                  L.t(info.label),
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: t.text,
-                  ),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: active ? 0.14 : 0.07),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: color.withValues(alpha: active ? 0.38 : 0.14),
                 ),
-              ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(info.icon, style: TextStyle(fontSize: 11, color: color)),
+                  const SizedBox(width: 6),
+                  Text(
+                    L.t(info.label),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: t.text,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -466,47 +504,52 @@ class _PackagePillState extends State<_PackagePill> {
     final t = SyphonTheme.of(context);
     final active = _hover || widget.active;
     const color = Color(0xFF8A9099);
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) {
-        setState(() => _hover = true);
-        widget.onEnter();
-      },
-      onExit: (_) {
-        setState(() => _hover = false);
-        widget.onExit();
-      },
-      child: InkWell(
-        onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: AnimatedContainer(
-          key: const Key('node-category-package'),
-          duration: MotionTokens.standard(context),
-          padding: EdgeInsets.symmetric(
-            horizontal: active ? 13 : 10,
-            vertical: 6,
-          ),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: active ? .18 : .08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: color.withValues(alpha: active ? .5 : .2),
+    return _HoverLift(
+      active: active,
+      distance: 1.5,
+      scale: 1.025,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) {
+          setState(() => _hover = true);
+          widget.onEnter();
+        },
+        onExit: (_) {
+          setState(() => _hover = false);
+          widget.onExit();
+        },
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: AnimatedContainer(
+            key: const Key('node-category-package'),
+            duration: MotionTokens.standard(context),
+            padding: EdgeInsets.symmetric(
+              horizontal: active ? 13 : 10,
+              vertical: 6,
             ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.inventory_2_outlined, size: 13, color: color),
-              const SizedBox(width: 6),
-              Text(
-                'Package',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: t.text,
-                ),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: active ? .18 : .08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: color.withValues(alpha: active ? .5 : .2),
               ),
-            ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.inventory_2_outlined, size: 13, color: color),
+                const SizedBox(width: 6),
+                Text(
+                  'Package',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: t.text,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -537,14 +580,20 @@ class _PackageLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: .985 + .015 * value,
-            alignment: Alignment.topLeft,
-            child: child,
-          ),
-        ),
+        builder: (context, value, child) {
+          final eased = Curves.easeOutBack.transform(value);
+          return Opacity(
+            opacity: Curves.easeOutCubic.transform(value),
+            child: Transform.translate(
+              offset: Offset(0, -10 * (1 - value)),
+              child: Transform.scale(
+                scale: .92 + .08 * eased,
+                alignment: Alignment.topLeft,
+                child: child,
+              ),
+            ),
+          );
+        },
         child: RepaintBoundary(
           child: Container(
             key: const Key('package-library-overlay'),
@@ -676,14 +725,20 @@ class _NodeLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: .985 + .015 * value,
-            alignment: Alignment.topLeft,
-            child: child,
-          ),
-        ),
+        builder: (context, value, child) {
+          final eased = Curves.easeOutBack.transform(value);
+          return Opacity(
+            opacity: Curves.easeOutCubic.transform(value),
+            child: Transform.translate(
+              offset: Offset(0, -10 * (1 - value)),
+              child: Transform.scale(
+                scale: .92 + .08 * eased,
+                alignment: Alignment.topLeft,
+                child: child,
+              ),
+            ),
+          );
+        },
         child: RepaintBoundary(
           child: Container(
             key: const Key('node-library-overlay'),
@@ -779,7 +834,7 @@ class _NodeTileState extends State<_NodeTile> {
     final tile = AnimatedContainer(
       key: ValueKey('node-spine-${widget.cfg.id}'),
       duration: MotionTokens.standard(context),
-      curve: MotionTokens.enter,
+      curve: Curves.easeOutBack,
       width: _hover ? 64 : 48,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 10),
       decoration: BoxDecoration(
@@ -825,29 +880,34 @@ class _NodeTileState extends State<_NodeTile> {
       ),
     );
 
-    return Tooltip(
-      message: L.t(widget.cfg.description),
-      waitDuration: const Duration(milliseconds: 500),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.grab,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: Draggable<String>(
-          data: widget.cfg.id,
-          dragAnchorStrategy: pointerDragAnchorStrategy,
-          feedback: _DragDot(color: color, icon: info.icon),
-          childWhenDragging: Opacity(opacity: .45, child: tile),
-          onDragStarted: widget.onDragStarted,
-          onDragUpdate: (details) =>
-              widget.onDragUpdate(details.globalPosition),
-          onDragEnd: (_) => widget.onDragEnd(),
-          onDraggableCanceled: (_, _) => widget.onDragCancel(),
-          child: InkWell(
-            onTap: widget.onPick,
-            borderRadius: BorderRadius.circular(12),
-            splashColor: Colors.transparent,
-            hoverColor: Colors.transparent,
-            child: tile,
+    return _HoverLift(
+      active: _hover,
+      distance: 4,
+      scale: 1.035,
+      child: Tooltip(
+        message: L.t(widget.cfg.description),
+        waitDuration: const Duration(milliseconds: 500),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.grab,
+          onEnter: (_) => setState(() => _hover = true),
+          onExit: (_) => setState(() => _hover = false),
+          child: Draggable<String>(
+            data: widget.cfg.id,
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            feedback: _DragDot(color: color, icon: info.icon),
+            childWhenDragging: Opacity(opacity: .45, child: tile),
+            onDragStarted: widget.onDragStarted,
+            onDragUpdate: (details) =>
+                widget.onDragUpdate(details.globalPosition),
+            onDragEnd: (_) => widget.onDragEnd(),
+            onDraggableCanceled: (_, _) => widget.onDragCancel(),
+            child: InkWell(
+              onTap: widget.onPick,
+              borderRadius: BorderRadius.circular(12),
+              splashColor: Colors.transparent,
+              hoverColor: Colors.transparent,
+              child: tile,
+            ),
           ),
         ),
       ),
@@ -881,36 +941,94 @@ class _VerticalSpineLabel extends StatelessWidget {
   }
 }
 
-class _DragDot extends StatelessWidget {
+class _DragDot extends StatefulWidget {
   final Color color;
   final String icon;
   const _DragDot({required this.color, required this.icon});
 
   @override
-  Widget build(BuildContext context) => IgnorePointer(
-    child: Container(
-      key: const Key('node-drag-dot'),
-      width: 34,
-      height: 34,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.white.withValues(alpha: .9), width: 2),
-        boxShadow: [
-          BoxShadow(
-            color: color.withValues(alpha: .48),
-            blurRadius: 18,
-            spreadRadius: 4,
+  State<_DragDot> createState() => _DragDotState();
+}
+
+class _DragDotState extends State<_DragDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration = MotionTokens.standard(context);
+    if (!_started) {
+      _started = true;
+      _controller.forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _controller,
+    builder: (context, child) {
+      final frame = popMotionFrame(
+        _controller.value,
+        beginScale: .18,
+        maxBlur: 16,
+      );
+      return ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(
+          sigmaX: frame.blur,
+          sigmaY: frame.blur,
+        ),
+        child: Opacity(
+          opacity: frame.opacity,
+          child: Transform.rotate(
+            angle:
+                -.16 * (1 - Curves.easeOutCubic.transform(_controller.value)),
+            child: Transform.scale(scale: frame.scale, child: child),
           ),
-        ],
-      ),
-      child: Text(
-        icon,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          decoration: TextDecoration.none,
+        ),
+      );
+    },
+    child: IgnorePointer(
+      child: Container(
+        key: const Key('node-drag-dot'),
+        width: 34,
+        height: 34,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: widget.color,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: Colors.white.withValues(alpha: .9),
+            width: 2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: widget.color.withValues(alpha: .48),
+              blurRadius: 18,
+              spreadRadius: 4,
+            ),
+          ],
+        ),
+        child: Text(
+          widget.icon,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            decoration: TextDecoration.none,
+          ),
         ),
       ),
     ),

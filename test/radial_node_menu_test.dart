@@ -10,6 +10,35 @@ import 'package:syphon_nov/ui/node_canvas.dart';
 import 'package:syphon_nov/ui/radial_node_menu.dart';
 
 void main() {
+  test('radial entrance grows from near zero, rotates, and overshoots', () {
+    final start = radialEntranceFrame(0);
+    final rotating = radialEntranceFrame(.25);
+    final overshoot = radialEntranceFrame(.62);
+    final end = radialEntranceFrame(1);
+
+    expect(start.scale, lessThanOrEqualTo(.015));
+    expect(start.rotation.abs(), greaterThan(2.4));
+    expect(start.blur, greaterThanOrEqualTo(30));
+    expect(rotating.scale, greaterThan(start.scale));
+    expect(rotating.rotation.abs(), greaterThan(.2));
+    expect(radialEntranceFrame(2 / 3).rotation, closeTo(0, 1e-9));
+    expect(overshoot.scale, greaterThan(1));
+    expect(end.scale, closeTo(1, 1e-9));
+    expect(end.rotation, closeTo(0, 1e-9));
+    expect(end.blur, closeTo(0, 1e-9));
+    expect(end.opacity, 1);
+  });
+
+  test('radial pull uses a bounded rubber-band response', () {
+    expect(radialRubberBand(0), 0);
+    expect(radialRubberBand(40), greaterThan(0));
+    expect(
+      radialRubberBand(80) - radialRubberBand(40),
+      lessThan(radialRubberBand(40)),
+    );
+    expect(radialRubberBand(100000), lessThan(radialDetachRadius));
+  });
+
   Future<void> pumpApp(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
