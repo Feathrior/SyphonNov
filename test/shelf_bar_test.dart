@@ -180,8 +180,7 @@ void main() {
 
   testWidgets('category switch swaps content instantly (no exit/enter pass)', (
     tester,
-  ) async {
-    await pumpApp(tester);
+  ) async {    await pumpApp(tester);
     final pointer = TestPointer(93, PointerDeviceKind.mouse);
     await tester.sendEventToBinding(
       pointer.hover(
@@ -214,6 +213,44 @@ void main() {
           .duration,
       const Duration(milliseconds: 220),
     );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('flyout background stays the same element across categories', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final pointer = TestPointer(95, PointerDeviceKind.mouse);
+    final panel = find.byKey(const Key('node-library-panel'));
+
+    await tester.sendEventToBinding(
+      pointer.hover(
+        tester.getCenter(
+          find.byKey(ValueKey('node-category-${Category.compute.name}')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final before = tester.element(panel);
+    final widthBefore = tester.getSize(panel).width;
+
+    await tester.sendEventToBinding(
+      pointer.hover(
+        tester.getCenter(
+          find.byKey(ValueKey('node-category-${Category.visualize.name}')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final after = tester.element(panel);
+    expect(
+      identical(before, after),
+      isTrue,
+      reason: '背景矩形必须是同一个元素,不能被替换/重建',
+    );
+    // 左端不动,只有宽度变化
+    expect(tester.getTopLeft(panel).dx, tester.getTopLeft(panel).dx);
+    expect(tester.getSize(panel).width, isNot(widthBefore));
     expect(tester.takeException(), isNull);
   });
 }

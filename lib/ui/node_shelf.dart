@@ -331,65 +331,65 @@ class _NodeShelfState extends State<NodeShelf> {
                 // 切换分类时看起来就是矩形直接变宽/变窄
                 duration: MotionTokens.quick(overlayContext),
                 curve: MotionTokens.emphasized,
-                child: AnimatedSwitcher(
-                  key: const Key('node-library-content-transition'),
-                  // 不同分类之间切换不做"退场→入场"两段动画:时长归零,
-                  // 内容直接替换,尺寸过渡交给上面的 AnimatedContainer
-                  duration: Duration.zero,
-                  // 必须固定左上对齐:默认 layoutBuilder 是居中的 Stack,
-                  // 宽度一变内容就跟着左右移动,看起来像左边缘在"跃变"
-                  layoutBuilder: (current, previous) => Stack(
-                    alignment: Alignment.topLeft,
-                    children: [...previous, ?current],
-                  ),
-                  child: KeyedSubtree(
-                    key: ValueKey(
-                      _packageMode ? 'package-library' : _category.name,
+                // 背景矩形与开合动画固定在这一层:切换分类时它不会被重建、
+                // 也不参与任何过渡,只有宽度在拉伸/收缩
+                child: _LibraryPanel(
+                  visible: !_closing,
+                  child: AnimatedSwitcher(
+                    key: const Key('node-library-content-transition'),
+                    // 不同分类之间切换不做"退场→入场"两段动画:时长归零,
+                    // 内容直接替换,尺寸过渡交给上面的 AnimatedContainer
+                    duration: Duration.zero,
+                    // 必须固定左上对齐:默认 layoutBuilder 是居中的 Stack,
+                    // 宽度一变内容就跟着左右移动,看起来像左边缘在"跃变"
+                    layoutBuilder: (current, previous) => Stack(
+                      alignment: Alignment.topLeft,
+                      children: [...previous, ?current],
                     ),
-                    child: _packageMode
-                        ? _PackageLibrary(
-                            width: width,
-                            visible: !_closing,
-                            onPick: (value) {
-                              widget.onCreatePackage(value);
-                              _removeOverlay();
-                            },
-                            onDelete: (id) {
-                              SettingsStore.instance.deletePackage(id);
-                              _markOverlay();
-                            },
-                          )
-                        : _NodeLibrary(
-                            width: width,
-                            visible: !_closing,
-                            category: _category,
-                            onLibraryChanged: _markOverlay,
-                            onTileHover: _onTileHover,
-                            onPick: (id) {
-                              SettingsStore.instance.recordNodeUse(id);
-                              widget.onCreateNode(id);
-                              _removeOverlay();
-                            },
-                            onDragStarted: () {
-                              _dragging = true;
-                              _dragCanceled = false;
-                              _lastDragGlobal = null;
-                              _leaveTimer?.cancel();
-                              _installPointerRoute();
-                            },
-                            onDragUpdate: (cfg, position) {
-                              _lastDragGlobal = position;
-                              widget.onDragUpdate(
-                                cfg.id,
-                                cfg.category,
-                                position,
-                              );
-                            },
-                            onDragEnd: (cfg) {
-                              final position = _lastDragGlobal;
-                              final accepted =
-                                  !_dragCanceled &&
-                                  position != null &&
+                    child: KeyedSubtree(
+                      key: ValueKey(
+                        _packageMode ? 'package-library' : _category.name,
+                      ),
+                      child: _packageMode
+                          ? _PackageLibrary(
+                              onPick: (value) {
+                                widget.onCreatePackage(value);
+                                _removeOverlay();
+                              },
+                              onDelete: (id) {
+                                SettingsStore.instance.deletePackage(id);
+                                _markOverlay();
+                              },
+                            )
+                          : _NodeLibrary(
+                              category: _category,
+                              onLibraryChanged: _markOverlay,
+                              onTileHover: _onTileHover,
+                              onPick: (id) {
+                                SettingsStore.instance.recordNodeUse(id);
+                                widget.onCreateNode(id);
+                                _removeOverlay();
+                              },
+                              onDragStarted: () {
+                                _dragging = true;
+                                _dragCanceled = false;
+                                _lastDragGlobal = null;
+                                _leaveTimer?.cancel();
+                                _installPointerRoute();
+                              },
+                              onDragUpdate: (cfg, position) {
+                                _lastDragGlobal = position;
+                                widget.onDragUpdate(
+                                  cfg.id,
+                                  cfg.category,
+                                  position,
+                                );
+                              },
+                              onDragEnd: (cfg) {
+                                final position = _lastDragGlobal;
+                                final accepted =
+                                    !_dragCanceled &&
+                                    position != null &&
                                   widget.onDropNode(cfg.id, position);
                               _dragging = false;
                               _dragCanceled = false;
@@ -419,14 +419,15 @@ class _NodeShelfState extends State<NodeShelf> {
                               widget.onDragCancel();
                             },
                           ),
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
-      ),
-    );
+          ],
+        ),
+      );
   }
 }
 
@@ -583,130 +584,63 @@ class _ShelfSegmentState extends State<_ShelfSegment> {
     );
   }
 }
-class _PackageLibrary extends StatelessWidget {
-  final double width;
+/// 上边栏弹层的持久外壳:圆角背景矩形 + 边框 + 阴影 + 开合动画。
+///
+/// 它位于会被替换的库内容之外,所以鼠标在分类胶囊之间扫过时,这块背景
+/// 始终是同一个元素、只随内容宽度拉伸收缩,没有任何重建或淡入淡出;
+/// 只有真正呼出/收起弹层时(鼠标离开所有胶囊)才播放淡入淡出。
+class _LibraryPanel extends StatelessWidget {
   final bool visible;
-  final ValueChanged<Map<String, dynamic>> onPick;
-  final ValueChanged<String> onDelete;
+  final Widget child;
 
-  const _PackageLibrary({
-    required this.width,
-    required this.visible,
-    required this.onPick,
-    required this.onDelete,
-  });
+  const _LibraryPanel({required this.visible, required this.child});
 
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final items = SettingsStore.instance.packageLibrary;
-    return Material(
-      type: MaterialType.transparency,
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: visible ? 1 : 0),
-        // 退场比呼出快一倍(与 _beginClose 的移除计时一致)
-        duration: visible
-            ? MotionTokens.standard(context)
-            : MotionTokens.dismissPanel(context),
-        curve: MotionTokens.emphasized,
-        builder: (context, value, child) {
-          final amplitude = MotionTokens.amplitude(context);
-          final eased = Curves.easeOutBack.transform(value);
-          return Opacity(
-            opacity: amplitude == 0 ? 1 : Curves.easeOutCubic.transform(value),
-            child: Transform.translate(
-              offset: Offset(0, -10 * amplitude * (1 - value)),
-              child: Transform.scale(
-                scale: 1 + (.92 + .08 * eased - 1) * amplitude,
-                alignment: Alignment.topLeft,
-                child: child,
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: visible ? 1 : 0),
+      // 退场比呼出快一倍(与 _beginClose 的移除计时一致)
+      duration: visible
+          ? MotionTokens.standard(context)
+          : MotionTokens.dismissPanel(context),
+      curve: MotionTokens.emphasized,
+      builder: (context, value, child) {
+        final amplitude = MotionTokens.amplitude(context);
+        final eased = Curves.easeOutBack.transform(value);
+        return Opacity(
+          opacity: amplitude == 0 ? 1 : Curves.easeOutCubic.transform(value),
+          child: Transform.translate(
+            offset: Offset(0, -10 * amplitude * (1 - value)),
+            child: Transform.scale(
+              scale: 1 + (.92 + .08 * eased - 1) * amplitude,
+              alignment: Alignment.topLeft,
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: RepaintBoundary(
+        child: Container(
+          key: const Key('node-library-panel'),
+          height: 250,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: t.bgFloat.withValues(alpha: .985),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: t.strokeStrong),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: t.isDark ? .34 : .14),
+                blurRadius: 36,
+                offset: const Offset(0, 14),
               ),
-            ),
-          );
-        },
-        child: RepaintBoundary(
-          child: Container(
-            key: const Key('package-library-overlay'),
-            width: width,
-            height: 250,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: t.bgFloat.withValues(alpha: .985),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: t.strokeStrong),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: t.isDark ? .34 : .14),
-                  blurRadius: 36,
-                  offset: const Offset(0, 14),
-                ),
-              ],
-            ),
-            child: items.isEmpty
-                ? Center(
-                    child: Text(
-                      '尚未保存 Package',
-                      style: TextStyle(color: t.textFaint),
-                    ),
-                  )
-                : ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: items.length,
-                    separatorBuilder: (_, _) => const SizedBox(width: 7),
-                    itemBuilder: (context, index) {
-                      final item = items[index];
-                      final name = '${item['name'] ?? 'Package'}';
-                      return InkWell(
-                        key: ValueKey('package-spine-${item['id']}'),
-                        onTap: () => onPick(item),
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          width: 48,
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 10,
-                            horizontal: 7,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF8A9099)
-                                .withValues(alpha: .14),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: const Color(0xFF8A9099)
-                                  .withValues(alpha: .42),
-                            ),
-                          ),
-                          child: Column(
-                            children: [
-                              const Icon(
-                                Icons.inventory_2_outlined,
-                                size: 16,
-                                color: Color(0xFF8A9099),
-                              ),
-                              const SizedBox(height: 8),
-                              Expanded(
-                                child: _VerticalSpineLabel(name, color: t.text),
-                              ),
-                              IconButton(
-                                key: ValueKey('delete-package-${item['id']}'),
-                                tooltip: '从 Package 库删除',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints.tightFor(
-                                  width: 24,
-                                  height: 24,
-                                ),
-                                icon: Icon(
-                                  Icons.delete_outline,
-                                  size: 15,
-                                  color: t.textFaint,
-                                ),
-                                onPressed: () => onDelete('${item['id']}'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+            ],
+          ),
+          child: Material(
+            // InkWell 需要 Material 祖先;放在持久外壳里,内容替换时不会重建
+            type: MaterialType.transparency,
+            child: child,
           ),
         ),
       ),
@@ -714,9 +648,83 @@ class _PackageLibrary extends StatelessWidget {
   }
 }
 
+class _PackageLibrary extends StatelessWidget {
+  final ValueChanged<Map<String, dynamic>> onPick;
+  final ValueChanged<String> onDelete;
+
+  const _PackageLibrary({required this.onPick, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
+    final items = SettingsStore.instance.packageLibrary;
+    return KeyedSubtree(
+      key: const Key('package-library-overlay'),
+      child: items.isEmpty
+          ? Center(
+              child: Text('尚未保存 Package', style: TextStyle(color: t.textFaint)),
+            )
+          : ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: items.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 7),
+              itemBuilder: (context, index) {
+                final item = items[index];
+                final name = '${item['name'] ?? 'Package'}';
+                return InkWell(
+                  key: ValueKey('package-spine-${item['id']}'),
+                  onTap: () => onPick(item),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                    width: 48,
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 10,
+                      horizontal: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF8A9099).withValues(alpha: .14),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: const Color(0xFF8A9099).withValues(alpha: .42),
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        const Icon(
+                          Icons.inventory_2_outlined,
+                          size: 16,
+                          color: Color(0xFF8A9099),
+                        ),
+                        const SizedBox(height: 8),
+                        Expanded(
+                          child: _VerticalSpineLabel(name, color: t.text),
+                        ),
+                        IconButton(
+                          key: ValueKey('delete-package-${item['id']}'),
+                          tooltip: '从 Package 库删除',
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 24,
+                            height: 24,
+                          ),
+                          icon: Icon(
+                            Icons.delete_outline,
+                            size: 15,
+                            color: t.textFaint,
+                          ),
+                          onPressed: () => onDelete('${item['id']}'),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
 class _NodeLibrary extends StatelessWidget {
-  final double width;
-  final bool visible;
   final Category category;
   final VoidCallback onLibraryChanged;
   final void Function(int index, bool hovered) onTileHover;
@@ -727,8 +735,6 @@ class _NodeLibrary extends StatelessWidget {
   final VoidCallback onDragCancel;
 
   const _NodeLibrary({
-    required this.width,
-    required this.visible,
     required this.category,
     required this.onLibraryChanged,
     required this.onTileHover,
@@ -749,89 +755,36 @@ class _NodeLibrary extends StatelessWidget {
         .where((cfg) => cfg.category == category)
         .toList(growable: false);
 
-    return Material(
-      type: MaterialType.transparency,
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: visible ? 1 : 0),
-        // 退场比呼出快一倍(与 _beginClose 的移除计时一致)
-        duration: visible
-            ? MotionTokens.standard(context)
-            : MotionTokens.dismissPanel(context),
-        curve: MotionTokens.emphasized,
-        builder: (context, value, child) {
-          final amplitude = MotionTokens.amplitude(context);
-          final eased = Curves.easeOutBack.transform(value);
-          return Opacity(
-            opacity: amplitude == 0 ? 1 : Curves.easeOutCubic.transform(value),
-            child: Transform.translate(
-              offset: Offset(0, -10 * amplitude * (1 - value)),
-              child: Transform.scale(
-                scale: 1 + (.92 + .08 * eased - 1) * amplitude,
-                alignment: Alignment.topLeft,
-                child: child,
+    return RepaintBoundary(
+      key: const Key('node-library-overlay'),
+      child: items.isEmpty
+          ? Center(
+              child: Text(
+                L.t('无匹配节点'),
+                style: TextStyle(color: t.textFaint),
+              ),
+            )
+          : ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
+              itemCount: items.length,
+              separatorBuilder: (_, _) => const SizedBox(width: _kNodeTileGap),
+              itemBuilder: (context, index) => _NodeTile(
+                cfg: items[index],
+                favorite: settings.favoriteNodeIds.contains(items[index].id),
+                onHoverChanged: (hovered) => onTileHover(index, hovered),
+                onFavorite: () {
+                  settings.toggleFavoriteNode(items[index].id);
+                  onLibraryChanged();
+                },
+                onPick: () => onPick(items[index].id),
+                onDragStarted: onDragStarted,
+                onDragUpdate: (position) =>
+                    onDragUpdate(items[index], position),
+                onDragEnd: () => onDragEnd(items[index]),
+                onDragCancel: onDragCancel,
               ),
             ),
-          );
-        },
-        child: RepaintBoundary(
-          child: Container(
-            key: const Key('node-library-overlay'),
-            width: width,
-            height: 250,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: t.bgFloat.withValues(alpha: 0.985),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: t.strokeStrong),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: t.isDark ? 0.34 : 0.14),
-                  blurRadius: 36,
-                  offset: const Offset(0, 14),
-                ),
-              ],
-            ),
-            child: Column(
-              children: [
-                Expanded(
-                  child: items.isEmpty
-                      ? Center(
-                          child: Text(
-                            L.t('无匹配节点'),
-                            style: TextStyle(color: t.textFaint),
-                          ),
-                        )
-                      : ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
-                          itemCount: items.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(width: _kNodeTileGap),
-                          itemBuilder: (context, index) => _NodeTile(
-                            cfg: items[index],
-                            favorite: settings.favoriteNodeIds.contains(
-                              items[index].id,
-                            ),
-                            onHoverChanged: (hovered) =>
-                                onTileHover(index, hovered),
-                            onFavorite: () {
-                              settings.toggleFavoriteNode(items[index].id);
-                              onLibraryChanged();
-                            },
-                            onPick: () => onPick(items[index].id),
-                            onDragStarted: onDragStarted,
-                            onDragUpdate: (position) =>
-                                onDragUpdate(items[index], position),
-                            onDragEnd: () => onDragEnd(items[index]),
-                            onDragCancel: onDragCancel,
-                          ),
-                        ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
