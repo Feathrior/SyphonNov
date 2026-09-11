@@ -1,0 +1,189 @@
+{
+  "validation": "Actual generated files; structure only, separate visual review required.",
+  "logical_page_mm": [
+    160,
+    100
+  ],
+  "charts": [
+    {
+      "chart": "viz_bar",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 95,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 58,
+      "svg_text_runs": 31,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_box",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 75,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 44,
+      "svg_text_runs": 13,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_graph",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 38,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 10,
+      "svg_text_runs": 12,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_heatmap",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 144,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 704,
+      "svg_text_runs": 29,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_line",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 97,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 46,
+      "svg_text_runs": 32,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_principled",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 53,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 956,
+      "svg_text_runs": 24,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_sankey",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 76,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 234,
+      "svg_text_runs": 25,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_scatter",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 60,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 26,
+      "svg_text_runs": 15,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_violin",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 76,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 28,
+      "svg_text_runs": 13,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    },
+    {
+      "chart": "viz_volcano",
+      "pdf_page_points": [
+        453.54331,
+        283.46457
+      ],
+      "pdf_images": 0,
+      "pdf_text_characters": 74,
+      "pdf_chinese_text_extractable": true,
+      "svg_paths": 38,
+      "svg_text_runs": 18,
+      "svg_images": 0,
+      "png_pixels": [
+        1890,
+        1181
+      ],
+      "png_dpi": 299.9994
+    }
+  ]
+}

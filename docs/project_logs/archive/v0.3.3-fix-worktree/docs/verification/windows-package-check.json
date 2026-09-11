@@ -1,0 +1,11 @@
+{
+  "archive": "dist/SyphonNov-windows-x64-2026-09-06.zip",
+  "topLevelFolder": "windows-x64-2026-09-06",
+  "bundleFileCount": 21,
+  "archiveFileCount": 21,
+  "missing": [],
+  "extra": [],
+  "contentMismatches": [],
+  "badCrcEntry": null,
+  "passed": true
+}

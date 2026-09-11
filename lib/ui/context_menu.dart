@@ -97,6 +97,9 @@ class _ViewportAwareMenuState extends State<ViewportAwareMenu> {
         : BlurScaleTransition(
             animation: animation,
             alignment: Alignment.topLeft,
+            beginScale: .78,
+            maxBlur: 18,
+            beginOffset: const Offset(0, -8),
             child: widget.child,
           );
     return Positioned(
@@ -471,7 +474,8 @@ class _CatItemState extends State<_CatItem> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-          duration: const Duration(milliseconds: 120),
+          duration: MotionTokens.standard(context),
+          curve: Curves.easeOutBack,
           decoration: BoxDecoration(
             color: widget.active
                 ? t.accent.withValues(alpha: 0.12)
@@ -526,7 +530,9 @@ class _NodeItemState extends State<_NodeItem> {
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         onTap: widget.onTap,
-        child: Container(
+        child: AnimatedContainer(
+          duration: MotionTokens.quick(context),
+          curve: MotionTokens.enter,
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
           decoration: BoxDecoration(
             color: _hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0),
@@ -580,7 +586,9 @@ class _ClearButtonState extends State<_ClearButton> {
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         onTap: widget.onTap,
-        child: Container(
+        child: AnimatedContainer(
+          duration: MotionTokens.quick(context),
+          curve: MotionTokens.enter,
           width: 22,
           height: 22,
           decoration: BoxDecoration(

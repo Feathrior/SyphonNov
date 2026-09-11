@@ -342,6 +342,7 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure>
                       alignment: Alignment.topCenter,
                       beginScale: .99,
                       maxBlur: 4,
+                      elastic: false,
                       child: child!,
                     ),
                   );
@@ -1840,6 +1841,7 @@ class PropertiesPanel extends StatelessWidget {
         alignment: Alignment.centerRight,
         beginScale: 0.985,
         maxBlur: 6,
+        elastic: false,
         child: child,
       ),
       child: KeyedSubtree(key: key, child: child),

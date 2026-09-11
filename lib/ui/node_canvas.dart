@@ -2981,6 +2981,16 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               reverseDuration: MotionTokens.quick(context),
               switchInCurve: MotionTokens.emphasized,
               switchOutCurve: MotionTokens.exit,
+              transitionBuilder: (child, animation) => AnimatedBuilder(
+                animation: animation,
+                child: child,
+                builder: (context, child) => Opacity(
+                  opacity: animation.status == AnimationStatus.reverse
+                      ? animation.value
+                      : 1,
+                  child: child,
+                ),
+              ),
               child: !_radialVisible || _rightPressScreen == null
                   ? const SizedBox.shrink(
                       key: ValueKey('radial-node-menu-empty'),
@@ -3259,6 +3269,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             builder: (context, value, child) => BlurScaleTransition(
               animation: AlwaysStoppedAnimation(value),
               alignment: Alignment.topLeft,
+              beginScale: .72,
+              maxBlur: 16,
               child: child!,
             ),
             child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),

@@ -1,0 +1,14 @@
+00:00 +0: loading C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/SyphonNov/docs/audit/probes/plot_export_probe_test.dart
+00:00 +0: audit: tiny valid explicit axis interval is replaced by one
+{"probe":"tiny-axis","requestedMax":1e-12,"actualMax":1.0}
+00:00 +1: audit: date strings receive equal category spacing
+{"probe":"date-axis","middleFraction":0.499999948757795,"elapsedTimeFraction":0.0027397260273972603}
+00:00 +2: audit: shared requested heatmap range changes with data extrema
+{"probe":"fixed-colorrange","range":[0,1],"value":1,"colorWithout10":"ffffffff","colorWith10":"ff1a1a1a"}
+00:00 +3: audit: distribution count multiples produce identical geometry
+{"probe":"distribution-count","counts":[1,100],"identicalSvg":true}
+00:00 +4: audit: principled scatter silently caps at 6000 points
+{"probe":"principled-point-cap","input":6001,"drawn":6000}
+00:00 +5: audit: principled centered annotation shifts with explicit axis range
+{"probe":"principled-text-anchor","expectedCenterX":302.3622047244095,"actualCenterX":161.763779527559}
+00:00 +6: All tests passed!

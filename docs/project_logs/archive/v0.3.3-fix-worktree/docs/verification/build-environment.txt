@@ -1,0 +1,51 @@
+Windows application build verification, 2026-09-05
+
+SDK prepared: Flutter 3.47.2 / Dart 3.13.2
+Dependency resolution: completed with the project-local Pub cache.
+Existing Visual Studio Build Tools: 2022, version 17.14.31
+Missing: MSVC C++ desktop compiler, CMake and Windows SDK components.
+
+Command attempted:
+flutter --no-version-check --suppress-analytics build windows --release --no-pub
+Exit code: 1
+Result: Unable to find suitable Visual Studio toolchain.
+
+Official Visual Studio Installer modification was attempted to add
+Microsoft.VisualStudio.Workload.VCTools with recommended components.
+Installer exit code: 5007
+Relevant installer output:
+Telemetry property vs.willow.iselevated : False
+Commands with --quiet or --passive should be run elevated from the beginning.
+
+No Windows app executable or installer was produced. The installer requires
+a Windows administrator-elevated process; the tool sandbox approval is not
+equivalent to Windows administrator elevation. No UAC dialog was launched.
+
+To complete the native build, use Visual Studio Installer with administrator
+rights to install Desktop development with C++ (MSVC, CMake, Windows SDK),
+then run scripts/verify.ps1 -Build from this project.
+The added GitHub Actions workflow has not been run remotely.
+
+Resolution, 2026-09-06 (supersedes the missing-toolchain status above)
+
+Used the Microsoft-signed existing Visual Studio Installer with normal UAC
+elevation and the project .vsconfig. Installer exit code: 0; no reboot required.
+Visual Studio Build Tools 2022: 17.14.31
+MSVC tools directory: 14.44.35207
+CMake: 3.31.6-msvc6
+Windows SDK: 10.0.26100.0
+vswhere matched the C++ workload, compiler, CMake and SDK component IDs.
+Flutter doctor's Windows and Visual Studio checks passed.
+
+flutter --no-version-check --suppress-analytics build windows --release --no-pub
+Exit code: 0. Native compilation reported 63.4 seconds.
+Output: build/windows/x64/runner/Release/syphon_nov.exe
+Release directory copy: dist/windows-x64-2026-09-06/
+Archive: dist/SyphonNov-windows-x64-2026-09-06.zip
+See windows-build-manifest.json for hashes and validation scope.
+
+The desktop UI runtime was unavailable (Windows Computer Use Sky runtime is
+unavailable), so actual window startup and interaction were not verified.
+This is a release directory archive, not an installer. Keep DLLs and data with
+the executable. Execution on another clean Windows computer was not verified.
+No remote push, publication or remote CI run was performed.

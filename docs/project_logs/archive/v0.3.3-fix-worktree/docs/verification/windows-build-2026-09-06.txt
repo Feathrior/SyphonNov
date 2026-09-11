@@ -1,0 +1,2 @@
+Building Windows application...                                    63.4s
+√ Built build\windows\x64\runner\Release\syphon_nov.exe
