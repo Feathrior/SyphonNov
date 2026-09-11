@@ -1,12 +1,12 @@
 library;
 
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerDownEvent, PointerEvent, kSecondaryMouseButton;
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart'
-    show SchedulerBinding, SchedulerPhase;
+import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:flutter/services.dart';
 
 import '../i18n.dart';
@@ -17,10 +17,15 @@ import '../store/settings_store.dart';
 import 'motion.dart';
 import 'theme.dart';
 
-typedef NodeDropCallback =
-    bool Function(String configId, Offset globalPosition);
-typedef NodeDragCallback =
-    void Function(String configId, Category category, Offset globalPosition);
+typedef NodeDropCallback = bool Function(
+  String configId,
+  Offset globalPosition,
+);
+typedef NodeDragCallback = void Function(
+  String configId,
+  Category category,
+  Offset globalPosition,
+);
 
 /// 顶部节点提示条。折叠条固定高度，节点库通过 Overlay 展开，不参与画布布局。
 class NodeShelf extends StatefulWidget {
@@ -442,7 +447,7 @@ class _CategoryPillState extends State<_CategoryPill> {
           child: AnimatedContainer(
             key: ValueKey('node-category-${widget.category.name}'),
             duration: MotionTokens.standard(context),
-            curve: MotionTokens.enter,
+            curve: Curves.easeOutBack,
             padding: EdgeInsets.symmetric(
               horizontal: active ? 13 : 10,
               vertical: 6,
@@ -572,14 +577,21 @@ class _PackageLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: .93 + .07 * value,
-            alignment: Alignment.topLeft,
-            child: child,
-          ),
-        ),
+        builder: (context, value, child) {
+          final amplitude = MotionTokens.amplitude(context);
+          final eased = Curves.easeOutBack.transform(value);
+          return Opacity(
+            opacity: amplitude == 0 ? 1 : Curves.easeOutCubic.transform(value),
+            child: Transform.translate(
+              offset: Offset(0, -10 * amplitude * (1 - value)),
+              child: Transform.scale(
+                scale: 1 + (.92 + .08 * eased - 1) * amplitude,
+                alignment: Alignment.topLeft,
+                child: child,
+              ),
+            ),
+          );
+        },
         child: RepaintBoundary(
           child: Container(
             key: const Key('package-library-overlay'),
@@ -623,14 +635,12 @@ class _PackageLibrary extends StatelessWidget {
                             horizontal: 7,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(
-                              0xFF8A9099,
-                            ).withValues(alpha: .14),
+                            color: const Color(0xFF8A9099)
+                                .withValues(alpha: .14),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
-                              color: const Color(
-                                0xFF8A9099,
-                              ).withValues(alpha: .42),
+                              color: const Color(0xFF8A9099)
+                                  .withValues(alpha: .42),
                             ),
                           ),
                           child: Column(
@@ -711,14 +721,21 @@ class _NodeLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) => Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: .93 + .07 * value,
-            alignment: Alignment.topLeft,
-            child: child,
-          ),
-        ),
+        builder: (context, value, child) {
+          final amplitude = MotionTokens.amplitude(context);
+          final eased = Curves.easeOutBack.transform(value);
+          return Opacity(
+            opacity: amplitude == 0 ? 1 : Curves.easeOutCubic.transform(value),
+            child: Transform.translate(
+              offset: Offset(0, -10 * amplitude * (1 - value)),
+              child: Transform.scale(
+                scale: 1 + (.92 + .08 * eased - 1) * amplitude,
+                alignment: Alignment.topLeft,
+                child: child,
+              ),
+            ),
+          );
+        },
         child: RepaintBoundary(
           child: Container(
             key: const Key('node-library-overlay'),
@@ -814,7 +831,7 @@ class _NodeTileState extends State<_NodeTile> {
     final tile = AnimatedContainer(
       key: ValueKey('node-spine-${widget.cfg.id}'),
       duration: MotionTokens.standard(context),
-      curve: MotionTokens.enter,
+      curve: Curves.easeOutBack,
       width: _hover ? 64 : 48,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 10),
       decoration: BoxDecoration(
@@ -938,10 +955,24 @@ class _DragRing extends StatefulWidget {
 
 class _DragRingState extends State<_DragRing>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 260),
-  )..forward();
+  late final AnimationController _controller;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration = MotionTokens.standard(context);
+    if (!_started) {
+      _started = true;
+      _controller.forward();
+    }
+  }
 
   @override
   void dispose() {
@@ -950,18 +981,47 @@ class _DragRingState extends State<_DragRing>
   }
 
   @override
-  Widget build(BuildContext context) => IgnorePointer(
-    child: AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) => CustomPaint(
-        key: const Key('node-drag-dot'),
-        size: const Size(_kDragRingExtent, _kDragRingExtent),
-        painter: _DragRingPainter(
-          color: widget.color,
-          progress: _controller.value,
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _controller,
+    builder: (context, _) {
+      final amplitude = MotionTokens.amplitude(context);
+      final frame = popMotionFrame(
+        _controller.value,
+        beginScale: 1 - .82 * amplitude,
+        maxBlur: 16 * amplitude,
+      );
+      final turn =
+          -.2 *
+          amplitude *
+          (1 - Curves.easeOutCubic.transform(_controller.value));
+      final content = Opacity(
+        opacity: amplitude == 0 ? 1 : frame.opacity,
+        child: Transform.rotate(
+          angle: turn,
+          child: Transform.scale(
+            scale: amplitude == 0 ? 1 : frame.scale,
+            child: IgnorePointer(
+              child: CustomPaint(
+                key: const Key('node-drag-dot'),
+                size: const Size(_kDragRingExtent, _kDragRingExtent),
+                painter: _DragRingPainter(
+                  color: widget.color,
+                  progress: amplitude == 0 ? 1 : _controller.value,
+                ),
+              ),
+            ),
+          ),
         ),
-      ),
-    ),
+      );
+      if (frame.blur <= .05) return content;
+      return ImageFiltered(
+        imageFilter: ui.ImageFilter.blur(
+          sigmaX: frame.blur,
+          sigmaY: frame.blur,
+        ),
+        child: content,
+      );
+    },
   );
 }
 

@@ -10,6 +10,49 @@ import 'package:syphon_nov/ui/node_canvas.dart';
 import 'package:syphon_nov/ui/radial_node_menu.dart';
 
 void main() {
+  test('radial entrance is 50 percent stronger and settles cleanly', () {
+    final start = radialEntranceFrame(0);
+    final rotating = radialEntranceFrame(.25);
+    final overshoot = radialEntranceFrame(.62);
+    final end = radialEntranceFrame(1);
+
+    expect(start.scale, lessThanOrEqualTo(.0075));
+    expect(start.rotation.abs(), greaterThan(3.6));
+    expect(start.blur, greaterThanOrEqualTo(45));
+    expect(rotating.scale, greaterThan(start.scale));
+    expect(rotating.rotation.abs(), greaterThan(.25));
+    expect(radialEntranceFrame(2 / 3).rotation, closeTo(0, 1e-9));
+    expect(overshoot.scale, greaterThanOrEqualTo(1.105));
+    expect(end.scale, closeTo(1, 1e-9));
+    expect(end.rotation, closeTo(0, 1e-9));
+    expect(end.blur, closeTo(0, 1e-9));
+    expect(end.opacity, 1);
+  });
+
+  test('radial entrance follows all three motion amplitudes', () {
+    final full = radialEntranceFrame(0);
+    final reduced = radialEntranceFrame(0, amplitude: .42);
+    final off = radialEntranceFrame(0, amplitude: 0);
+
+    expect(reduced.scale, greaterThan(full.scale));
+    expect(reduced.rotation.abs(), closeTo(full.rotation.abs() * .42, 1e-9));
+    expect(reduced.blur, closeTo(full.blur * .42, 1e-9));
+    expect(off.scale, 1);
+    expect(off.rotation, 0);
+    expect(off.blur, 0);
+    expect(off.opacity, 1);
+  });
+
+  test('radial pull uses a bounded nonlinear rubber band', () {
+    expect(radialRubberBand(0), 0);
+    expect(radialRubberBand(40), greaterThan(0));
+    expect(
+      radialRubberBand(80) - radialRubberBand(40),
+      lessThan(radialRubberBand(40)),
+    );
+    expect(radialRubberBand(100000), lessThan(radialDetachRadius));
+  });
+
   Future<void> pumpApp(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
@@ -25,12 +68,14 @@ void main() {
     SettingsStore.instance.nodeShelfEnabled = true;
     SettingsStore.instance.nodeMenuMode = NodeMenuMode.both;
     SettingsStore.instance.motionSpeed = MotionSpeed.fast;
+    SettingsStore.instance.motionMode = MotionMode.full;
     SettingsStore.instance.packageLibrary = [];
   });
 
   tearDown(() {
     GraphStore.instance.clearAll();
     GraphStore.useIsolate = true;
+    SettingsStore.instance.motionMode = MotionMode.full;
   });
 
   test('radial hit testing has a dead zone and six stable directions', () {
