@@ -45,7 +45,6 @@ void main() {
     const nodeBegin = .08;
     // reveal = .4:进度 40% 时透明度与清晰度都已完工
     expect(popMotionFrame(.4, reveal: .4).opacity, 1);
-    expect(popMotionFrame(.4, reveal: .4).blur, lessThan(.05));
     // 默认 reveal = 1:40% 时还没显形完(保持旧行为)
     expect(popMotionFrame(.4).opacity, lessThan(1));
     expect(popMotionFrame(1).opacity, 1);
@@ -61,6 +60,20 @@ void main() {
       reason: '40% 时已进入过冲回弹',
     );
     expect(popMotionFrame(1, beginScale: nodeBegin, reveal: .4).scale, 1);
+
+    // 节点入场的模糊:整段线性消退,后半程仍明显
+    const nodeBlur = 24.0;
+    expect(popMotionFrame(0, maxBlur: nodeBlur, blurUntil: 1).blur, nodeBlur);
+    expect(
+      popMotionFrame(.5, maxBlur: nodeBlur, blurUntil: 1).blur,
+      closeTo(nodeBlur * .5, .01),
+    );
+    expect(popMotionFrame(1, maxBlur: nodeBlur, blurUntil: 1).blur, 0);
+    // 旧的默认节奏不变:早期就基本不模糊了
+    expect(
+      popMotionFrame(.2, maxBlur: nodeBlur).blur,
+      lessThan(popMotionFrame(.2, maxBlur: nodeBlur, blurUntil: 1).blur),
+    );
   });
 
   test('animation speed scales hard-coded durations', () {

@@ -25,12 +25,17 @@ class PopMotionFrame {
 /// [reveal] 控制"显形"（透明度与去模糊）占整段动画的比例:小于 1 表示在
 /// 前 [reveal] 段就完全显形,剩下的时间专门留给缩放回弹 —— 这样"从小变大"
 /// 的过程是在完全不透明的状态下发生的,才会被看到。默认 1 表示与整体同步。
+///
+/// [blurUntil] 大于 0 时改用"在整段的前 [blurUntil] 比例内线性消退"的模糊
+/// 节奏(默认的平方衰减几乎一开始就模糊归零,节点还小而透明时根本看不到
+/// 模糊→清晰)。节点入场用 1:整段都在由模糊转清晰。
 PopMotionFrame popMotionFrame(
   double progress, {
   double beginScale = .9,
   double maxBlur = 14,
   bool opening = true,
   double reveal = 1,
+  double blurUntil = 0,
 }) {
   final t = progress.clamp(0.0, 1.0);
   final scaleProgress = opening
@@ -39,10 +44,13 @@ PopMotionFrame popMotionFrame(
   final clarity = Curves.easeOutCubic.transform(
     reveal <= 0 ? 1.0 : (t / reveal).clamp(0.0, 1.0),
   );
+  final blur = blurUntil > 0
+      ? maxBlur * (1 - (t / blurUntil).clamp(0.0, 1.0))
+      : maxBlur * (1 - clarity) * (1 - clarity);
   return PopMotionFrame(
     scale: beginScale + (1 - beginScale) * scaleProgress,
     opacity: clarity,
-    blur: maxBlur * (1 - clarity) * (1 - clarity),
+    blur: blur,
   );
 }
 
@@ -72,6 +80,10 @@ class MotionTokens {
 
   /// 右键圆环的呼出回弹与圆球分离/收束:比全局节奏再快一倍
   static Duration radialBounce(BuildContext context) =>
+      _duration(context, 320, 250, times: brisk);
+
+  /// 新节点入场(生长 + 回弹):比全局节奏再快一倍
+  static Duration nodeEntry(BuildContext context) =>
       _duration(context, 320, 250, times: brisk);
 
   /// 三档动效幅度与系统“减少动态效果”共用同一语义。完整保留全部位移、
@@ -136,6 +148,9 @@ class MotionTokens {
 /// [reveal] 指定"显形"(透明度/去模糊)占整段动画的比例(默认 1 = 与整体同步)。
 /// 节点入场用 .4:前 40% 就完全显形,后面的时间专门展示缩放回弹,于是
 /// "从小变大"是在不透明状态下发生的,看得见。
+///
+/// [blurUntil] > 0 时模糊改为在这段比例内线性消退(见 [popMotionFrame]),
+/// 节点入场用 1,让"模糊→清晰"贯穿整段动画。
 class BlurScaleTransition extends AnimatedWidget {
   final Widget child;
   final Alignment alignment;
@@ -145,6 +160,7 @@ class BlurScaleTransition extends AnimatedWidget {
   final Offset beginOffset;
   final bool elastic;
   final double reveal;
+  final double blurUntil;
 
   const BlurScaleTransition({
     super.key,
@@ -157,6 +173,7 @@ class BlurScaleTransition extends AnimatedWidget {
     this.beginOffset = Offset.zero,
     this.elastic = true,
     this.reveal = 1,
+    this.blurUntil = 0,
   }) : super(listenable: animation);
 
   Animation<double> get animation => listenable as Animation<double>;
@@ -169,6 +186,9 @@ class BlurScaleTransition extends AnimatedWidget {
     final effectiveBlur = maxBlur * amplitude;
     // 显形进度:在前 reveal 段内完成(reveal = 1 时就是整体进度)
     final revealed = reveal <= 0 ? 1.0 : (value / reveal).clamp(0.0, 1.0);
+    final blurFade = blurUntil <= 0
+        ? 1 - revealed
+        : 1 - (value / blurUntil).clamp(0.0, 1.0);
     final frame = elastic
         ? popMotionFrame(
             value,
@@ -176,12 +196,13 @@ class BlurScaleTransition extends AnimatedWidget {
             maxBlur: effectiveBlur,
             opening: animation.status != AnimationStatus.reverse,
             reveal: reveal,
+            blurUntil: blurUntil,
           )
         : PopMotionFrame(
             scale: effectiveBeginScale + (1 - effectiveBeginScale) * value,
             // 线性分支保持线性节奏,reveal 只压缩显形区间(1 时与旧行为一致)
             opacity: revealed,
-            blur: effectiveBlur * (1 - revealed),
+            blur: effectiveBlur * blurFade,
           );
     final content = Transform.translate(
       offset:

@@ -3303,7 +3303,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           child: TweenAnimationBuilder<double>(
             key: ValueKey('node-entry-${n.id}'),
             tween: Tween(begin: 0.0, end: 1.0),
-            duration: MotionTokens.spatial(context),
+            duration: MotionTokens.nodeEntry(context),
             // 线性推进:生长与回弹的形状交给 BlurScaleTransition 的弹性轨迹,
             // 整段时长上都能看到缩放(此前曲线前置 + easeOutBack 叠加,
             // "从小变大"被压在前几个百分点里,只剩回弹可见)
@@ -3319,6 +3319,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 alignment: Alignment.topLeft,
                 origin: origin,
                 beginScale: spawn == null ? .9 : .08,
+                // 起始模糊加大,并在整段动画里线性消退:节点"由模糊转清晰"
+                // 的过程才看得出来(旧节奏下模糊在节点还小又透明时就归零了)
+                maxBlur: 24,
+                blurUntil: 1,
                 // 前 40% 就完全显形,剩下的时间专门用来展示"从小变大"的回弹
                 reveal: .4,
                 child: child!,
