@@ -52,7 +52,7 @@ void main() {
       expect(store.nodes.single.params['seed'], isA<int>());
       final saved = jsonDecode(store.saveGraph()) as Map<String, dynamic>;
       expect(saved['formatVersion'], 2);
-      expect(saved['provenance']['applicationVersion'], '0.4.4');
+      expect(saved['provenance']['applicationVersion'], '0.5.2');
     },
   );
 

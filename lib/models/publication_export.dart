@@ -802,7 +802,7 @@ String sceneToSvg(ScientificScene scene) {
 
 Map<String, dynamic> exportManifest(AxesData axes, String format) => {
   'application': 'SyphonNov',
-  'version': '0.4.3',
+  'version': '0.5.2',
   'format': format,
   'width': axes.exportWidth,
   'height': axes.exportHeight,
