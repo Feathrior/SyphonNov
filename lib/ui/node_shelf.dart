@@ -27,6 +27,12 @@ typedef NodeDragCallback = void Function(
   Offset globalPosition,
 );
 
+/// 书脊格子尺寸与间距:悬停时从 [_kNodeTileWidth] 拓宽到 [_kNodeTileHoverWidth],
+/// 弹层宽度按同一差值同步加宽(否则弹层右侧的书脊会被裁切)。
+const double _kNodeTileWidth = 48;
+const double _kNodeTileHoverWidth = 64;
+const double _kNodeTileGap = 7;
+
 /// 顶部节点提示条。折叠条固定高度，节点库通过 Overlay 展开，不参与画布布局。
 class NodeShelf extends StatefulWidget {
   final ValueChanged<String> onCreateNode;
@@ -63,6 +69,10 @@ class _NodeShelfState extends State<NodeShelf> {
   Timer? _leaveTimer;
   Category _category = Category.input;
   bool _packageMode = false;
+
+  /// 当前被悬停的书脊索引:书脊 hover 时会左右拓宽,弹层宽度跟着一起加宽,
+  /// 否则右侧内容会被裁掉。
+  int? _hoveredTile;
   Offset? _lastDragGlobal;
   bool _dragging = false;
   bool _closing = false;
@@ -84,6 +94,7 @@ class _NodeShelfState extends State<NodeShelf> {
     _closing = false;
     _category = category;
     _packageMode = false;
+    _hoveredTile = null;
     _ensureOverlay();
     if (mounted) setState(() {});
   }
@@ -92,8 +103,19 @@ class _NodeShelfState extends State<NodeShelf> {
     _leaveTimer?.cancel();
     _closing = false;
     _packageMode = true;
+    _hoveredTile = null;
     _ensureOverlay();
     if (mounted) setState(() {});
+  }
+
+  /// 书脊 hover 状态上报:弹层宽度需要同步加宽/收窄
+  void _onTileHover(int index, bool hovered) {
+    final next = hovered
+        ? index
+        : (_hoveredTile == index ? null : _hoveredTile);
+    if (next == _hoveredTile) return;
+    _hoveredTile = next;
+    _markOverlay();
   }
 
   /// 建立/刷新弹层。
@@ -169,6 +191,7 @@ class _NodeShelfState extends State<NodeShelf> {
     _entry?.remove();
     _entry = null;
     _closing = false;
+    _hoveredTile = null;
     _removeGlobalHandlers();
     if (mounted) setState(() {});
   }
@@ -239,21 +262,16 @@ class _NodeShelfState extends State<NodeShelf> {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           child: Row(
             children: [
-              for (final category in kAllCategories) ...[
-                _CategoryPill(
-                  category: category,
-                  active: _entry != null && _category == category,
-                  onEnter: () => _open(category),
-                  onExit: _scheduleClose,
-                  onTap: () => _open(category),
-                ),
-                const SizedBox(width: 6),
-              ],
-              _PackagePill(
-                active: _entry != null && _packageMode,
-                onEnter: _openPackages,
+              // 所有分类 + Package 融合成一条纯色分段条:段落之间没有空隙,
+              // 鼠标横扫时不会"先关再开",弹层宽度连续变化
+              _ShelfBar(
+                opened: _entry != null,
+                activeCategory: _category,
+                packageActive: _packageMode,
+                onCategory: _open,
+                onPackages: _openPackages,
+                onEnter: () => _leaveTimer?.cancel(),
                 onExit: _scheduleClose,
-                onTap: _openPackages,
               ),
               const Spacer(),
               Text(
@@ -289,7 +307,12 @@ class _NodeShelfState extends State<NodeShelf> {
       160.0,
       680.0,
     );
-    final width = (count * 55.0 + 24).clamp(160.0, available);
+    // 书脊布局:48 + 7 间距;悬停时该格加宽到 64,弹层同步加宽同样的差值
+    const perTile = _kNodeTileWidth + _kNodeTileGap;
+    final hoverExtra = _hoveredTile == null
+        ? 0.0
+        : (_kNodeTileHoverWidth - _kNodeTileWidth);
+    final width = (count * perTile + 24 + hoverExtra).clamp(160.0, available);
     return Positioned.fill(
       child: Stack(
         clipBehavior: Clip.none,
@@ -345,6 +368,7 @@ class _NodeShelfState extends State<NodeShelf> {
                             visible: !_closing,
                             category: _category,
                             onLibraryChanged: _markOverlay,
+                            onTileHover: _onTileHover,
                             onPick: (id) {
                               SettingsStore.instance.recordNodeUse(id);
                               widget.onCreateNode(id);
@@ -410,154 +434,150 @@ class _NodeShelfState extends State<NodeShelf> {
   }
 }
 
-class _CategoryPill extends StatefulWidget {
-  final Category category;
-  final bool active;
+/// 上边栏的一体化分类条:所有分类与 Package 位于同一个纯色分段容器内。
+///
+/// 融合成一条有两个好处:
+/// 1. 段落之间没有空隙,鼠标横向扫过时整条栏只触发一次 onEnter/onExit,
+///    次级菜单不会再"先关再开",而是直接切换分类并让宽度连续变化;
+/// 2. 每段都是纯色填充、无描边,视觉上是一个整体按钮。
+class _ShelfBar extends StatelessWidget {
+  final bool opened;
+  final Category activeCategory;
+  final bool packageActive;
+  final ValueChanged<Category> onCategory;
+  final VoidCallback onPackages;
   final VoidCallback onEnter;
   final VoidCallback onExit;
-  final VoidCallback onTap;
 
-  const _CategoryPill({
-    required this.category,
-    required this.active,
+  const _ShelfBar({
+    required this.opened,
+    required this.activeCategory,
+    required this.packageActive,
+    required this.onCategory,
+    required this.onPackages,
     required this.onEnter,
     required this.onExit,
-    required this.onTap,
   });
-
-  @override
-  State<_CategoryPill> createState() => _CategoryPillState();
-}
-
-class _CategoryPillState extends State<_CategoryPill> {
-  bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final info = kCategoryInfo[widget.category]!;
-    final color = parseColor(info.color);
-    final active = _hover || widget.active;
     return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) {
-        setState(() => _hover = true);
-        widget.onEnter();
-      },
-      onExit: (_) {
-        setState(() => _hover = false);
-        widget.onExit();
-      },
-      child: Semantics(
-        button: true,
-        label: L.t(info.label),
-        child: InkWell(
-          onTap: widget.onTap,
-          mouseCursor: SystemMouseCursors.click,
-          borderRadius: BorderRadius.circular(10),
-          splashColor: Colors.transparent,
-          hoverColor: Colors.transparent,
-          focusColor: color.withValues(alpha: .08),
-          child: AnimatedContainer(
-            key: ValueKey('node-category-${widget.category.name}'),
-            duration: MotionTokens.standard(context),
-            curve: Curves.easeOutBack,
-            padding: EdgeInsets.symmetric(
-              horizontal: active ? 13 : 10,
-              vertical: 6,
-            ),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: active ? 0.14 : 0.07),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: color.withValues(alpha: active ? 0.38 : 0.14),
+      onEnter: (_) => onEnter(),
+      onExit: (_) => onExit(),
+      child: Container(
+        key: const Key('node-shelf-bar'),
+        height: 30,
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: t.bgRaise,
+          borderRadius: BorderRadius.circular(11),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final category in kAllCategories)
+              _ShelfSegment(
+                key: ValueKey('node-category-${category.name}'),
+                symbol: kCategoryInfo[category]!.icon,
+                label: L.t(kCategoryInfo[category]!.label),
+                color: parseColor(kCategoryInfo[category]!.color),
+                highlighted: opened && activeCategory == category,
+                onEnter: () => onCategory(category),
+                onTap: () => onCategory(category),
               ),
+            _ShelfSegment(
+              key: const Key('node-category-package'),
+              symbol: '⧉',
+              label: 'Package',
+              color: const Color(0xFF8A9099),
+              highlighted: opened && packageActive,
+              onEnter: onPackages,
+              onTap: onPackages,
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(info.icon, style: TextStyle(fontSize: 11, color: color)),
-                const SizedBox(width: 6),
-                Text(
-                  L.t(info.label),
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: t.text,
-                  ),
-                ),
-              ],
-            ),
-          ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _PackagePill extends StatefulWidget {
-  final bool active;
+/// 分类条里的一段:纯色填充、无描边;悬停或激活时提高不透明度并加一层同色柔光。
+class _ShelfSegment extends StatefulWidget {
+  final String symbol;
+  final String label;
+  final Color color;
+  final bool highlighted;
   final VoidCallback onEnter;
-  final VoidCallback onExit;
   final VoidCallback onTap;
 
-  const _PackagePill({
-    required this.active,
+  const _ShelfSegment({
+    super.key,
+    required this.symbol,
+    required this.label,
+    required this.color,
+    required this.highlighted,
     required this.onEnter,
-    required this.onExit,
     required this.onTap,
   });
 
   @override
-  State<_PackagePill> createState() => _PackagePillState();
+  State<_ShelfSegment> createState() => _ShelfSegmentState();
 }
 
-class _PackagePillState extends State<_PackagePill> {
+class _ShelfSegmentState extends State<_ShelfSegment> {
   bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
-    final t = SyphonTheme.of(context);
-    final active = _hover || widget.active;
-    const color = Color(0xFF8A9099);
+    final on = _hover || widget.highlighted;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) {
         setState(() => _hover = true);
         widget.onEnter();
       },
-      onExit: (_) {
-        setState(() => _hover = false);
-        widget.onExit();
-      },
-      child: InkWell(
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
         onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(10),
         child: AnimatedContainer(
-          key: const Key('node-category-package'),
           duration: MotionTokens.standard(context),
-          padding: EdgeInsets.symmetric(
-            horizontal: active ? 13 : 10,
-            vertical: 6,
-          ),
+          curve: MotionTokens.enter,
+          margin: const EdgeInsets.symmetric(horizontal: 1),
+          padding: EdgeInsets.symmetric(horizontal: on ? 12 : 10, vertical: 5),
           decoration: BoxDecoration(
-            color: color.withValues(alpha: active ? .18 : .08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: color.withValues(alpha: active ? .5 : .2),
-            ),
+            // 纯色填充:不描边,靠不透明度与柔光区分状态
+            color: widget.color.withValues(alpha: on ? 1 : .88),
+            borderRadius: BorderRadius.circular(8),
+            // 阴影模糊/偏移恒定,只插值颜色:AnimatedContainer 的装饰插值若
+            // 让模糊值外插(曲线过冲 t>1)会产生负 blurRadius(框架断言)
+            boxShadow: [
+              BoxShadow(
+                color: on
+                    ? widget.color.withValues(alpha: .5)
+                    : widget.color.withValues(alpha: 0),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.inventory_2_outlined, size: 13, color: color),
-              const SizedBox(width: 6),
               Text(
-                'Package',
+                widget.symbol,
                 style: TextStyle(
                   fontSize: 11,
+                  color: Colors.white.withValues(alpha: .92),
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                widget.label,
+                style: const TextStyle(
+                  fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  color: t.text,
+                  color: Colors.white,
                 ),
               ),
             ],
@@ -567,7 +587,6 @@ class _PackagePillState extends State<_PackagePill> {
     );
   }
 }
-
 class _PackageLibrary extends StatelessWidget {
   final double width;
   final bool visible;
@@ -701,6 +720,7 @@ class _NodeLibrary extends StatelessWidget {
   final bool visible;
   final Category category;
   final VoidCallback onLibraryChanged;
+  final void Function(int index, bool hovered) onTileHover;
   final ValueChanged<String> onPick;
   final VoidCallback onDragStarted;
   final void Function(NodeConfig, Offset) onDragUpdate;
@@ -712,6 +732,7 @@ class _NodeLibrary extends StatelessWidget {
     required this.visible,
     required this.category,
     required this.onLibraryChanged,
+    required this.onTileHover,
     required this.onPick,
     required this.onDragStarted,
     required this.onDragUpdate,
@@ -782,12 +803,15 @@ class _NodeLibrary extends StatelessWidget {
                           scrollDirection: Axis.horizontal,
                           padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
                           itemCount: items.length,
-                          separatorBuilder: (_, _) => const SizedBox(width: 7),
+                          separatorBuilder: (_, _) =>
+                              const SizedBox(width: _kNodeTileGap),
                           itemBuilder: (context, index) => _NodeTile(
                             cfg: items[index],
                             favorite: settings.favoriteNodeIds.contains(
                               items[index].id,
                             ),
+                            onHoverChanged: (hovered) =>
+                                onTileHover(index, hovered),
                             onFavorite: () {
                               settings.toggleFavoriteNode(items[index].id);
                               onLibraryChanged();
@@ -813,6 +837,7 @@ class _NodeLibrary extends StatelessWidget {
 class _NodeTile extends StatefulWidget {
   final NodeConfig cfg;
   final bool favorite;
+  final ValueChanged<bool> onHoverChanged;
   final VoidCallback onFavorite;
   final VoidCallback onPick;
   final VoidCallback onDragStarted;
@@ -822,6 +847,7 @@ class _NodeTile extends StatefulWidget {
   const _NodeTile({
     required this.cfg,
     required this.favorite,
+    required this.onHoverChanged,
     required this.onFavorite,
     required this.onPick,
     required this.onDragStarted,
@@ -846,7 +872,7 @@ class _NodeTileState extends State<_NodeTile> {
       key: ValueKey('node-spine-${widget.cfg.id}'),
       duration: MotionTokens.standard(context),
       curve: Curves.easeOutBack,
-      width: _hover ? 64 : 48,
+      width: _hover ? _kNodeTileHoverWidth : _kNodeTileWidth,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 10),
       decoration: BoxDecoration(
         color: _hover ? color.withValues(alpha: 0.22) : t.bgRaise,
@@ -854,15 +880,20 @@ class _NodeTileState extends State<_NodeTile> {
         border: Border.all(
           color: _hover ? color.withValues(alpha: 0.42) : t.stroke,
         ),
-        boxShadow: _hover
-            ? [
-                BoxShadow(
-                  color: color.withValues(alpha: .2),
-                  blurRadius: 12,
-                  offset: const Offset(0, 5),
-                ),
-              ]
-            : null,
+        // 阴影的模糊与偏移在两种状态下保持一致,只让颜色淡入淡出。
+        // 曲线 easeOutBack 会过冲到 t>1,而 lerpDouble 是外插:
+        // 若模糊从 12 插到 0,t=1.1 时会得到负的 blurRadius 并触发框架断言
+        // "Text shadow blur radius should be non-negative"(构建期红色报错,
+        // 还会连带引发 _dependents.isEmpty 等次生断言)。
+        boxShadow: [
+          BoxShadow(
+            color: _hover
+                ? color.withValues(alpha: .2)
+                : color.withValues(alpha: 0),
+            blurRadius: 12,
+            offset: const Offset(0, 5),
+          ),
+        ],
       ),
       child: Column(
         children: [
@@ -896,8 +927,14 @@ class _NodeTileState extends State<_NodeTile> {
       waitDuration: const Duration(milliseconds: 500),
       child: MouseRegion(
         cursor: SystemMouseCursors.grab,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
+        onEnter: (_) {
+          setState(() => _hover = true);
+          widget.onHoverChanged(true);
+        },
+        onExit: (_) {
+          setState(() => _hover = false);
+          widget.onHoverChanged(false);
+        },
         child: Draggable<String>(
           data: widget.cfg.id,
           // 指示环以指针为中心(与右键圆环拖出的圆球一致),
