@@ -2522,18 +2522,21 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _radialVisible = true;
     }
     if (!_radialVisible) return;
-    if (_radialLockedItem != null) {
-      // 撤回区域 = 圆环外圈以内:圆点被拖回到圆环范围内即取消本次锁定,
-      // 松开右键不会创建节点(此前需拖回内圈才撤回)
-      if (delta.distance < radialCancelRadius) {
-        _radialLockedItem = null;
-        _radialDetachAnchor = null;
-        _radialSection = null;
-        _radialDetail = null;
-        _radialItems = const [];
-      }
+    if (_radialLockedItem != null && delta.distance >= radialCancelRadius) {
+      // 仍处于分离状态:锁定后不再随指针改变条目
       _bump();
       return;
+    }
+    if (_radialLockedItem != null) {
+      // 撤回区域 = 圆环外圈以内:解除锁定,松开右键不创建节点。
+      //
+      // 这里只解除"逻辑锁定":所在的扇区、详细条目与分离锚点全部保留,
+      // 让 RadialNodeMenu 里 detachProgress 的反向动画把圆球顺着连接带
+      // 平滑收束回圆环。此前把它们一起清空会让整块反馈瞬间重来一遍,
+      // 观感上就像"刷新"了一下。
+      _radialLockedItem = null;
+      // 收束终点落在当前角度上:旋转着拉回时连接带不会横跨其它扇区
+      _radialDetachAnchor = radialAttachmentPoint(center, localPosition);
     }
     final section = radialSectionIndex(delta);
     final items = section == null

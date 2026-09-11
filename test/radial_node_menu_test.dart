@@ -219,6 +219,48 @@ void main() {
     expect(find.byKey(const Key('radial-node-menu')), findsNothing);
   });
 
+  testWidgets('pulling the dot back merges it into the ring smoothly', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final center = tester.getCenter(find.byType(NodeCanvas));
+    final gesture = await tester.startGesture(
+      center,
+      buttons: kSecondaryButton,
+    );
+    await gesture.moveBy(const Offset(0, -140));
+    await tester.pump();
+    var menu = tester.widget<RadialNodeMenu>(find.byType(RadialNodeMenu));
+    expect(menu.lockedItem, isNotNull);
+    expect(menu.sectionIndex, isNotNull);
+    expect(menu.detailItems, isNotEmpty);
+    // 反向动画必须挂在固定 key 上,否则撤回时 builder 重建、进度瞬间归零
+    expect(find.byKey(const ValueKey('radial-detach-progress')), findsOneWidget);
+    expect(find.byKey(const ValueKey('radial-hover-progress')), findsOneWidget);
+
+    // 拉回外圈以内(距圆心 70):解除锁定,但扇区/条目/锚点保留,
+    // 由 detachProgress 反向动画把圆球顺连接带收束回圆环
+    await gesture.moveBy(const Offset(0, 70));
+    await tester.pump();
+    menu = tester.widget<RadialNodeMenu>(find.byType(RadialNodeMenu));
+    expect(menu.lockedItem, isNull, reason: '撤回后不应再创建节点');
+    expect(menu.sectionIndex, isNotNull, reason: '撤回不应立刻清空扇区高亮');
+    expect(menu.detailItems, isNotEmpty, reason: '撤回不应立刻清空条目');
+    expect(menu.detachAnchor, isNotNull, reason: '连接带锚点需保留到收束完成');
+    // 收束过程中界面仍需连续重绘而不是整块换掉
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(
+      tester.widget<RadialNodeMenu>(find.byType(RadialNodeMenu)).sectionIndex,
+      isNotNull,
+    );
+    expect(find.byKey(const Key('radial-node-menu')), findsOneWidget);
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(GraphStore.instance.nodes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('node shelf can be hidden independently', (tester) async {
     SettingsStore.instance.nodeShelfEnabled = false;
     await pumpApp(tester);

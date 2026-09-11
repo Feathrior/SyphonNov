@@ -254,13 +254,17 @@ class _RadialNodeMenuState extends State<RadialNodeMenu>
               );
             },
             child: TweenAnimationBuilder<double>(
-              key: ValueKey('radial-hover-${widget.sectionIndex ?? -1}'),
+              // key 固定:撤回时同一个 builder 反向动画,扇区辉光平滑收回,
+              // 而不是换 key 重建后瞬间归零(那样看起来像"刷新"一下)
+              key: const ValueKey('radial-hover-progress'),
               tween: Tween(begin: 0, end: widget.sectionIndex == null ? 0 : 1),
               duration: MotionTokens.standard(context),
               curve: MotionTokens.emphasized,
               builder: (context, hoverProgress, child) =>
                   TweenAnimationBuilder<double>(
-                    key: ValueKey(widget.lockedItem?.id ?? 'radial-attached'),
+                    // 同理:key 不能带项 id,否则锁定/撤回切换 key 时会重建,
+                    // detachProgress 直接归零 → 圆球与连接带闪断
+                    key: const ValueKey('radial-detach-progress'),
                     tween: Tween(
                       begin: 0,
                       end: widget.lockedItem == null ? 0 : 1,
@@ -466,37 +470,38 @@ class _RadialNodeMenuPainter extends CustomPainter {
     if (delta.distance < radialDeadRadius || sectionIndex == null) return;
     final color = _sectionColor(sectionIndex!);
     final unit = delta / delta.distance;
-    final anchor =
-        detachAnchor ??
-        center + unit * ((radialInnerRadius + radialOuterRadius) / 2);
-    Offset dot;
-    if (lockedItem == null) {
-      final pull = math.max(0.0, delta.distance - radialInnerRadius);
-      final resisted =
-          ((radialInnerRadius + radialOuterRadius) / 2) +
-          radialRubberBand(pull);
-      dot = center + unit * resisted;
-    } else {
-      dot = Offset.lerp(anchor, pointer, detachProgress.clamp(0, 1))!;
+    final midRadius = (radialInnerRadius + radialOuterRadius) / 2;
+    final anchor = detachAnchor ?? center + unit * midRadius;
+    final progress = detachProgress.clamp(0.0, 1.0);
+    // 未分离时的"归位点":贴在圆环带内,并随指针带橡皮筋阻力移动
+    final pull = math.max(0.0, delta.distance - radialInnerRadius);
+    final home = center + unit * (midRadius + radialRubberBand(pull));
+    // 分离态位置(与连接带同一条插值),再按 progress 与归位点混合。
+    // 撤回时 progress 反向动画,圆球顺着连接带平滑"融回"圆环,
+    // 而不是瞬间跳回归位点、连接带同时消失(那种观感就是"刷新")
+    final detachedDot = Offset.lerp(anchor, pointer, progress)!;
+    final dot = Offset.lerp(home, detachedDot, progress)!;
+    if (progress > .01) {
       final tether = Path()
         ..moveTo(anchor.dx, anchor.dy)
         ..quadraticBezierTo(
-          (anchor.dx + dot.dx) / 2 - unit.dy * 5 * (1 - detachProgress),
-          (anchor.dy + dot.dy) / 2 + unit.dx * 5 * (1 - detachProgress),
+          (anchor.dx + dot.dx) / 2 - unit.dy * 5 * (1 - progress),
+          (anchor.dy + dot.dy) / 2 + unit.dx * 5 * (1 - progress),
           dot.dx,
           dot.dy,
         );
       canvas.drawPath(
         tether,
         Paint()
-          ..color = color.withValues(alpha: .5 * (1 - detachProgress))
-          ..strokeWidth = 5 * (1 - detachProgress) + 1
+          ..color = color.withValues(alpha: .5 * (1 - progress))
+          ..strokeWidth = 5 * (1 - progress) + 1
           ..strokeCap = StrokeCap.round
           ..style = PaintingStyle.stroke
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
       );
     }
-    final pulse = lockedItem == null ? 0.0 : math.sin(detachProgress * math.pi);
+    // 光晕脉冲同样只看 progress:分离与收束过程中都有一次呼吸,静止时归零
+    final pulse = math.sin(progress * math.pi);
     // 圆球形光晕:叠加(变亮)混合 —— 与色环/节点重叠处只提亮,不出现暗边
     canvas.drawCircle(
       dot,
