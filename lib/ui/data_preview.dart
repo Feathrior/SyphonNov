@@ -47,42 +47,26 @@ class _MiniTableState extends State<MiniTable> {
   @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final table = Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerSignal: (e) {
-        // 纵向滚轮接管:命中链最深处优先注册 PointerSignalResolver,
-        // 直接驱动外层纵向滚动——修复内嵌横向滚动体布局下外层 Scrollable
-        // 收不到纵向滚轮事件的问题(如数据输出节点 Expanded 内嵌表格)。
-        // 方向与 SDK 原生 _handlePointerScroll 完全一致(delta 直接累加)。
-        if (e is! PointerScrollEvent || e.scrollDelta.dy == 0) return;
-        if (!_v.hasClients) return;
-        GestureBinding.instance.pointerSignalResolver.register(e, (event) {
-          final se = event as PointerScrollEvent;
-          _v.position.pointerScroll(se.scrollDelta.dy);
-          se.respond(allowPlatformDefault: false);
-        });
-      },
-      child: Table(
-        border: TableBorder.all(color: t.stroke, width: 1),
-        columnWidths: {0: const FixedColumnWidth(30)},
-        defaultColumnWidth: const IntrinsicColumnWidth(),
-        children: [
+    final table = Table(
+      border: TableBorder.all(color: t.stroke, width: 1),
+      columnWidths: {0: const FixedColumnWidth(30)},
+      defaultColumnWidth: const IntrinsicColumnWidth(),
+      children: [
+        TableRow(
+          decoration: BoxDecoration(color: t.bgFloat),
+          children: [
+            MiniTableCell('', header: true),
+            for (final h in widget.headers) MiniTableCell(h, header: true),
+          ],
+        ),
+        for (final r in widget.rows)
           TableRow(
-            decoration: BoxDecoration(color: t.bgFloat),
             children: [
-              MiniTableCell('', header: true),
-              for (final h in widget.headers) MiniTableCell(h, header: true),
+              MiniTableCell('${widget.rows.indexOf(r)}'),
+              for (var i = 0; i < r.length; i++) MiniTableCell(r[i]),
             ],
           ),
-          for (final r in widget.rows)
-            TableRow(
-              children: [
-                MiniTableCell('${widget.rows.indexOf(r)}'),
-                for (var i = 0; i < r.length; i++) MiniTableCell(r[i]),
-              ],
-            ),
-        ],
-      ),
+      ],
     );
     // 外:纵向滚动(带控制器);内:横向滚动。
     // ScrollConfiguration(scrollbars:false) 关闭 Fluent 自动包裹的滚动条,
@@ -97,12 +81,34 @@ class _MiniTableState extends State<MiniTable> {
         ),
       ),
     );
+    // 事件接管必须覆盖整个纵向视口，而不是只覆盖内容自适应的 Table。
+    // 否则视口宽于表格时，在右侧空白处拖动不会命中处理器。
+    final interactiveScroll = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (details) => _scrollBy(-details.delta.dy),
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        // 画布的 pan recognizer 可能赢得手势竞技场；原始指针移动仍会冒泡，
+        // 因而用它保证节点内部表格始终能拖动。
+        onPointerMove: (event) => _scrollBy(-event.delta.dy),
+        onPointerSignal: (e) {
+          if (e is! PointerScrollEvent || e.scrollDelta.dy == 0) return;
+          if (!_v.hasClients) return;
+          GestureBinding.instance.pointerSignalResolver.register(e, (event) {
+            final se = event as PointerScrollEvent;
+            _v.position.pointerScroll(se.scrollDelta.dy);
+            se.respond(allowPlatformDefault: false);
+          });
+        },
+        child: scroll,
+      ),
+    );
     // 叠加自绘竖向滚动条:用 LayoutBuilder 拿到可视高度(紧约束下必有限)
     final body = LayoutBuilder(
       builder: (context, constraints) {
         return Stack(
           children: [
-            scroll,
+            interactiveScroll,
             _MiniVScrollbar(
               controller: _v,
               viewportHeight: constraints.maxHeight,
@@ -130,6 +136,17 @@ class _MiniTableState extends State<MiniTable> {
             ),
           ),
       ],
+    );
+  }
+
+  void _scrollBy(double delta) {
+    if (!_v.hasClients || delta == 0) return;
+    final position = _v.position;
+    position.jumpTo(
+      (position.pixels + delta).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      ),
     );
   }
 }

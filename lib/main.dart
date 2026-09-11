@@ -17,6 +17,7 @@ import 'store/graph_store.dart';
 import 'store/settings_store.dart';
 import 'ui/inspector.dart';
 import 'ui/node_canvas.dart';
+import 'ui/node_shelf.dart';
 import 'ui/properties_panel.dart';
 import 'ui/settings_panel.dart';
 import 'ui/shortcuts_panel.dart';
@@ -94,10 +95,10 @@ class SyphonApp extends StatelessWidget {
             // 细腻过渡动画:菜单/弹窗/ComboBox/InfoBar 等 fluent 控件的动画时长。
             // 层级 faster < fast < medium < slow;fast 90ms——MenuBar 点击到
             // 弹出次级菜单的主要延迟就是它(叠加 easeIn 淡入起始慢),提速后接近原生
-            fasterAnimationDuration: const Duration(milliseconds: 60),
-            fastAnimationDuration: const Duration(milliseconds: 90),
-            mediumAnimationDuration: const Duration(milliseconds: 180),
-            slowAnimationDuration: const Duration(milliseconds: 358),
+            fasterAnimationDuration: const Duration(milliseconds: 75),
+            fastAnimationDuration: const Duration(milliseconds: 110),
+            mediumAnimationDuration: const Duration(milliseconds: 230),
+            slowAnimationDuration: const Duration(milliseconds: 420),
           ),
           darkTheme: fluent.FluentThemeData(
             brightness: Brightness.dark,
@@ -107,10 +108,10 @@ class SyphonApp extends StatelessWidget {
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
             menuColor: bgFloat,
-            fasterAnimationDuration: const Duration(milliseconds: 60),
-            fastAnimationDuration: const Duration(milliseconds: 90),
-            mediumAnimationDuration: const Duration(milliseconds: 180),
-            slowAnimationDuration: const Duration(milliseconds: 358),
+            fasterAnimationDuration: const Duration(milliseconds: 75),
+            fastAnimationDuration: const Duration(milliseconds: 110),
+            mediumAnimationDuration: const Duration(milliseconds: 230),
+            slowAnimationDuration: const Duration(milliseconds: 420),
           ),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           // 普通 Text 继承微软雅黑(merge 保留各组件自带的字号/颜色)
@@ -201,21 +202,26 @@ class _AppShellState extends State<_AppShell> {
       ((args['x'] as num?)?.toDouble() ?? 0) / dpr,
       ((args['y'] as num?)?.toDouble() ?? 0) / dpr,
     );
-    // 取第一个受支持的数据文件;全部不识别也尝试读取第一个
-    const exts = {'.csv', '.tsv', '.txt', '.xlsx', '.xls'};
-    final path = paths.firstWhere(
-      (p) => exts.any((e) => p.toLowerCase().endsWith(e)),
-      orElse: () => paths.first,
-    );
-    try {
-      final text = await dataFileToCsvText(path);
-      _canvasKey.currentState?.dropFileText(
-        pos,
-        text,
-        fileName: fileBaseName(path),
-      );
-    } catch (e) {
-      GraphStore.instance.addLog('error', '导入文件失败:$e');
+    const exts = {'.csv', '.tsv', '.txt', '.xlsx'};
+    final supported = paths
+        .where((path) => exts.any((ext) => path.toLowerCase().endsWith(ext)))
+        .toList();
+    if (supported.isEmpty) {
+      GraphStore.instance.addLog('error', '拖入的文件格式不受支持');
+      return;
+    }
+    for (var index = 0; index < supported.length; index++) {
+      final path = supported[index];
+      try {
+        final text = await dataFileToCsvText(path);
+        _canvasKey.currentState?.dropFileText(
+          pos + Offset(index * 32.0, index * 32.0),
+          text,
+          fileName: fileBaseName(path),
+        );
+      } catch (e) {
+        GraphStore.instance.addLog('error', '导入文件失败:$e');
+      }
     }
   }
 
@@ -228,14 +234,9 @@ class _AppShellState extends State<_AppShell> {
 
   /// 全局级快捷键(输入框聚焦时也优先响应的组合键)
   bool _isGlobalShortcut(KeyEvent event) {
-    final ctrl =
-        HardwareKeyboard.instance.isControlPressed ||
-        HardwareKeyboard.instance.isMetaPressed;
-    if (!ctrl) return false;
-    final k = event.logicalKey;
-    return k == LogicalKeyboardKey.keyZ ||
-        k == LogicalKeyboardKey.keyY ||
-        k == LogicalKeyboardKey.keyG;
+    final settings = SettingsStore.instance;
+    return settings.matchesShortcut('undo', event) ||
+        settings.matchesShortcut('redo', event);
   }
 
   /// 全局键盘快捷键(对应 React 版 App.tsx 的 keydown 监听):
@@ -251,22 +252,17 @@ class _AppShellState extends State<_AppShell> {
       return KeyEventResult.ignored;
     }
 
-    final ctrl =
-        HardwareKeyboard.instance.isControlPressed ||
-        HardwareKeyboard.instance.isMetaPressed;
-    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final settings = SettingsStore.instance;
 
-    // Ctrl+Z 撤销;Ctrl+Shift+Z 重做
-    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyZ) {
-      if (shift) {
-        GraphStore.instance.redo();
-      } else {
-        GraphStore.instance.undo();
-      }
+    if (settings.matchesShortcut('undo', event)) {
+      GraphStore.instance.undo();
       return KeyEventResult.handled;
     }
-    // Ctrl+C:复制所选(多选优先,退化单选)
-    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyC) {
+    if (settings.matchesShortcut('redo', event)) {
+      GraphStore.instance.redo();
+      return KeyEventResult.handled;
+    }
+    if (settings.matchesShortcut('copy', event)) {
       final s = GraphStore.instance;
       final ids = <String>{};
       ids.addAll(s.multiSelected);
@@ -274,48 +270,23 @@ class _AppShellState extends State<_AppShell> {
       s.copySelection(ids);
       return KeyEventResult.handled;
     }
-    // Ctrl+V:在鼠标 world 位置粘贴剪贴板内容
-    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyV) {
+    if (settings.matchesShortcut('paste', event)) {
       final world = NodeCanvas.lastMouseWorldPos;
       GraphStore.instance.pasteAt(world);
       return KeyEventResult.handled;
     }
-    // Ctrl+G:将多选节点创建为分组
-    if (ctrl && !shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+    if (settings.matchesShortcut('cut', event)) {
       final s = GraphStore.instance;
-      final ids = s.multiSelected.isNotEmpty
-          ? s.multiSelected.toList()
-          : (s.selectedId != null ? <String>[s.selectedId!] : const <String>[]);
-      if (ids.length >= 2) {
-        s.createGroup(ids);
-      }
+      final ids = <String>{...s.multiSelected, ?s.selectedId};
+      s.copySelection(ids);
+      s.removeNodes(ids.toList());
       return KeyEventResult.handled;
     }
-    // Ctrl+Shift+G:解散所选节点所在的分组
-    if (ctrl && shift && event.logicalKey == LogicalKeyboardKey.keyG) {
+    if (settings.matchesShortcut('selectAll', event)) {
       final s = GraphStore.instance;
-      if (s.selectedId != null) {
-        final gid = s.groupOf(s.selectedId!);
-        if (gid != null) s.dissolveGroup(gid);
-      } else if (s.multiSelected.isNotEmpty) {
-        // 多选:收集所有不同的分组 id 逐一解散
-        final gids = <String>{};
-        for (final id in s.multiSelected) {
-          final gid = s.groupOf(id);
-          if (gid != null) gids.add(gid);
-        }
-        for (final gid in gids) {
-          s.dissolveGroup(gid);
-        }
-      }
+      s.setMultiSelected(s.nodes.map((item) => item.id).toSet());
       return KeyEventResult.handled;
     }
-    // Ctrl+Y 重做
-    if (ctrl && event.logicalKey == LogicalKeyboardKey.keyY) {
-      GraphStore.instance.redo();
-      return KeyEventResult.handled;
-    }
-
     // Escape:取消选中(画布右键菜单/分割点编辑由 NodeCanvas 自身的 Focus 处理)
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       GraphStore.instance.selectNode(null);
@@ -324,7 +295,8 @@ class _AppShellState extends State<_AppShell> {
     }
 
     // Delete/Backspace:删除选中节点(或分割点)
-    if (event.logicalKey == LogicalKeyboardKey.delete ||
+    if (settings.matchesShortcut('delete', event) ||
+        event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
       _canvasKey.currentState?.deleteSelection();
       return KeyEventResult.handled;
@@ -352,7 +324,7 @@ class _AppShellState extends State<_AppShell> {
             RepaintBoundary(
               child: Column(
                 children: [
-                  SizedBox(height: SyphonDims.toolbarH),
+                  SizedBox(height: SyphonDims.toolbarH + SyphonDims.nodeShelfH),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -381,10 +353,38 @@ class _AppShellState extends State<_AppShell> {
                 ],
               ),
             ),
+            if (SettingsStore.instance.nodeShelfEnabled)
+              Positioned(
+                top: SyphonDims.toolbarH,
+                left: 0,
+                right: 0,
+                child: NodeShelf(
+                  onCreateNode: (id) =>
+                      _canvasKey.currentState?.addNodeAtViewportCenter(id),
+                  onCreatePackage: (value) => _canvasKey.currentState
+                      ?.createPackageAtViewportCenter(value),
+                  onDropNode: (id, position) =>
+                      _canvasKey.currentState?.addNodeFromGlobal(
+                        id,
+                        position,
+                      ) ??
+                      false,
+                  onDragUpdate: (id, category, position) => _canvasKey
+                      .currentState
+                      ?.updateExternalNodeDrag(id, category, position),
+                  onDragCancel: () =>
+                      _canvasKey.currentState?.cancelExternalNodeDrag(),
+                ),
+              ),
             // 顶栏层:悬浮于所有图层之上
             Toolbar(
               boxSelect: _boxSelect,
-              onBoxSelectChanged: (v) => setState(() => _boxSelect = v),
+              onBoxSelectChanged: (v) {
+                // 先让菜单完成关闭，再更新工具栏状态，避免重建打断退出动画。
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() => _boxSelect = v);
+                });
+              },
               onOpenSettings: () => fluent.showDialog<void>(
                 context: context,
                 builder: (ctx) =>

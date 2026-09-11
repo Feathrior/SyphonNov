@@ -2,8 +2,10 @@
 // (由 React 版 ui/ViewerRender.tsx 移植,不含 ECharts 依赖)
 library;
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:file_selector/file_selector.dart';
@@ -14,7 +16,9 @@ import 'package:flutter/material.dart';
 import '../models/color_utils.dart';
 import '../models/data.dart' as md;
 import '../models/exec_engine.dart';
+import '../models/lod.dart';
 import '../store/graph_store.dart';
+import 'chart_coordinates.dart';
 import 'data_preview.dart';
 
 // ==================== 表格辅助 ====================
@@ -116,38 +120,12 @@ class _Ticks {
 }
 
 _Ticks _niceTicks(double min, double max, int targetCount) {
-  final span = max - min;
-  if (!span.isFinite || span <= 1e-9) return _Ticks([min], 1);
-  final raw = span / math.max(1, targetCount);
-  final mag = math.pow(10, (math.log(raw) / math.ln10).floor()).toDouble();
-  final norm = raw / mag;
-  double step;
-  if (norm < 1.5) {
-    step = 1;
-  } else if (norm < 3.5) {
-    step = 2;
-  } else if (norm < 7.5) {
-    step = 5;
-  } else {
-    step = 10;
-  }
-  step *= mag;
-  final ticks = <double>[];
-  final first = (min / step - 1e-9).ceil() * step;
-  for (var v = first; v <= max + step * 1e-6; v += step) {
-    ticks.add(double.parse(v.toStringAsFixed(10)));
-  }
-  if (ticks.isEmpty) ticks.add(min);
-  return _Ticks(ticks, step);
+  final value = nicePlotTicks(min, max, targetCount);
+  return _Ticks(value.ticks, value.step);
 }
 
 String _fmtTick(double v, double step) {
-  if (!v.isFinite) return '';
-  if (v.abs() < 1e-9) v = 0;
-  final dec = step >= 1
-      ? 0
-      : math.min(6, math.max(0, (-math.log(step) / math.ln10).ceil()));
-  return v.toStringAsFixed(dec);
+  return formatPlotTick(v, step);
 }
 
 // ==================== 绘制辅助 ====================
@@ -216,7 +194,7 @@ class _ValueAxis {
 }
 
 double _mapV(double v, double min, double max, double a, double b) =>
-    a + (v - min) / math.max(max - min, 1e-9) * (b - a);
+    a + PlotRange(min, max).fraction(v) * (b - a);
 
 /// 绘制值轴(轴线 + 刻度 + 数字 + 名称)
 void _drawValueAxis(
@@ -520,6 +498,7 @@ class ChartPainter extends CustomPainter {
   /// 文字缩放系数:fontSizeCm(厘米)→ 像素(96dpi),相对默认 11px 的比例。
   /// 与导出像素大小互相独立:导出只做整体等比缩放,不改变文字/图形比例。
   double _fs = 1.0;
+  PlotViewport? _overlayViewport;
 
   double _fontScale(Map<String, dynamic> params) {
     final cm = md.toNum(params['fontSizeCm']) ?? 0.28;
@@ -533,6 +512,7 @@ class ChartPainter extends CustomPainter {
     if (size.width <= 0 || size.height <= 0) return;
     canvas.drawRect(Offset.zero & size, Paint()..color = bg);
     _fs = _fontScale(data.params);
+    _overlayViewport = null;
     final params = data.params;
     final result = data.result;
     final title = '${params['title'] ?? ''}';
@@ -574,24 +554,15 @@ class ChartPainter extends CustomPainter {
 
     switch (data.chartType) {
       case 'scatter':
-        _paintScatter(
+      case 'line':
+        _paintCartesian(
           canvas,
           size,
           params,
           table,
           scatterPts,
-          labelSize,
-          textColor,
-          axisColor,
-        );
-        break;
-      case 'line':
-        _paintLine(
-          canvas,
-          size,
-          params,
-          table,
           seriesList,
+          _gather(inputs, multi, 'in_faces').whereType<md.MeshData>().toList(),
           labelSize,
           textColor,
           axisColor,
@@ -659,336 +630,201 @@ class ChartPainter extends CustomPainter {
         _paintEmpty(canvas, size);
     }
     // 图元叠加层:接入的点/线/面/文本(可多连)像"原理化输出"一样画进图中。
-    // 散点/折线图且无表格时,点/线已由主图统一 fit 并带各自样式绘制,
-    // 叠加层跳过这两类、只叠加面/文本,避免同一位点重复绘制造成色晕/重影。
-    final primitivesAreMain =
-        table == null &&
-        (data.chartType == 'scatter' || data.chartType == 'line');
-    _paintOverlayPrimitives(
-      canvas,
-      size,
-      inputs,
-      multi,
-      skipPts: primitivesAreMain,
-      skipLines: primitivesAreMain,
-    );
+    _paintOverlayPrimitives(canvas, size, inputs, multi);
   }
 
   Rect _plot(Size size, double left, double top, double right, double bottom) =>
       Rect.fromLTRB(left, top, size.width - right, size.height - bottom);
 
-  void _paintScatter(
+  void _paintCartesian(
     Canvas canvas,
     Size size,
     Map<String, dynamic> params,
     md.DataObject? table,
     List<md.ScatterData> scatters,
+    List<md.SeriesData> lines,
+    List<md.MeshData> meshes,
     double labelSize,
     Color textColor,
     Color axisColor,
   ) {
-    // 表格为主数据:走表格散点路径(接入的点/线/面/文本由叠加层绘制)
+    final isLine = data.chartType == 'line';
+    final tablePoints = <Offset?>[];
+    final categories = <String>[];
+    var categorical = false;
+    String? xName;
+    String? yName;
     if (table is md.TableData) {
-      _paintScatterFromTable(
-        canvas,
-        size,
-        params,
-        table,
-        labelSize,
-        textColor,
-        axisColor,
-      );
-      return;
-    }
-    // 无表格:全部散点统一 fit,绘制坐标轴框架 + 各散点自带样式(与叠加层一致),
-    // 叠加层对点/线跳过不再重复绘制
-    final coords = <Offset>[];
-    for (final s in scatters) {
-      for (final p in s.points) {
-        coords.add(Offset(p.x, p.y));
+      final xChoice = '${params['xCol'] ?? ''}';
+      final xCol = isLine && xChoice.isEmpty && table.columns.isNotEmpty
+          ? table.columns.first
+          : pickCol(table, xChoice, 0);
+      final yCol = pickCol(table, '${params['yCol'] ?? ''}', 1);
+      xName = xCol?.name;
+      yName = yCol?.name;
+      categorical = isLine && isCategoryCol(xCol);
+      // Pair the selected columns safely; never silently take only the first
+      // 5,000 rows, or use an unrelated first column's length.
+      final n = math.min(xCol?.values.length ?? 0, yCol?.values.length ?? 0);
+      for (var i = 0; i < n; i++) {
+        final x = categorical ? i.toDouble() : md.toNum(xCol!.values[i]);
+        final y = md.toNum(yCol!.values[i]);
+        if (categorical) categories.add('${xCol!.values[i] ?? i}');
+        tablePoints.add(
+          x != null && y != null && x.isFinite && y.isFinite
+              ? Offset(x, y)
+              : null,
+        );
       }
     }
+    final coords = <Offset>[
+      ...tablePoints.whereType<Offset>(),
+      for (final s in scatters)
+        for (final p in s.points) Offset(p.x, p.y),
+      for (final line in lines)
+        for (final p in line.points) Offset(p.x, p.y),
+      for (final mesh in meshes)
+        for (final v in mesh.vertices) Offset(v.x, v.y),
+    ].where((p) => p.dx.isFinite && p.dy.isFinite).toList();
     if (coords.isEmpty) {
       _paintEmpty(canvas, size);
       return;
     }
-    var xmin = coords.map((p) => p.dx).reduce(math.min);
-    var xmax = coords.map((p) => p.dx).reduce(math.max);
-    var ymin = coords.map((p) => p.dy).reduce(math.min);
-    var ymax = coords.map((p) => p.dy).reduce(math.max);
-    if (xmax - xmin < 1e-9) {
-      xmin -= 1;
-      xmax += 1;
-    }
-    if (ymax - ymin < 1e-9) {
-      ymin -= 1;
-      ymax += 1;
-    }
     final plot = _plot(size, 45, 30, 20, 40);
+    final fitted = PlotViewport.fit(plot, coords);
+    final viewport = categorical
+        ? PlotViewport(
+            plot: plot,
+            x: PlotRange(-0.5, categories.length - 0.5),
+            y: fitted.y,
+          )
+        : fitted;
+    _overlayViewport = viewport;
+    var previewPoints = tablePoints;
+    String? lodLabel;
+    if (compact && tablePoints.length > 1500) {
+      if (isLine) {
+        final lod = linePreviewLod(
+          tablePoints
+              .map(
+                (p) => p == null
+                    ? const md.Pt(double.nan, double.nan)
+                    : md.Pt(p.dx, p.dy),
+              )
+              .toList(),
+          math.max(128, plot.width.floor() * 2),
+        );
+        previewPoints = lod.values
+            .map((p) => p.x.isFinite && p.y.isFinite ? Offset(p.x, p.y) : null)
+            .toList();
+        lodLabel = lod.label;
+      } else {
+        final cell =
+            math.max(
+              (viewport.x.max - viewport.x.min).abs() / math.max(1, plot.width),
+              (viewport.y.max - viewport.y.min).abs() /
+                  math.max(1, plot.height),
+            ) *
+            2;
+        final lod = scatterPreviewLod(
+          tablePoints
+              .whereType<Offset>()
+              .map((p) => md.Pt3(p.dx, p.dy))
+              .toList(),
+          cell,
+        );
+        previewPoints = lod.values.map((p) => Offset(p.x, p.y)).toList();
+        lodLabel = lod.label;
+      }
+    }
+    final xa = _ValueAxis(viewport.x.min, viewport.x.max, 6);
+    final ya = _ValueAxis(viewport.y.min, viewport.y.max, 6);
     _drawPlotFrame(
       canvas,
       plot,
-      xa: _ValueAxis(xmin, xmax, 6),
-      ya: _ValueAxis(ymin, ymax, 6),
+      xa: xa,
+      ya: ya,
       gridColor: const Color(0xFFE5E7EB),
       borderColor: axisColor,
     );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: false,
-      axis: _ValueAxis(xmin, xmax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-      name: scatters.length == 1 ? scatters.first.name : null,
-    );
+    if (categorical) {
+      _drawCatAxis(
+        canvas,
+        plot,
+        vertical: false,
+        cats: categories,
+        color: axisColor,
+        labelSize: labelSize,
+        textColor: textColor,
+        rotateDeg: categories.length > 8 ? 30 : 0,
+      );
+    } else {
+      _drawValueAxis(
+        canvas,
+        plot,
+        vertical: false,
+        axis: xa,
+        axisColors: [axisColor],
+        labelSize: labelSize,
+        textColor: textColor,
+        name: xName,
+      );
+    }
     _drawValueAxis(
       canvas,
       plot,
       vertical: true,
-      axis: _ValueAxis(ymin, ymax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-    );
-    _drawScatterSeries(
-      canvas,
-      scatters,
-      (x) => _mapV(x, xmin, xmax, plot.left, plot.right),
-      (y) => _mapV(y, ymin, ymax, plot.bottom, plot.top),
-      size,
-    );
-  }
-
-  /// 表格两列 → 散点图(原 in1/in2 时代的主路径)
-  void _paintScatterFromTable(
-    Canvas canvas,
-    Size size,
-    Map<String, dynamic> params,
-    md.TableData table,
-    double labelSize,
-    Color textColor,
-    Color axisColor,
-  ) {
-    final xCol = pickCol(table, '${params['xCol'] ?? ''}', 0);
-    final yCol = pickCol(table, '${params['yCol'] ?? ''}', 1);
-    final xName = xCol?.name ?? 'X';
-    final yName = yCol?.name ?? 'Y';
-    final n = math.min(
-      table.columns.isEmpty ? 0 : table.columns.first.values.length,
-      5000,
-    );
-    final pts = <Offset>[];
-    for (var i = 0; i < n; i++) {
-      final x = md.toNum(xCol?.values[i]);
-      final y = md.toNum(yCol?.values[i]);
-      if (x != null && y != null) pts.add(Offset(x, y));
-    }
-    if (pts.isEmpty) {
-      _paintEmpty(canvas, size);
-      return;
-    }
-    final xmin = pts.map((p) => p.dx).reduce(math.min);
-    final xmax = pts.map((p) => p.dx).reduce(math.max);
-    final ymin = pts.map((p) => p.dy).reduce(math.min);
-    final ymax = pts.map((p) => p.dy).reduce(math.max);
-    final plot = _plot(size, 45, 30, 20, 40);
-    _drawPlotFrame(
-      canvas,
-      plot,
-      xa: _ValueAxis(xmin, xmax, 6),
-      ya: _ValueAxis(ymin, ymax, 6),
-      gridColor: const Color(0xFFE5E7EB),
-      borderColor: axisColor,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: false,
-      axis: _ValueAxis(xmin, xmax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-      name: xName,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: true,
-      axis: _ValueAxis(ymin, ymax, 6),
+      axis: ya,
       axisColors: [axisColor],
       labelSize: labelSize,
       textColor: textColor,
       name: yName,
     );
-    final r = (7.0 * size.shortestSide / 480).clamp(1.5, 5.0);
-    final pp = Paint()..color = const Color(0xFF3B82F6);
-    for (var i = 0; i < pts.length; i++) {
-      canvas.drawCircle(
-        Offset(
-          _mapV(pts[i].dx, xmin, xmax, plot.left, plot.right),
-          _mapV(pts[i].dy, ymin, ymax, plot.bottom, plot.top),
-        ),
-        r,
-        pp,
+    canvas.save();
+    canvas.clipRect(plot);
+    if (isLine) {
+      final path = Path();
+      var connected = false;
+      for (final point in previewPoints) {
+        // Missing/non-finite rows break the line, rather than inventing a
+        // connecting segment over an unobserved interval.
+        if (point == null) {
+          connected = false;
+          continue;
+        }
+        final p = viewport.map(point);
+        if (connected) {
+          path.lineTo(p.dx, p.dy);
+        } else {
+          path.moveTo(p.dx, p.dy);
+        }
+        connected = true;
+      }
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = const Color(0xFF3B82F6)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
       );
+    } else {
+      final radius = (7.0 * size.shortestSide / 480).clamp(1.5, 5.0);
+      final paint = Paint()..color = const Color(0xFF3B82F6);
+      for (final point in previewPoints.whereType<Offset>()) {
+        canvas.drawCircle(viewport.map(point), radius, paint);
+      }
     }
-  }
-
-  void _paintLine(
-    Canvas canvas,
-    Size size,
-    Map<String, dynamic> params,
-    md.DataObject? table,
-    List<md.SeriesData> seriesList,
-    double labelSize,
-    Color textColor,
-    Color axisColor,
-  ) {
-    // 表格为主数据:走表格折线路径(接入的曲线/面/文本由叠加层绘制)
-    if (table is md.TableData) {
-      _paintLineFromTable(
+    canvas.restore();
+    if (lodLabel != null) {
+      _drawText(
         canvas,
-        size,
-        params,
-        table,
-        labelSize,
-        textColor,
-        axisColor,
+        lodLabel,
+        Offset(plot.right - 4, plot.top + 10),
+        color: const Color(0xFF64748B),
+        size: 9 * _fs,
+        align: TextAlign.right,
       );
-      return;
     }
-    // 无表格:全部曲线统一 fit,按真实 x 值绘制折线(与叠加层一致)
-    final coords = <Offset>[];
-    for (final l in seriesList) {
-      for (final p in l.points) {
-        // 跳过 NaN 断点(隐式曲线多分支分隔),防 min/max 污染成 NaN
-        if (p.x.isFinite && p.y.isFinite) coords.add(Offset(p.x, p.y));
-      }
-    }
-    if (coords.isEmpty) {
-      _paintEmpty(canvas, size);
-      return;
-    }
-    var xmin = coords.map((p) => p.dx).reduce(math.min);
-    var xmax = coords.map((p) => p.dx).reduce(math.max);
-    var ymin = coords.map((p) => p.dy).reduce(math.min);
-    var ymax = coords.map((p) => p.dy).reduce(math.max);
-    if (xmax - xmin < 1e-9) {
-      xmin -= 1;
-      xmax += 1;
-    }
-    if (ymax - ymin < 1e-9) {
-      ymin -= 1;
-      ymax += 1;
-    }
-    final plot = _plot(size, 45, 30, 20, 40);
-    _drawPlotFrame(
-      canvas,
-      plot,
-      xa: _ValueAxis(xmin, xmax, 6),
-      ya: _ValueAxis(ymin, ymax, 6),
-      gridColor: const Color(0xFFE5E7EB),
-      borderColor: axisColor,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: false,
-      axis: _ValueAxis(xmin, xmax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-      name: seriesList.length == 1 ? seriesList.first.name : null,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: true,
-      axis: _ValueAxis(ymin, ymax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-    );
-    _drawSeriesLines(
-      canvas,
-      seriesList,
-      (x) => _mapV(x, xmin, xmax, plot.left, plot.right),
-      (y) => _mapV(y, ymin, ymax, plot.bottom, plot.top),
-      size,
-    );
-  }
-
-  /// 表格一列(或多条曲线) → 折线图(原 in1 时代的主路径)
-  void _paintLineFromTable(
-    Canvas canvas,
-    Size size,
-    Map<String, dynamic> params,
-    md.TableData table,
-    double labelSize,
-    Color textColor,
-    Color axisColor,
-  ) {
-    final xCol = pickCol(table, '${params['xCol'] ?? ''}', 0);
-    final yCol = pickCol(table, '${params['yCol'] ?? ''}', 1);
-    final cat = isCategoryCol(xCol);
-    final n = table.columns.isEmpty ? 0 : table.columns.first.values.length;
-    final cats = <String>[];
-    final vals = <double>[];
-    for (var i = 0; i < n; i++) {
-      final y = md.toNum(yCol?.values[i]);
-      if (y == null) continue;
-      cats.add(
-        cat ? '${xCol?.values[i] ?? i}' : '${md.toNum(xCol?.values[i]) ?? i}',
-      );
-      vals.add(y);
-    }
-    if (cats.isEmpty || vals.isEmpty) {
-      _paintEmpty(canvas, size);
-      return;
-    }
-    final plot = _plot(size, 45, 30, 20, 40);
-    final n2 = cats.length;
-    final stepX = plot.width / math.max(1, n2 - 1);
-    final ymin = vals.reduce(math.min);
-    final ymax = vals.reduce(math.max);
-    _drawCatAxis(
-      canvas,
-      plot,
-      vertical: false,
-      cats: cats,
-      color: axisColor,
-      labelSize: labelSize,
-      textColor: textColor,
-      rotateDeg: n2 > 8 ? 30 : 0,
-    );
-    _drawValueAxis(
-      canvas,
-      plot,
-      vertical: true,
-      axis: _ValueAxis(ymin, ymax, 6),
-      axisColors: [axisColor],
-      labelSize: labelSize,
-      textColor: textColor,
-    );
-    final path = Path();
-    for (var i = 0; i < n2; i++) {
-      final x = i == 0 ? plot.left : plot.left + i * stepX;
-      final y = _mapV(vals[i], ymin, ymax, plot.bottom, plot.top);
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
-    }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = const Color(0xFF3B82F6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2,
-    );
   }
 
   void _paintBar(
@@ -1039,12 +875,20 @@ class ChartPainter extends CustomPainter {
       textColor: textColor,
       rotateDeg: cats.length > 8 ? 30 : 0,
     );
-    final ymax = vals.reduce(math.max);
+    final fittedY = PlotRange.fit([0, ...vals]);
+    final pad = (fittedY.max - fittedY.min) * 0.05;
+    final ymin = fittedY.min < 0 ? fittedY.min - pad : 0.0;
+    final ymax = fittedY.max > 0 ? fittedY.max + pad : 0.0;
+    _overlayViewport = PlotViewport(
+      plot: plot,
+      x: PlotRange(-0.5, cats.length - 0.5),
+      y: PlotRange(ymin, ymax),
+    );
     _drawValueAxis(
       canvas,
       plot,
       vertical: true,
-      axis: _ValueAxis(0, ymax * 1.05, 6),
+      axis: _ValueAxis(ymin, ymax, 6),
       axisColors: [axisColor],
       labelSize: labelSize,
       textColor: textColor,
@@ -1052,8 +896,8 @@ class ChartPainter extends CustomPainter {
     final bw = plot.width / cats.length * 0.6;
     for (var i = 0; i < cats.length; i++) {
       final cx = plot.left + (i + 0.5) / cats.length * plot.width;
-      final y0 = _mapV(0, 0, ymax * 1.05, plot.bottom, plot.top);
-      final y1 = _mapV(vals[i], 0, ymax * 1.05, plot.bottom, plot.top);
+      final y0 = _mapV(0, ymin, ymax, plot.bottom, plot.top);
+      final y1 = _mapV(vals[i], ymin, ymax, plot.bottom, plot.top);
       canvas.drawRRect(
         RRect.fromRectAndCorners(
           Rect.fromLTRB(
@@ -1114,15 +958,27 @@ class ChartPainter extends CustomPainter {
     }
     final pts = <Offset>[];
     final colors = <Color>[];
+    final fcThreshold = (md.toNum(params['fcThreshold']) ?? 1).abs();
+    final significanceThreshold =
+        (md.toNum(params['significanceThreshold']) ?? 0.05)
+            .clamp(1e-300, 1.0)
+            .toDouble();
     final n = table.columns.isEmpty ? 0 : table.columns.first.values.length;
     for (var i = 0; i < n; i++) {
       final fc = md.toNum(fcCol.values[i]);
       final p = md.toNum(pCol.values[i]);
-      if (fc == null || p == null || p <= 0) continue;
+      if (fc == null ||
+          p == null ||
+          !fc.isFinite ||
+          !p.isFinite ||
+          p <= 0 ||
+          p > 1) {
+        continue;
+      }
       final negLog = -math.log(p) / math.ln10;
-      final color = fc.abs() > 1 && p < 0.05
+      final color = fc.abs() > fcThreshold && p < significanceThreshold
           ? const Color(0xFFEF4444)
-          : p < 0.05
+          : p < significanceThreshold
           ? const Color(0xFFF59E0B)
           : const Color(0xFF64748B);
       pts.add(Offset(fc, negLog));
@@ -1140,6 +996,11 @@ class ChartPainter extends CustomPainter {
     final ymin = th.on ? th.yMin : ys.reduce(math.min);
     final ymax = th.on ? th.yMax : ys.reduce(math.max);
     final plot = _plot(size, 50, 30, 20, 40);
+    _overlayViewport = PlotViewport(
+      plot: plot,
+      x: PlotRange(xmin, xmax),
+      y: PlotRange(ymin, ymax),
+    );
     if (!th.hidden) {
       final xa = _ValueAxis(xmin, xmax, 6);
       final ya = _ValueAxis(ymin, ymax, 6);
@@ -1178,7 +1039,7 @@ class ChartPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
     const dash = <double>[4, 4];
     mark.strokeCap = StrokeCap.round;
-    for (final v in [1.0, -1.0]) {
+    for (final v in [fcThreshold, -fcThreshold]) {
       if (v < xmin || v > xmax) continue;
       final x = _mapV(v, xmin, xmax, plot.left, plot.right);
       canvas.drawPath(
@@ -1186,7 +1047,7 @@ class ChartPainter extends CustomPainter {
         mark,
       );
     }
-    final y05 = -math.log(0.05) / math.ln10;
+    final y05 = -math.log(significanceThreshold) / math.ln10;
     if (y05 >= ymin && y05 <= ymax) {
       final y = _mapV(y05, ymin, ymax, plot.bottom, plot.top);
       canvas.drawPath(
@@ -1247,12 +1108,15 @@ class ChartPainter extends CustomPainter {
       _paintEmpty(canvas, size);
       return;
     }
-    final cols = numericCols(table).take(10).toList();
+    final cols = numericCols(table);
     if (cols.isEmpty) {
       _paintEmpty(canvas, size);
       return;
     }
-    final rows = math.min(120, cols.first.values.length);
+    final rows = cols.fold<int>(
+      0,
+      (count, column) => math.max(count, column.values.length),
+    );
     final cells = <List<double?>>[];
     var dMin = double.infinity;
     var dMax = -double.infinity;
@@ -1288,6 +1152,12 @@ class ChartPainter extends CustomPainter {
     }
     // 底部留 70px:图例条 + 数值标签 + 斜排列名,三者纵向分区互不遮挡
     final plot = _plot(size, 60, 30, 20, 70);
+    _overlayViewport = PlotViewport(
+      plot: plot,
+      x: PlotRange(-0.5, cols.length - 0.5),
+      y: PlotRange(-0.5, rows - 0.5),
+      yDown: true,
+    );
     final cw = plot.width / cols.length;
     final ch = plot.height / rows;
     for (var i = 0; i < rows; i++) {
@@ -1397,18 +1267,31 @@ class ChartPainter extends CustomPainter {
       _paintEmpty(canvas, size);
       return;
     }
-    final cols = numericCols(table).take(12).toList();
+    final cols = numericCols(table);
     if (cols.isEmpty) {
       _paintEmpty(canvas, size);
       return;
     }
     double yMin = double.infinity, yMax = -double.infinity;
-    final boxData = <List<double>>[];
+    final boxData = <({List<double> summary, List<double> outliers})>[];
+    final tukey = '${params['whiskerMode'] ?? 'tukey'}' != 'minmax';
     for (final c in cols) {
       final vals = c.values.map(md.toNum).whereType<double>().toList()..sort();
       if (vals.isEmpty) continue;
       double q(double r) => percentile(vals, r);
-      boxData.add([q(0), q(0.25), q(0.5), q(0.75), q(1)]);
+      final q1 = q(0.25), median = q(0.5), q3 = q(0.75);
+      final iqr = q3 - q1;
+      final lowFence = q1 - 1.5 * iqr, highFence = q3 + 1.5 * iqr;
+      final inside = tukey
+          ? vals.where((v) => v >= lowFence && v <= highFence).toList()
+          : vals;
+      final outliers = tukey
+          ? vals.where((v) => v < lowFence || v > highFence).toList()
+          : <double>[];
+      boxData.add((
+        summary: [inside.first, q1, median, q3, inside.last],
+        outliers: outliers,
+      ));
       if (vals.first < yMin) yMin = vals.first;
       if (vals.last > yMax) yMax = vals.last;
     }
@@ -1422,6 +1305,11 @@ class ChartPainter extends CustomPainter {
       yMax = th.yMax;
     }
     final plot = _plot(size, 45, 30, 20, 60);
+    _overlayViewport = PlotViewport(
+      plot: plot,
+      x: PlotRange(-0.5, boxData.length - 0.5),
+      y: PlotRange(yMin, yMax),
+    );
     if (!th.hidden) {
       _drawValueAxis(
         canvas,
@@ -1450,7 +1338,8 @@ class ChartPainter extends CustomPainter {
     final n = boxData.length;
     final bw = plot.width / n * 0.5;
     for (var i = 0; i < n; i++) {
-      final d = boxData[i];
+      final item = boxData[i];
+      final d = item.summary;
       final cx = plot.left + (i + 0.5) / n * plot.width;
       double yv(double v) => _mapV(v, yMin, yMax, plot.bottom, plot.top);
       final box = Rect.fromLTRB(cx - bw / 2, yv(d[3]), cx + bw / 2, yv(d[1]));
@@ -1463,6 +1352,16 @@ class ChartPainter extends CustomPainter {
         Offset(cx + bw / 4, yv(d[0])),
         whisker,
       );
+      for (final value in item.outliers) {
+        canvas.drawCircle(
+          Offset(cx, yv(value)),
+          2.5,
+          Paint()
+            ..color = const Color(0xFF1D4ED8)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1,
+        );
+      }
       canvas.drawLine(Offset(cx, yv(d[3])), Offset(cx, yv(d[4])), whisker);
       canvas.drawLine(
         Offset(cx - bw / 4, yv(d[4])),
@@ -1504,7 +1403,7 @@ class ChartPainter extends CustomPainter {
       _paintEmpty(canvas, size);
       return;
     }
-    final cols = numericCols(table).take(8).toList();
+    final cols = numericCols(table);
     if (cols.isEmpty) {
       _paintEmpty(canvas, size);
       return;
@@ -1532,6 +1431,11 @@ class ChartPainter extends CustomPainter {
     final span = yMax - yMin;
     final yPad = span == 0 ? 0.5 : span * 0.05;
     final plot = _plot(size, 45, 30, 20, 60);
+    _overlayViewport = PlotViewport(
+      plot: plot,
+      x: PlotRange(-0.5, groups.length - 0.5),
+      y: PlotRange(yMin - yPad, yMax + yPad),
+    );
     if (!th.hidden) {
       _drawValueAxis(
         canvas,
@@ -1562,9 +1466,29 @@ class ChartPainter extends CustomPainter {
       final max = sorted.last;
       final n2 = sorted.length;
       final iqr = percentile(sorted, 0.75) - percentile(sorted, 0.25);
-      var sigma = math.min(iqr / 1.349, (max - min) / 2);
-      if (sigma <= 0) sigma = max - min == 0 ? 1.0 : (max - min);
-      final bw = math.max(1e-6, 1.06 * sigma * math.pow(n2, -0.2).toDouble());
+      var mean = 0.0, m2 = 0.0;
+      for (var i = 0; i < sorted.length; i++) {
+        final delta = sorted[i] - mean;
+        mean += delta / (i + 1);
+        m2 += delta * (sorted[i] - mean);
+      }
+      final sd = n2 > 1 ? math.sqrt(m2 / (n2 - 1)) : 0.0;
+      final scale = math.max(math.max(min.abs(), max.abs()), (max - min).abs());
+      final floor = math.max(
+        scale * 2.220446049250313e-16,
+        (max - min).abs() * 1e-12,
+      );
+      final mode = '${params['bandwidthMode'] ?? 'silverman'}';
+      final control = (md.toNum(params['bandwidth']) ?? 1).abs();
+      final base = mode == 'scott'
+          ? 1.06 * sd * math.pow(n2, -0.2).toDouble()
+          : 0.9 *
+                math.min(sd, iqr > 0 ? iqr / 1.34 : sd) *
+                math.pow(n2, -0.2).toDouble();
+      final bw = math.max(
+        floor > 0 ? floor : 1e-300,
+        mode == 'manual' ? control : base * control,
+      );
       const samples = 40;
       final xs = <double>[];
       final dens = <double>[];
@@ -2417,39 +2341,17 @@ class ChartPainter extends CustomPainter {
         coords.add(Offset(v.x, v.y));
       }
     }
-    var xmin = -1.0, xmax = 1.0, ymin = -1.0, ymax = 1.0;
-    if (coords.isNotEmpty) {
-      var lo = double.infinity, hi = -double.infinity;
-      for (final c in coords) {
-        lo = math.min(lo, c.dx);
-        hi = math.max(hi, c.dx);
-      }
-      xmin = lo;
-      xmax = hi;
-      lo = double.infinity;
-      hi = -double.infinity;
-      for (final c in coords) {
-        lo = math.min(lo, c.dy);
-        hi = math.max(hi, c.dy);
-      }
-      ymin = lo;
-      ymax = hi;
-      // 单点/单值时防退化
-      if (xmax - xmin < 1e-9) {
-        xmin -= 1;
-        xmax += 1;
-      }
-      if (ymax - ymin < 1e-9) {
-        ymin -= 1;
-        ymax += 1;
-      }
-    }
-    final plot = _plot(size, 45, 30, 20, 40);
-    double px(double x) => _mapV(x, xmin, xmax, plot.left, plot.right);
-    double py(double y) => _mapV(y, ymin, ymax, plot.bottom, plot.top);
+    final viewport =
+        _overlayViewport ??
+        (coords.isEmpty
+            ? null
+            : PlotViewport.fit(_plot(size, 45, 30, 20, 40), coords));
+    final plot = viewport?.plot ?? _plot(size, 45, 30, 20, 40);
+    double px(double x) => viewport!.px(x);
+    double py(double y) => viewport!.py(y);
 
     // 面:XY 俯视投影;按平面自带样式填充 + 可选边缘线(最底层)
-    if (meshes.isNotEmpty) {
+    if (viewport != null && meshes.isNotEmpty) {
       for (final m in meshes) {
         final base = (m.color ?? '').isEmpty
             ? const Color(0xFF2CA02C)
@@ -2465,7 +2367,7 @@ class ChartPainter extends CustomPainter {
           ..color = edgeColor
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1;
-        // 线框模式强制画边线;填充由平面输入控制
+        // 线框模式强制画边线;填充由曲面输入控制
         final fill = m.fill ?? true;
         final wireframe = m.wireframe == true;
         final showEdge = (m.showEdge ?? true) || wireframe;
@@ -2491,13 +2393,13 @@ class ChartPainter extends CustomPainter {
     }
 
     // 线:逐条折线,支持逐段颜色/宽度与虚线样式
-    if (!skipLines) {
-      _drawSeriesLines(canvas, seriesList, px, py, size);
+    if (!skipLines && viewport != null) {
+      _drawSeriesLines(canvas, seriesList, px, py, plot);
     }
 
     // 点:按形状/大小/颜色绘制(最顶层数据)
-    if (!skipPts) {
-      _drawScatterSeries(canvas, scatters, px, py, size);
+    if (!skipPts && viewport != null) {
+      _drawScatterSeries(canvas, scatters, px, py, size, plot);
     }
 
     // 文本:按 halign/valign 九宫格定位在绘图区内(最顶层)。
@@ -2556,6 +2458,7 @@ class ChartPainter extends CustomPainter {
     double Function(double) px,
     double Function(double) py,
     Size size,
+    Rect plot,
   ) {
     const defaultColor = Color(0xFF3B82F6);
     for (final s in scatters) {
@@ -2568,6 +2471,7 @@ class ChartPainter extends CustomPainter {
           .toDouble();
       for (var i = 0; i < s.points.length; i++) {
         final p = s.points[i];
+        if (!p.x.isFinite || !p.y.isFinite) continue;
         final color = s.colors != null && i < s.colors!.length
             ? parseColor(s.colors![i])
             : baseColor;
@@ -2577,7 +2481,13 @@ class ChartPainter extends CustomPainter {
         final r = s.sizes != null && i < s.sizes!.length
             ? (s.sizes![i] * size.shortestSide / 480).clamp(1.5, 6.0).toDouble()
             : baseR;
-        _drawPointShape(canvas, shape, Offset(px(p.x), py(p.y)), r, color);
+        final center = Offset(px(p.x), py(p.y));
+        if (!center.dx.isFinite ||
+            !center.dy.isFinite ||
+            !plot.inflate(r * 2).contains(center)) {
+          continue;
+        }
+        _drawPointShape(canvas, shape, center, r, color);
       }
     }
   }
@@ -2588,7 +2498,7 @@ class ChartPainter extends CustomPainter {
     List<md.SeriesData> seriesList,
     double Function(double) px,
     double Function(double) py,
-    Size size,
+    Rect plot,
   ) {
     for (final l in seriesList) {
       if (l.points.length < 2) continue;
@@ -2605,8 +2515,13 @@ class ChartPainter extends CustomPainter {
             !l.points[i + 1].y.isFinite) {
           continue;
         }
-        final a = Offset(px(l.points[i].x), py(l.points[i].y));
-        final b = Offset(px(l.points[i + 1].x), py(l.points[i + 1].y));
+        final clipped = _clipLineToPlot(
+          Offset(px(l.points[i].x), py(l.points[i].y)),
+          Offset(px(l.points[i + 1].x), py(l.points[i + 1].y)),
+          plot,
+        );
+        if (clipped == null) continue;
+        final (a, b) = clipped;
         final color = l.colors != null && i < l.colors!.length
             ? parseColor(l.colors![i])
             : baseColor;
@@ -2630,6 +2545,46 @@ class ChartPainter extends CustomPainter {
         }
       }
     }
+  }
+
+  (Offset, Offset)? _clipLineToPlot(Offset a, Offset b, Rect plot) {
+    if (!a.dx.isFinite || !a.dy.isFinite || !b.dx.isFinite || !b.dy.isFinite) {
+      return null;
+    }
+    int code(Offset p) =>
+        (p.dx < plot.left
+            ? 1
+            : p.dx > plot.right
+            ? 2
+            : 0) |
+        (p.dy < plot.top
+            ? 4
+            : p.dy > plot.bottom
+            ? 8
+            : 0);
+    for (var iteration = 0; iteration < 8; iteration++) {
+      final ca = code(a), cb = code(b);
+      if ((ca | cb) == 0) return (a, b);
+      if ((ca & cb) != 0) return null;
+      final outside = ca != 0 ? ca : cb;
+      Offset point;
+      if ((outside & 12) != 0) {
+        final y = (outside & 4) != 0 ? plot.top : plot.bottom;
+        final t = PlotRange(a.dy, b.dy).fraction(y);
+        point = Offset((1 - t) * a.dx + t * b.dx, y);
+      } else {
+        final x = (outside & 1) != 0 ? plot.left : plot.right;
+        final t = PlotRange(a.dx, b.dx).fraction(x);
+        point = Offset(x, (1 - t) * a.dy + t * b.dy);
+      }
+      if (!point.dx.isFinite || !point.dy.isFinite) return null;
+      if (outside == ca) {
+        a = point;
+      } else {
+        b = point;
+      }
+    }
+    return null;
   }
 
   /// 收集某端口的全部数据(多路输入合并,单路包装为单元素列表)
@@ -2689,17 +2644,66 @@ class ChartPainter extends CustomPainter {
 
 // ==================== 预览交互 + 导出 ====================
 
-Future<void> savePngImage(ui.Image image, String suggestedName) async {
+Future<String?> savePngImage(
+  ui.Image image,
+  String suggestedName, {
+  Map<String, dynamic>? manifest,
+  double? dpi,
+}) async {
   final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-  if (bytes == null) return;
+  if (bytes == null) return null;
   final loc = await getSaveLocation(
     suggestedName: suggestedName,
     acceptedTypeGroups: const [
       XTypeGroup(label: 'PNG 图片', extensions: ['png']),
     ],
   );
-  if (loc == null) return;
-  await File(loc.path).writeAsBytes(bytes.buffer.asUint8List());
+  if (loc == null) return null;
+  var png = bytes.buffer.asUint8List();
+  if (dpi != null && dpi.isFinite && dpi > 0) {
+    png = pngWithPhysicalResolution(png, dpi);
+  }
+  await File(loc.path).writeAsBytes(png);
+  if (manifest != null) {
+    await File(
+      '${loc.path}.manifest.json',
+    ).writeAsString(const JsonEncoder.withIndent('  ').convert(manifest));
+  }
+  return loc.path;
+}
+
+Uint8List pngWithPhysicalResolution(Uint8List png, double dpi) {
+  // PNG pHYs stores pixels per metre. Place it directly after IHDR.
+  if (png.length < 33) return png;
+  final ppm = (dpi / .0254).round().clamp(1, 0xffffffff);
+  final data = ByteData(9)
+    ..setUint32(0, ppm)
+    ..setUint32(4, ppm)
+    ..setUint8(8, 1);
+  final type = Uint8List.fromList(const [0x70, 0x48, 0x59, 0x73]);
+  final payload = data.buffer.asUint8List();
+  final crcInput = Uint8List.fromList([...type, ...payload]);
+  final chunk = BytesBuilder()
+    ..add((ByteData(4)..setUint32(0, payload.length)).buffer.asUint8List())
+    ..add(type)
+    ..add(payload)
+    ..add((ByteData(4)..setUint32(0, _crc32(crcInput))).buffer.asUint8List());
+  return Uint8List.fromList([
+    ...png.sublist(0, 33),
+    ...chunk.takeBytes(),
+    ...png.sublist(33),
+  ]);
+}
+
+int _crc32(Uint8List bytes) {
+  var crc = 0xffffffff;
+  for (final byte in bytes) {
+    crc ^= byte;
+    for (var i = 0; i < 8; i++) {
+      crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xedb88320 : crc >> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) & 0xffffffff;
 }
 
 /// 将 painter 渲染为指定像素尺寸的 PNG 并保存(等比导出现在由 _export 内联实现)

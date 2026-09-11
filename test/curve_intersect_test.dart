@@ -21,12 +21,57 @@ md.ExecContext _ctx(
 );
 
 void main() {
-  test('注册表:曲线求交节点存在且输入输出类型正确', () {
-    final cfg = getConfig('curve_intersect');
+  test('注册表:线面求交节点支持任意几何并输出交点和交线', () {
+    final cfg = getConfig('geometry_intersect');
     expect(cfg, isNotNull);
     expect(cfg!.category, md.Category.compute);
-    expect(cfg.inputs.map((s) => s.type), everyElement(md.SocketType.series));
+    expect(cfg.inputs.map((s) => s.type), everyElement(md.SocketType.any));
     expect(cfg.outputs.first.type, md.SocketType.scatter);
+    expect(cfg.outputs.last.type, md.SocketType.series);
+  });
+
+  test('三维曲线穿过曲面时保留交点 Z 坐标', () {
+    final line = md.SeriesData(
+      name: 'line',
+      points: const [md.Pt(0.2, 0.2), md.Pt(0.2, 0.2)],
+      zValues: const [-1, 1],
+    );
+    final plane = md.MeshData(
+      name: 'plane',
+      vertices: const [md.Vec3(0, 0, 0), md.Vec3(1, 0, 0), md.Vec3(0, 1, 0)],
+      faces: const [
+        [0, 1, 2],
+      ],
+    );
+    final out = kExec['geometry_intersect']!(_ctx(line, plane));
+    final pts = (out['out0']! as md.ScatterData).points;
+    expect(pts, hasLength(1));
+    expect(pts.single.z, closeTo(0, 1e-10));
+  });
+
+  test('两个三角曲面输出带 Z 的交线', () {
+    final a = md.MeshData(
+      name: 'horizontal',
+      vertices: const [md.Vec3(-1, -1, 0), md.Vec3(1, -1, 0), md.Vec3(0, 1, 0)],
+      faces: const [
+        [0, 1, 2],
+      ],
+    );
+    final b = md.MeshData(
+      name: 'vertical',
+      vertices: const [md.Vec3(0, -1, -1), md.Vec3(0, 1, -1), md.Vec3(0, 0, 1)],
+      faces: const [
+        [0, 1, 2],
+      ],
+    );
+    final out = kExec['geometry_intersect']!(_ctx(a, b));
+    final curve = out['out1']! as md.SeriesData;
+    expect(curve.points.length, greaterThanOrEqualTo(2));
+    expect(curve.zValues, isNotNull);
+    expect(
+      curve.points.where((p) => p.x.isFinite).every((p) => p.x.abs() < 1e-8),
+      isTrue,
+    );
   });
 
   test('两条相交折线输出唯一交点', () {
@@ -87,7 +132,11 @@ void main() {
           configId: 'func_curve',
           params: const {'expression': '4 - x'},
         ),
-        GraphNodeLite(id: 'ci', configId: 'curve_intersect', params: const {}),
+        GraphNodeLite(
+          id: 'ci',
+          configId: 'geometry_intersect',
+          params: const {},
+        ),
       ],
       [
         GraphEdgeLite(

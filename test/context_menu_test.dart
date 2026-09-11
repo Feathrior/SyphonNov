@@ -113,9 +113,17 @@ void main() {
       expect(find.text('搜索节点…'), findsOneWidget);
       // 搜索框应位于"新建节点"标题之上
       final searchTop = tester.getTopLeft(box).dy;
-      final titleTop =
-          tester.getTopLeft(find.text('新建节点')).dy;
+      final titleTop = tester.getTopLeft(find.text('新建节点')).dy;
       expect(searchTop, lessThan(titleTop));
+    });
+
+    testWidgets('输入分类优先排列点、曲线、曲面', (tester) async {
+      await pumpNodeMenu(tester);
+      final yPoint = tester.getTopLeft(find.text('点输入')).dy;
+      final yCurve = tester.getTopLeft(find.text('曲线输入')).dy;
+      final ySurface = tester.getTopLeft(find.text('曲面输入')).dy;
+      expect(yPoint, lessThan(yCurve));
+      expect(yCurve, lessThan(ySurface));
     });
 
     testWidgets('中文搜索按节点名过滤', (tester) async {

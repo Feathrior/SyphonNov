@@ -29,6 +29,10 @@ void main() {
     final store = GraphStore.instance;
     store.selectNode('fc'); // 演示图中的 func_curve 节点
     await tester.pump();
+    await tester.tap(find.text('数据与计算'));
+    await tester.pump();
+    await tester.tap(find.text('范围与精度'));
+    await tester.pump();
 
     // 默认 function 模式:显示"表达式",不显示 x(t)/y(t)
     expect(find.text('表达式'), findsWidgets, reason: '函数模式应显示表达式');
@@ -64,6 +68,7 @@ void main() {
       Future<void> hover(Finder f) async {
         await tester.sendEventToBinding(ptr.hover(tester.getCenter(f)));
         await tester.pump(const Duration(milliseconds: 120));
+        await tester.pumpAndSettle();
       }
 
       // 未点击任何按钮时,划过四个按钮不应弹出任何次级菜单

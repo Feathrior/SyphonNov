@@ -13,6 +13,48 @@ import '../models/data.dart';
 import '../models/exec_engine.dart';
 import '../models/registry.dart';
 
+class _RunRequest {
+  final List<GraphNodeLite> nodes;
+  final List<GraphEdgeLite> edges;
+  final Set<String>? dirtyIds;
+  final Map<String, ExecResult> previous;
+
+  const _RunRequest(this.nodes, this.edges, this.dirtyIds, this.previous);
+
+  RunOutcome run() =>
+      runGraph(nodes, edges, dirtyIds: dirtyIds, prevResults: previous);
+}
+
+class _RunWorkerRequest {
+  final _RunRequest request;
+  final SendPort sendPort;
+
+  const _RunWorkerRequest(this.request, this.sendPort);
+}
+
+void _runWorker(_RunWorkerRequest worker) {
+  try {
+    final outcome = runGraph(
+      worker.request.nodes,
+      worker.request.edges,
+      dirtyIds: worker.request.dirtyIds,
+      prevResults: worker.request.previous,
+      onProgress: (completed, total) => worker.sendPort.send({
+        'kind': 'progress',
+        'completed': completed,
+        'total': total,
+      }),
+    );
+    worker.sendPort.send({'kind': 'outcome', 'value': outcome});
+  } catch (error, stack) {
+    worker.sendPort.send({
+      'kind': 'error',
+      'message': '$error',
+      'stack': '$stack',
+    });
+  }
+}
+
 /// 画布节点
 class GraphNode {
   final String id;
@@ -67,7 +109,7 @@ class GraphNode {
           ? Map<String, dynamic>.from(j['params'] as Map)
           : {},
       exposed: j['exposed'] is List
-          ? j['exposed']!.map((e) => '$e').toList()
+          ? (j['exposed'] as List).map<String>((e) => '$e').toList()
           : [],
       collapsed: j['collapsed'] == true,
       position: pos is Map
@@ -209,46 +251,73 @@ class LogEntry {
   });
 }
 
-/// 节点分组(Blender 风格):将多个节点组成一个分组,成员整体拖动,保存到画布文件
+/// Package 容器的持久化模型。
 class NodeGroup {
   final String id;
   final String name;
   final List<String> nodeIds;
+  final bool isPackage;
+  final bool collapsed;
 
   const NodeGroup({
     required this.id,
     required this.name,
     required this.nodeIds,
+    this.isPackage = false,
+    this.collapsed = false,
   });
 
-  NodeGroup copyWith({String? name, List<String>? nodeIds}) => NodeGroup(
+  NodeGroup copyWith({
+    String? name,
+    List<String>? nodeIds,
+    bool? isPackage,
+    bool? collapsed,
+  }) => NodeGroup(
     id: id,
     name: name ?? this.name,
     nodeIds: nodeIds ?? this.nodeIds,
+    isPackage: isPackage ?? this.isPackage,
+    collapsed: collapsed ?? this.collapsed,
   );
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'nodeIds': nodeIds};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'nodeIds': nodeIds,
+    if (isPackage) 'kind': 'package',
+    if (isPackage) 'collapsed': collapsed,
+  };
 
   factory NodeGroup.fromJson(Map<String, dynamic> j) => NodeGroup(
     id: '${j['id'] ?? genId('g')}',
-    name: '${j['name'] ?? '分组'}',
+    name: '${j['name'] ?? 'Package'}',
     nodeIds: j['nodeIds'] is List
         ? (j['nodeIds'] as List).map((e) => '$e').toList()
         : const [],
+    isPackage: j['kind'] == 'package',
+    collapsed: j['kind'] == 'package' && j['collapsed'] != false,
   );
 
-  static NodeGroup deepCopy(NodeGroup g) =>
-      NodeGroup(id: g.id, name: g.name, nodeIds: List.of(g.nodeIds));
+  static NodeGroup deepCopy(NodeGroup g) => NodeGroup(
+    id: g.id,
+    name: g.name,
+    nodeIds: List.of(g.nodeIds),
+    isPackage: g.isPackage,
+    collapsed: g.collapsed,
+  );
 
   @override
   bool operator ==(Object other) =>
       other is NodeGroup &&
       other.id == id &&
       other.name == name &&
+      other.isPackage == isPackage &&
+      other.collapsed == collapsed &&
       listEquals(other.nodeIds, nodeIds);
 
   @override
-  int get hashCode => Object.hash(id, name, Object.hashAll(nodeIds));
+  int get hashCode =>
+      Object.hash(id, name, isPackage, collapsed, Object.hashAll(nodeIds));
 }
 
 /// 连线端口颜色
@@ -268,6 +337,21 @@ double nodeWidth(String configId) {
   return cfg.isViewer ? 440 : 260;
 }
 
+const String viewerWidthParam = '_viewerWidth';
+const String viewerHeightParam = '_viewerHeight';
+
+double nodeVisualWidth(GraphNode node) {
+  final cfg = getConfig(node.configId);
+  if (cfg?.isViewer != true) return nodeWidth(node.configId);
+  final value = node.params[viewerWidthParam];
+  return (value is num ? value.toDouble() : 440.0).clamp(360.0, 1000.0);
+}
+
+double nodeViewerHeight(GraphNode node) {
+  final value = node.params[viewerHeightParam];
+  return (value is num ? value.toDouble() : 215.0).clamp(180.0, 720.0);
+}
+
 /// 撤销快照:节点 + 连线 + 分组
 typedef GraphSnapshot = ({
   List<GraphNode> nodes,
@@ -276,19 +360,34 @@ typedef GraphSnapshot = ({
 });
 
 class GraphStore extends ChangeNotifier {
+  /// 仅描述节点/断点的几何位移。拖动期间使用独立通知，避免让所有
+  /// GraphStore 监听者（尤其三维预览）随每个指针事件重建。
+  final ValueNotifier<int> layoutRevision = ValueNotifier<int>(0);
+  final Map<String, ValueNotifier<int>> _nodeGeometryRevisions = {};
+
+  ValueNotifier<int> nodeGeometryRevision(String id) =>
+      _nodeGeometryRevisions.putIfAbsent(id, () => ValueNotifier<int>(0));
   List<GraphNode> nodes = [];
   List<GraphEdge> edges = [];
-  List<NodeGroup> groups = []; // 节点分组(Blender 风格,成员整体拖动)
+  List<NodeGroup> groups = []; // Package 容器；旧版普通 Group 在加载时丢弃
   String? selectedId;
   Set<String> multiSelected = {}; // 多选节点集(Shift 点击/框选/分组)
   String? selectedSplitEdgeId; // 选中断点(Alt 创建 / 点击 mid)
-  String? selectedEdgeId;      // 选中整条连线(点击连线本体)
+  String? selectedEdgeId; // 选中整条连线(点击连线本体)
   bool autoRun = true;
   int runVersion = 0;
   int structureVersion = 0;
   Map<String, ExecResult> results = {};
   bool hasCycle = false;
   String? lastError;
+  int executionRevision = 0;
+  int committedRevision = 0;
+  String executionStatus = 'idle';
+  double executionProgress = 0;
+  int executionCompletedNodes = 0;
+  int executionTotalNodes = 0;
+  Map<String, dynamic>? structuredError;
+  List<String> cyclePath = const [];
   List<LogEntry> logs = [];
   List<GraphSnapshot> past = [];
   List<GraphSnapshot> future = [];
@@ -340,7 +439,7 @@ class GraphStore extends ChangeNotifier {
   }
 
   // ---------- 节点/连线操作 ----------
-  String addNode(String configId, Offset position) {
+  String addNode(String configId, Offset position, {bool triggerRun = true}) {
     snapshotNow();
     final cfg = getConfig(configId);
     final defaults = <String, dynamic>{};
@@ -371,7 +470,7 @@ class GraphStore extends ChangeNotifier {
     selectedId = node.id;
     structureVersion++;
     notifyListeners();
-    if (autoRun) runAfterGraphChange(changedIds: {node.id});
+    if (autoRun && triggerRun) runAfterGraphChange(changedIds: {node.id});
     return node.id;
   }
 
@@ -380,6 +479,33 @@ class GraphStore extends ChangeNotifier {
     selectedId = node.id;
     structureVersion++;
     notifyListeners();
+  }
+
+  /// 一次拖动结束后提交布局变化，让保存、缩略图之外的状态只刷新一次。
+  void finishLayoutChange() => notifyListeners();
+
+  /// 调整最终可视化节点的预览区域。尺寸属于工作流布局元数据，不触发执行。
+  void resizeViewerNode(String id, double width, double viewerHeight) {
+    var changed = false;
+    nodes = [
+      for (final node in nodes)
+        if (node.id == id && getConfig(node.configId)?.isViewer == true)
+          () {
+            final next = {
+              ...node.params,
+              viewerWidthParam: width.clamp(360.0, 1000.0),
+              viewerHeightParam: viewerHeight.clamp(180.0, 720.0),
+            };
+            changed = true;
+            return node.copyWith(params: next);
+          }()
+        else
+          node,
+    ];
+    if (changed) {
+      nodeGeometryRevision(id).value++;
+      layoutRevision.value++;
+    }
   }
 
   void removeNodes(List<String> ids) {
@@ -412,7 +538,10 @@ class GraphStore extends ChangeNotifier {
     notifyListeners();
     // 删除节点改变数据流:自动执行下重算(否则下游残留旧结果不刷新)
     if (autoRun) {
-      runAfterGraphChange(changedIds: {...setIds, ...downstream}, edgeChanged: true);
+      runAfterGraphChange(
+        changedIds: {...setIds, ...downstream},
+        edgeChanged: true,
+      );
     }
   }
 
@@ -462,63 +591,7 @@ class GraphStore extends ChangeNotifier {
     }
   }
 
-  /// 复制分组:克隆组内全部节点(含内部连线与断点),并对克隆重建分组,
-  /// 整体偏移 (40,40);克隆组成为新的多选集
-  void duplicateGroup(String groupId) {
-    final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
-    final g = target.first;
-    final members = nodes.where((n) => g.nodeIds.contains(n.id)).toList();
-    if (members.isEmpty) return;
-    snapshotNow();
-    final idMap = <String, String>{};
-    final clones = <GraphNode>[];
-    for (final n in members) {
-      final newId = genId();
-      idMap[n.id] = newId;
-      clones.add(
-        GraphNode(
-          id: newId,
-          configId: n.configId,
-          params: GraphNode.deepCopy(n).params,
-          exposed: List.of(n.exposed),
-          collapsed: n.collapsed,
-          position: n.position + const Offset(40, 40),
-        ),
-      );
-    }
-    final newEdges = <GraphEdge>[];
-    for (final e in edges) {
-      if (idMap.containsKey(e.source) && idMap.containsKey(e.target)) {
-        newEdges.add(
-          GraphEdge(
-            id: genId('e'),
-            source: idMap[e.source]!,
-            target: idMap[e.target]!,
-            sourceHandle: e.sourceHandle,
-            targetHandle: e.targetHandle,
-            mid: e.mid,
-          ),
-        );
-      }
-    }
-    _groupCounter++;
-    final newGroup = NodeGroup(
-      id: genId('g'),
-      name: '${g.name} 副本',
-      nodeIds: clones.map((c) => c.id).toList(),
-    );
-    nodes = [...nodes, ...clones];
-    edges = [...edges, ...newEdges];
-    groups = [...groups, newGroup];
-    selectedId = clones.isNotEmpty ? clones.first.id : null;
-    multiSelected = clones.map((c) => c.id).toSet();
-    addLog('ok', '已复制分组「${g.name}」');
-    structureVersion++;
-    notifyListeners();
-  }
-
-  // ---------- 复制 / 粘贴(节点/节点组,内部剪贴板) ----------
+  // ---------- 复制 / 粘贴(节点/Package,内部剪贴板) ----------
 
   Map<String, GraphNode>? _clipNodes;
   List<GraphEdge>? _clipEdges;
@@ -528,7 +601,7 @@ class GraphStore extends ChangeNotifier {
   /// 剪贴板中是否有可粘贴内容
   bool get hasClipboard => _clipNodes != null && _clipNodes!.isNotEmpty;
 
-  /// 复制所选节点到内部剪贴板;所选构成完整分组的节点,分组信息一并复制
+  /// 复制所选节点到内部剪贴板；完整选中的 Package 信息一并复制。
   void copySelection(Set<String> ids) {
     if (ids.isEmpty) {
       _clipNodes = null;
@@ -553,11 +626,19 @@ class GraphStore extends ChangeNotifier {
         if (src.containsKey(e.source) && src.containsKey(e.target))
           GraphEdge.deepCopy(e),
     ];
-    // 完整包含于所选的分组(组内成员全部在剪贴板)
+    // 完整包含于所选的 Package（全部成员都在剪贴板）。
     _clipGroups = [
       for (final g in groups)
-        if (g.nodeIds.isNotEmpty && g.nodeIds.every(src.containsKey))
-          NodeGroup(id: g.id, name: g.name, nodeIds: List.of(g.nodeIds)),
+        if (g.isPackage &&
+            g.nodeIds.isNotEmpty &&
+            g.nodeIds.every(src.containsKey))
+          NodeGroup(
+            id: g.id,
+            name: g.name,
+            nodeIds: List.of(g.nodeIds),
+            isPackage: g.isPackage,
+            collapsed: g.collapsed,
+          ),
     ];
     // 原内容包围盒左上角(粘贴定位锚点)
     var minX = double.infinity;
@@ -573,7 +654,7 @@ class GraphStore extends ChangeNotifier {
   }
 
   /// 在 anchor(flow 坐标)处粘贴剪贴板内容:原内容左上角对齐 anchor;
-  /// 克隆节点/连线/分组,粘贴后成为新的多选集
+  /// 克隆节点、连线与 Package，粘贴后成为新的多选集。
   void pasteAt(Offset anchor) {
     final src = _clipNodes;
     if (src == null || src.isEmpty) return;
@@ -616,6 +697,8 @@ class GraphStore extends ChangeNotifier {
             id: genId('g'),
             name: g.name,
             nodeIds: [for (final id in g.nodeIds) idMap[id]!],
+            isPackage: g.isPackage,
+            collapsed: g.collapsed,
           ),
         );
       }
@@ -628,7 +711,7 @@ class GraphStore extends ChangeNotifier {
     addLog(
       'ok',
       '已粘贴 ${clones.length} 个节点'
-          '${newGroups.isNotEmpty ? '(含 ${newGroups.length} 个分组)' : ''}',
+          '${newGroups.isNotEmpty ? '(含 ${newGroups.length} 个 Package)' : ''}',
     );
     structureVersion++;
     notifyListeners();
@@ -709,94 +792,204 @@ class GraphStore extends ChangeNotifier {
       edgesChanged = true;
     }
     if (edgesChanged) edges = newEdges;
-    notifyListeners();
+    layoutRevision.value++;
   }
 
-  // ---------- 节点分组(Blender 风格) ----------
-
-  int _groupCounter = 0;
-
-  /// 节点所属分组 id(未分组返回 null)
-  String? groupOf(String nodeId) {
-    for (final g in groups) {
-      if (g.nodeIds.contains(nodeId)) return g.id;
-    }
-    return null;
-  }
-
-  /// 将多个节点创建为一个分组(少于 2 个节点时忽略)
-  void createGroup(List<String> nodeIds) {
+  /// 将所选子图收纳为可折叠 Package。执行图保持原样，折叠仅影响画布呈现。
+  String? createPackage(List<String> nodeIds, String name) {
     final ids = nodeIds
-        .where((id) => nodes.any((n) => n.id == id))
+        .where((id) => nodes.any((node) => node.id == id))
         .toSet()
         .toList();
-    if (ids.length < 2) return;
+    if (ids.length < 2) return null;
+    final trimmed = name.trim().isEmpty ? 'Package' : name.trim();
     snapshotNow();
-    _groupCounter++;
-    groups = [
-      ...groups,
-      NodeGroup(id: genId('g'), name: '分组 $_groupCounter', nodeIds: ids),
-    ];
-    addLog('ok', '已将 ${ids.length} 个节点创建为「分组 $_groupCounter」');
+    final selected = ids.toSet();
+    groups = groups
+        .map(
+          (group) => group.copyWith(
+            nodeIds: group.nodeIds
+                .where((id) => !selected.contains(id))
+                .toList(),
+          ),
+        )
+        .where((group) => group.nodeIds.isNotEmpty)
+        .toList();
+    final group = NodeGroup(
+      id: genId('pkg'),
+      name: trimmed,
+      nodeIds: ids,
+      isPackage: true,
+      collapsed: true,
+    );
+    groups = [...groups, group];
+    selectedId = ids.first;
+    multiSelected = selected;
+    addLog('ok', '已将 ${ids.length} 个节点打包为「$trimmed」');
     structureVersion++;
     notifyListeners();
+    return group.id;
   }
 
-  /// 将已有节点加入指定分组(节点已在该组或组不存在时忽略)
-  void addNodeToGroup(String nodeId, String groupId) {
-    final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
-    final g = target.first;
-    if (g.nodeIds.contains(nodeId)) return;
-    // 节点不允许同时属于多个分组:先从原分组移除
-    final oldGid = groupOf(nodeId);
-    snapshotNow();
-    if (oldGid != null && oldGid != groupId) {
-      groups = groups
-          .map((og) {
-            if (og.id == oldGid) {
-              return og.copyWith(
-                nodeIds: og.nodeIds.where((id) => id != nodeId).toList(),
-              );
-            }
-            return og;
-          })
-          .where((og) => og.nodeIds.isNotEmpty)
-          .toList();
+  void setPackageCollapsed(String groupId, bool collapsed) {
+    final target = groups.where((group) => group.id == groupId).firstOrNull;
+    if (target == null || !target.isPackage || target.collapsed == collapsed) {
+      return;
     }
-    groups = groups.map((og) {
-      if (og.id == groupId) {
-        return og.copyWith(nodeIds: [...og.nodeIds, nodeId]);
-      }
-      return og;
-    }).toList();
-    addLog('info', '节点已加入「${g.name}」');
+    snapshotNow();
+    groups = [
+      for (final group in groups)
+        group.id == groupId ? group.copyWith(collapsed: collapsed) : group,
+    ];
     structureVersion++;
     notifyListeners();
   }
 
-  /// 解散分组(节点保留,仅移除分组容器)
-  void dissolveGroup(String groupId) {
+  /// 生成与具体节点 ID 解耦的 Package 模板，只保存所选内部节点和内部连线。
+  Map<String, dynamic>? packageTemplate(String groupId) {
+    final group = groups.where((item) => item.id == groupId).firstOrNull;
+    if (group == null || !group.isPackage || group.nodeIds.isEmpty) return null;
+    final ids = group.nodeIds.toSet();
+    final members = nodes.where((node) => ids.contains(node.id)).toList();
+    if (members.isEmpty) return null;
+    final minX = members.map((node) => node.position.dx).reduce(math.min);
+    final minY = members.map((node) => node.position.dy).reduce(math.min);
+    final origin = Offset(minX, minY);
+    return {
+      'id': genId('package_template'),
+      'name': group.name,
+      'nodes': [
+        for (final node in members)
+          {
+            ...node.toJson(),
+            'position': {
+              'x': node.position.dx - origin.dx,
+              'y': node.position.dy - origin.dy,
+            },
+          },
+      ],
+      'edges': [
+        for (final edge in edges)
+          if (ids.contains(edge.source) && ids.contains(edge.target))
+            {
+              ...edge.toJson(),
+              if (edge.mid != null)
+                'mid': {
+                  'x': edge.mid!.dx - origin.dx,
+                  'y': edge.mid!.dy - origin.dy,
+                },
+            },
+      ],
+    };
+  }
+
+  /// 从 Package 库实例化一份独立子图，并以折叠 Package 形式放入画布。
+  String? instantiatePackage(Map<String, dynamic> template, Offset anchor) {
+    final rawNodes = template['nodes'];
+    if (rawNodes is! List || rawNodes.length < 2) return null;
+    final idMap = <String, String>{};
+    final clones = <GraphNode>[];
+    for (final raw in rawNodes) {
+      if (raw is! Map) return null;
+      final json = Map<String, dynamic>.from(raw);
+      final oldId = '${json['id'] ?? ''}';
+      final configId = '${json['configId'] ?? ''}';
+      if (oldId.isEmpty ||
+          idMap.containsKey(oldId) ||
+          getConfig(configId) == null) {
+        return null;
+      }
+      final pos = json['position'];
+      if (pos is! Map || pos['x'] is! num || pos['y'] is! num) return null;
+      final newId = genId();
+      idMap[oldId] = newId;
+      clones.add(
+        GraphNode(
+          id: newId,
+          configId: configId,
+          params: json['params'] is Map
+              ? Map<String, dynamic>.from(json['params'] as Map)
+              : <String, dynamic>{},
+          exposed: json['exposed'] is List
+              ? (json['exposed'] as List)
+                    .map<String>((value) => '$value')
+                    .toList()
+              : const [],
+          collapsed: json['collapsed'] == true,
+          position:
+              anchor +
+              Offset(
+                (pos['x'] as num).toDouble(),
+                (pos['y'] as num).toDouble(),
+              ),
+        ),
+      );
+    }
+    final cloneEdges = <GraphEdge>[];
+    final rawEdges = template['edges'];
+    if (rawEdges is List) {
+      for (final raw in rawEdges) {
+        if (raw is! Map) continue;
+        final json = Map<String, dynamic>.from(raw);
+        final source = idMap['${json['source'] ?? ''}'];
+        final target = idMap['${json['target'] ?? ''}'];
+        if (source == null || target == null) continue;
+        final mid = json['mid'];
+        cloneEdges.add(
+          GraphEdge(
+            id: genId('e'),
+            source: source,
+            target: target,
+            sourceHandle: json['sourceHandle'] == null
+                ? null
+                : '${json['sourceHandle']}',
+            targetHandle: json['targetHandle'] == null
+                ? null
+                : '${json['targetHandle']}',
+            mid: mid is Map && mid['x'] is num && mid['y'] is num
+                ? anchor +
+                      Offset(
+                        (mid['x'] as num).toDouble(),
+                        (mid['y'] as num).toDouble(),
+                      )
+                : null,
+          ),
+        );
+      }
+    }
+    snapshotNow();
+    final name = '${template['name'] ?? 'Package'}'.trim();
+    final group = NodeGroup(
+      id: genId('pkg'),
+      name: name.isEmpty ? 'Package' : name,
+      nodeIds: clones.map((node) => node.id).toList(),
+      isPackage: true,
+      collapsed: true,
+    );
+    nodes = [...nodes, ...clones];
+    edges = [...edges, ...cloneEdges];
+    groups = [...groups, group];
+    selectedId = clones.first.id;
+    multiSelected = clones.map((node) => node.id).toSet();
+    addLog('ok', '已从 Package 库创建「${group.name}」');
+    structureVersion++;
+    notifyListeners();
+    if (autoRun) {
+      runAfterGraphChange(
+        changedIds: clones.map((node) => node.id).toSet(),
+        edgeChanged: cloneEdges.isNotEmpty,
+      );
+    }
+    return group.id;
+  }
+
+  /// 解散 Package（节点保留，仅移除 Package 容器）。
+  void dissolvePackage(String groupId) {
     final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
+    if (target.isEmpty || !target.first.isPackage) return;
     snapshotNow();
     groups = groups.where((g) => g.id != groupId).toList();
-    addLog('info', '已解散分组「${target.first.name}」');
-    structureVersion++;
-    notifyListeners();
-  }
-
-  /// 重命名分组(空名忽略)
-  void renameGroup(String groupId, String name) {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return;
-    final target = groups.where((g) => g.id == groupId).toList();
-    if (target.isEmpty) return;
-    snapshotNow();
-    groups = [
-      for (final g in groups) g.id == groupId ? g.copyWith(name: trimmed) : g,
-    ];
-    addLog('info', '分组已重命名为「$trimmed」');
+    addLog('info', '已解散 Package「${target.first.name}」');
     structureVersion++;
     notifyListeners();
   }
@@ -862,6 +1055,7 @@ class GraphStore extends ChangeNotifier {
       position: n.position,
     );
     nodes = updated;
+    selectedId = id;
     structureVersion++;
     notifyListeners();
     // 参数变化影响数据流:自动执行下立即重算(原理化输出等图据此实时刷新)
@@ -901,36 +1095,91 @@ class GraphStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void onConnect({
+  bool onConnect({
     required String source,
     required String target,
     String? sourceHandle,
     String? targetHandle,
+    bool triggerRun = true,
   }) {
-    snapshotNow();
     GraphNode? srcNode;
     GraphNode? tnNode;
     for (final n in nodes) {
       if (n.id == source) srcNode = n;
       if (n.id == target) tnNode = n;
     }
-    edges = [
-      ...edges,
-      GraphEdge(
-        id: genId('e'),
-        source: source,
-        target: target,
-        sourceHandle: sourceHandle,
-        targetHandle: targetHandle,
-      ),
-    ];
+    final srcConfig = srcNode == null ? null : getConfig(srcNode.configId);
+    final targetConfig = tnNode == null ? null : getConfig(tnNode.configId);
+    if (srcConfig == null || targetConfig == null || source == target) {
+      addLog('error', '连接失败:节点不存在或不能连接自身');
+      return false;
+    }
+    final outputId =
+        sourceHandle ??
+        (srcConfig.outputs.isEmpty ? null : srcConfig.outputs.first.id);
+    final inputId =
+        targetHandle ??
+        (targetConfig.inputs.isEmpty ? null : targetConfig.inputs.first.id);
+    final outputs = srcConfig.outputs.where((socket) => socket.id == outputId);
+    final inputs = targetConfig.inputs.where((socket) => socket.id == inputId);
+    if (outputs.isEmpty ||
+        inputs.isEmpty ||
+        !isCompatible(outputs.first.type, inputs.first.type)) {
+      addLog('error', '连接失败:端口不存在或类型不兼容');
+      return false;
+    }
+    var nextEdges = edges;
+    if (inputs.first.multi != true) {
+      nextEdges = nextEdges
+          .where(
+            (edge) => edge.target != target || edge.targetHandle != inputId,
+          )
+          .toList();
+    }
+    if (nextEdges.any(
+      (edge) =>
+          edge.source == source &&
+          edge.target == target &&
+          edge.sourceHandle == outputId &&
+          edge.targetHandle == inputId,
+    )) {
+      return false;
+    }
+    final candidate = GraphEdge(
+      id: genId('e'),
+      source: source,
+      target: target,
+      sourceHandle: outputId,
+      targetHandle: inputId,
+    );
+    final graphEdges = [...nextEdges, candidate];
+    if (topoSort(
+          nodes.map((node) => node.id).toList(),
+          graphEdges
+              .map(
+                (edge) => GraphEdgeLite(
+                  source: edge.source,
+                  target: edge.target,
+                  sourceHandle: edge.sourceHandle,
+                  targetHandle: edge.targetHandle,
+                ),
+              )
+              .toList(),
+        ) ==
+        null) {
+      addLog('error', '连接失败:该连接会形成循环');
+      return false;
+    }
+    snapshotNow();
+    edges = graphEdges;
     structureVersion++;
     addLog(
       'ok',
       '已连接 ${srcNode?.configId ?? ''} → ${tnNode?.configId ?? ''}(${targetHandle ?? 'in0'})',
     );
     // 连线变化改变数据流:自动执行下重算
-    if (autoRun) runAfterGraphChange(edgeChanged: true);
+    if (autoRun && triggerRun) runAfterGraphChange(edgeChanged: true);
+    return true;
   }
 
   /// 更新连线 data(mid 分割点;不入撤销历史)。
@@ -1007,14 +1256,30 @@ class GraphStore extends ChangeNotifier {
   }
 
   // ---------- 保存/加载 ----------
+  static const int workflowFormatVersion = 2;
+
   String saveGraph() {
     return const JsonEncoder.withIndent('  ').convert({
       'format': 'syphon-graph',
-      'version': 1,
+      'formatVersion': workflowFormatVersion,
+      'version': workflowFormatVersion,
+      'provenance': {
+        'application': 'SyphonNov',
+        'applicationVersion': '0.4.4',
+        'numericSemantics': 'full-precision',
+      },
       'nodes': nodes.map((n) => n.toJson()).toList(),
       'edges': edges.map((e) => e.toJson()).toList(),
       'groups': groups.map((g) => g.toJson()).toList(),
     });
+  }
+
+  int _stableSeed(String id) {
+    var value = 0x811c9dc5;
+    for (final unit in id.codeUnits) {
+      value = ((value ^ unit) * 0x01000193) & 0x7fffffff;
+    }
+    return value;
   }
 
   bool loadGraph(String json, {bool silent = false}) {
@@ -1023,9 +1288,14 @@ class GraphStore extends ChangeNotifier {
       if (data is! Map ||
           data['format'] != 'syphon-graph' ||
           data['nodes'] is! List) {
-        return false;
+        throw const FormatException('不是 SyphonNov 工作流文件');
       }
-      snapshotNow();
+      final rawVersion = data['formatVersion'] ?? data['version'] ?? 1;
+      if (rawVersion is! num ||
+          rawVersion.toInt() < 1 ||
+          rawVersion.toInt() > workflowFormatVersion) {
+        throw FormatException('不支持的工作流格式版本: $rawVersion');
+      }
       const vizMap = {
         'scatter': 'viz_scatter',
         'line': 'viz_line',
@@ -1038,79 +1308,164 @@ class GraphStore extends ChangeNotifier {
         'graph': 'viz_graph',
       };
       final loadedNodes = <GraphNode>[];
+      final ids = <String>{};
       for (final raw in data['nodes'] as List) {
-        final n = raw is Map
-            ? Map<String, dynamic>.from(raw)
-            : <String, dynamic>{};
+        if (raw is! Map) throw const FormatException('节点必须是对象');
+        final n = Map<String, dynamic>.from(raw);
+        final id = '${n['id'] ?? ''}'.trim();
+        if (id.isEmpty || !ids.add(id)) {
+          throw FormatException('节点 ID 为空或重复: $id');
+        }
         var configId = '${n['configId'] ?? ''}';
-        // 旧版"面输入"(3D 网格)已改为"平面输入":加载旧画布时迁移
-        if (configId == 'face_input') configId = 'plane_input';
+        if (configId == 'plane_input' || configId == 'face_input') {
+          throw const FormatException(
+            '该工作流含已在 v0.4.1 删除的平面节点；请用曲面输入的平面预设重新建立该节点',
+          );
+        }
+        if (configId == 'curve_intersect') configId = 'geometry_intersect';
         if (configId == 'viz_preset') {
-          final params = n['params'] is Map ? n['params'] as Map : const {};
-          final ct = '${params['chartType'] ?? 'scatter'}';
-          configId = vizMap[ct] ?? 'viz_scatter';
+          final p = n['params'] is Map ? n['params'] as Map : const {};
+          configId = vizMap['${p['chartType'] ?? 'scatter'}'] ?? 'viz_scatter';
+        }
+        if (getConfig(configId) == null) {
+          throw FormatException('未知节点类型: $configId');
         }
         final pos = n['position'];
+        if (pos != null &&
+            (pos is! Map || pos['x'] is! num || pos['y'] is! num)) {
+          throw FormatException('节点 $id 的坐标无效');
+        }
+        final x = pos is Map ? (pos['x'] as num).toDouble() : 0.0;
+        final y = pos is Map ? (pos['y'] as num).toDouble() : 0.0;
+        if (!x.isFinite || !y.isFinite) {
+          throw FormatException('节点 $id 的坐标不是有限数');
+        }
+        final params = n['params'] is Map
+            ? Map<String, dynamic>.from(n['params'] as Map)
+            : <String, dynamic>{};
+        if (configId == 'table_input') {
+          params.putIfAbsent('headerMode', () => 'auto');
+        }
+        if (configId == 'table_input' || configId == 'sample') {
+          params.putIfAbsent('seed', () => _stableSeed(id));
+        }
         loadedNodes.add(
           GraphNode(
-            id: '${n['id'] ?? ''}',
+            id: id,
             configId: configId,
-            params: n['params'] is Map
-                ? Map<String, dynamic>.from(n['params'] as Map)
-                : <String, dynamic>{},
+            params: params,
             exposed: n['exposed'] is List
                 ? (n['exposed'] as List).map((e) => '$e').toList()
-                : [],
+                : const [],
             collapsed: n['collapsed'] == true,
-            position: pos is Map
-                ? Offset(
-                    (pos['x'] is num) ? (pos['x'] as num).toDouble() : 0,
-                    (pos['y'] is num) ? (pos['y'] as num).toDouble() : 0,
-                  )
-                : Offset.zero,
+            position: Offset(x, y),
           ),
         );
       }
+
+      final byId = {for (final n in loadedNodes) n.id: n};
       final loadedEdges = <GraphEdge>[];
-      final rawEdges = data['edges'] is List
-          ? data['edges'] as List
-          : <dynamic>[];
-      for (final raw in rawEdges) {
-        final e = raw is Map
-            ? Map<String, dynamic>.from(raw)
-            : <String, dynamic>{};
-        final m = e['mid'];
+      final occupied = <String>{}, edgeIds = <String>{};
+      for (final raw
+          in data['edges'] is List ? data['edges'] as List : const []) {
+        if (raw is! Map) throw const FormatException('连线必须是对象');
+        final e = Map<String, dynamic>.from(raw);
+        final id = '${e['id'] ?? ''}'.trim(),
+            source = '${e['source'] ?? ''}',
+            target = '${e['target'] ?? ''}';
+        if (id.isEmpty || !edgeIds.add(id)) {
+          throw FormatException('连线 ID 为空或重复: $id');
+        }
+        final sourceNode = byId[source], targetNode = byId[target];
+        if (sourceNode == null || targetNode == null || source == target) {
+          throw FormatException('连线 $id 引用了无效节点');
+        }
+        final sourceConfig = getConfig(sourceNode.configId)!,
+            targetConfig = getConfig(targetNode.configId)!;
+        final sourceHandle = e['sourceHandle'] == null
+            ? (sourceConfig.outputs.isEmpty
+                  ? null
+                  : sourceConfig.outputs.first.id)
+            : '${e['sourceHandle']}';
+        final targetHandle = e['targetHandle'] == null
+            ? (targetConfig.inputs.isEmpty
+                  ? null
+                  : targetConfig.inputs.first.id)
+            : '${e['targetHandle']}';
+        final outs = sourceConfig.outputs.where((s) => s.id == sourceHandle),
+            ins = targetConfig.inputs.where((s) => s.id == targetHandle);
+        if (outs.isEmpty ||
+            ins.isEmpty ||
+            !isCompatible(outs.first.type, ins.first.type)) {
+          throw FormatException('连线 $id 的端口不存在或类型不兼容');
+        }
+        final portKey = '$target\u0000$targetHandle';
+        if (ins.first.multi != true && !occupied.add(portKey)) {
+          throw FormatException('非多连接端口 $targetHandle 收到多条连线');
+        }
+        final mid = e['mid'];
+        Offset? midpoint;
+        if (mid != null) {
+          if (mid is! Map || mid['x'] is! num || mid['y'] is! num) {
+            throw FormatException('连线 $id 的控制点无效');
+          }
+          midpoint = Offset(
+            (mid['x'] as num).toDouble(),
+            (mid['y'] as num).toDouble(),
+          );
+          if (!midpoint.dx.isFinite || !midpoint.dy.isFinite) {
+            throw FormatException('连线 $id 的控制点不是有限数');
+          }
+        }
         loadedEdges.add(
           GraphEdge(
-            id: '${e['id'] ?? genId('e')}',
-            source: '${e['source'] ?? ''}',
-            target: '${e['target'] ?? ''}',
-            sourceHandle: e['sourceHandle'] == null
-                ? null
-                : '${e['sourceHandle']}',
-            targetHandle: e['targetHandle'] == null
-                ? null
-                : '${e['targetHandle']}',
-            mid: m is Map && m['x'] is num
-                ? Offset((m['x'] as num).toDouble(), (m['y'] as num).toDouble())
-                : null,
+            id: id,
+            source: source,
+            target: target,
+            sourceHandle: sourceHandle,
+            targetHandle: targetHandle,
+            mid: midpoint,
           ),
         );
       }
+      final liteEdges = loadedEdges
+          .map(
+            (e) => GraphEdgeLite(
+              source: e.source,
+              target: e.target,
+              sourceHandle: e.sourceHandle,
+              targetHandle: e.targetHandle,
+            ),
+          )
+          .toList();
+      if (topoSort(loadedNodes.map((n) => n.id).toList(), liteEdges) == null) {
+        final path = findCyclePath(
+          loadedNodes.map((n) => n.id).toList(),
+          liteEdges,
+        );
+        throw FormatException('工作流包含循环: ${path.join(' → ')}');
+      }
+
+      final loadedGroups = <NodeGroup>[];
+      if (data['groups'] is List) {
+        final groupIds = <String>{};
+        for (final raw in data['groups'] as List) {
+          if (raw is! Map) throw const FormatException('分组必须是对象');
+          final group = NodeGroup.fromJson(Map<String, dynamic>.from(raw));
+          if (group.id.isEmpty ||
+              !groupIds.add(group.id) ||
+              group.nodeIds.any((id) => !byId.containsKey(id))) {
+            throw FormatException('分组 ${group.id} 无效');
+          }
+          // 普通 Group 已由 Package 取代；旧文件中的 Group 元数据在加载时丢弃。
+          if (group.isPackage) loadedGroups.add(group);
+        }
+      }
+
+      snapshotNow();
       nodes = loadedNodes;
       edges = loadedEdges;
-      // 兼容旧画布文件(无 groups 字段):分组默认为空
-      final rawGroups = data['groups'];
-      groups = rawGroups is List
-          ? rawGroups
-                .map(
-                  (raw) => raw is Map
-                      ? NodeGroup.fromJson(Map<String, dynamic>.from(raw))
-                      : null,
-                )
-                .whereType<NodeGroup>()
-                .toList()
-          : [];
+      groups = loadedGroups;
       selectedId = null;
       multiSelected = {};
       results = {};
@@ -1118,14 +1473,17 @@ class GraphStore extends ChangeNotifier {
       lastError = null;
       structureVersion++;
       if (!silent) {
-        addLog('ok', '已加载画布:${nodes.length} 个节点 / ${edges.length} 条连线');
+        addLog(
+          'ok',
+          '已加载 schema v$rawVersion 画布:${nodes.length} 个节点 / ${edges.length} 条连线',
+        );
       }
       notifyListeners();
-      // 加载/预设替换画布后自动执行,图表立即出图
       if (autoRun) runPipeline();
       return true;
     } catch (e) {
       debugPrint('加载画布失败: $e');
+      if (!silent) addLog('error', '加载失败:$e');
       return false;
     }
   }
@@ -1170,7 +1528,7 @@ class GraphStore extends ChangeNotifier {
     }
     double estH(GraphNode n) {
       final cfg = getConfig(n.configId);
-      if (cfg?.isViewer == true) return 400;
+      if (cfg?.isViewer == true) return nodeViewerHeight(n) + 185;
       final rows =
           (cfg?.inputs.length ?? 0) +
           (cfg?.outputs.length ?? 0) +
@@ -1200,7 +1558,7 @@ class GraphStore extends ChangeNotifier {
       for (final id in ids) {
         for (final n in nodes) {
           if (n.id == id) {
-            if (nodeWidth(n.configId) > w) w = nodeWidth(n.configId);
+            if (nodeVisualWidth(n) > w) w = nodeVisualWidth(n);
             break;
           }
         }
@@ -1233,7 +1591,7 @@ class GraphStore extends ChangeNotifier {
         double w = 260;
         for (final n in nodes) {
           if (n.id == id) {
-            w = nodeWidth(n.configId);
+            w = nodeVisualWidth(n);
             pos[id] = Offset(x + (layerW - w) / 2, y);
             y += estH(n) + gapY;
             break;
@@ -1294,7 +1652,9 @@ class GraphStore extends ChangeNotifier {
     }
     if (edgeChanged) {
       // 连线变更:所有边的 target 及其下游都脏
-      for (final e in edges) seeds.add(e.target);
+      for (final e in edges) {
+        seeds.add(e.target);
+      }
     }
     if (seeds.isEmpty) {
       // 没有明确的脏节点,保守全量
@@ -1307,6 +1667,7 @@ class GraphStore extends ChangeNotifier {
   // 执行任务链:多次触发串行排队,结果按触发顺序落定;
   // 测试可通过 settled 等待异步执行完成
   Future<void> _runChain = Future<void>.value();
+  Isolate? _activeExecutionIsolate;
 
   /// 测试开关:false 时在主 Isolate 同步执行。
   /// (testWidgets 假异步事件循环不会派发 Isolate 消息,真实 Isolate 会挂起)
@@ -1316,21 +1677,61 @@ class GraphStore extends ChangeNotifier {
   Future<void> get settled => _runChain;
 
   /// 落定一次执行结果并广播
-  void _applyOutcome(RunOutcome outcome) {
+  void _applyOutcome(RunOutcome outcome, int revision) {
+    if (revision != executionRevision) return;
     results = outcome.results;
     hasCycle = outcome.hasCycle;
+    cyclePath = outcome.cyclePath;
     lastError = null;
+    structuredError = null;
+    if (outcome.hasCycle) {
+      lastError = '工作流包含循环: ${outcome.cyclePath.join(' → ')}';
+      structuredError = {
+        'code': 'cycle',
+        'message': lastError,
+        'cyclePath': outcome.cyclePath,
+      };
+    }
     for (final r in outcome.results.entries) {
       if (r.value.error != null) {
         lastError = r.value.error;
         break;
       }
     }
+    if (lastError != null && structuredError == null) {
+      structuredError = {'code': 'node_execution', 'message': lastError};
+    }
+    committedRevision = revision;
+    executionStatus = lastError == null ? 'succeeded' : 'failed';
+    executionProgress = 1;
+    executionCompletedNodes = outcome.order.length;
+    executionTotalNodes = outcome.order.length;
     runVersion++;
     notifyListeners();
   }
 
   Future<void> _runDirty(Set<String>? dirtySeeds) {
+    final revision = ++executionRevision;
+    executionStatus = 'queued';
+    executionProgress = 0;
+    executionCompletedNodes = 0;
+    executionTotalNodes = nodes.length;
+    structuredError = null;
+    const maxNodesPerRun = 10000;
+    const maxEdgesPerRun = 50000;
+    if (nodes.length > maxNodesPerRun || edges.length > maxEdgesPerRun) {
+      executionStatus = 'failed';
+      lastError =
+          '工作流超过执行预算:节点 ${nodes.length}/$maxNodesPerRun，连线 ${edges.length}/$maxEdgesPerRun';
+      structuredError = {
+        'code': 'resource_budget',
+        'message': lastError,
+        'nodes': nodes.length,
+        'edges': edges.length,
+      };
+      notifyListeners();
+      return Future<void>.value();
+    }
     // 触发时即固化输入(节点/边/旧结果快照):
     // 任务在 Isolate 中异步执行,排队期间图可能被继续修改
     final liteNodes = nodes
@@ -1349,37 +1750,110 @@ class GraphStore extends ChangeNotifier {
           ),
         )
         .toList();
-    final prev = results;
-    RunOutcome runSync() => runGraph(
+    // 同步模式(测试):主 Isolate 直接执行,保持旧的同步语义
+    if (!useIsolate) {
+      _applyOutcome(
+        runGraph(
           liteNodes,
           liteEdges,
           dirtyIds: dirtySeeds,
-          prevResults: prev,
-        );
-
-    // 同步模式(测试):主 Isolate 直接执行,保持旧的同步语义
-    if (!useIsolate) {
-      _applyOutcome(runSync());
+          prevResults: results,
+        ),
+        revision,
+      );
       return Future<void>.value();
     }
 
     Future<void> task() async {
-      RunOutcome outcome;
+      if (revision != executionRevision) return;
+      executionStatus = 'running';
+      executionProgress = 0;
+      notifyListeners();
+      // Read predecessor results when the queued task actually starts. A
+      // snapshot captured at enqueue time can overwrite a newer sibling.
+      final previous = results;
+      RunOutcome? outcome;
+      final port = ReceivePort();
+      Isolate? workerIsolate;
       try {
-        // 执行引擎移入 Isolate:大数据流计算不再阻塞 UI 线程。
-        // runGraph 为纯函数(仅依赖 lite 数据与全局注册表),可安全跨 Isolate
-        outcome = await Isolate.run(runSync);
-      } catch (_) {
-        // 兜底:Isolate 拷贝失败(参数含不可发送对象)等场景回退主 Isolate 同步执行
-        outcome = runSync();
+        final isolate = await Isolate.spawn(
+          _runWorker,
+          // A full latest-revision run is deliberate: it coalesces all dirty
+          // edits that invalidated older queued partial snapshots.
+          _RunWorkerRequest(
+            _RunRequest(liteNodes, liteEdges, null, previous),
+            port.sendPort,
+          ),
+          onExit: port.sendPort,
+        );
+        workerIsolate = isolate;
+        _activeExecutionIsolate = isolate;
+        await for (final message in port) {
+          if (revision != executionRevision) {
+            isolate.kill(priority: Isolate.immediate);
+            break;
+          }
+          if (message == null) {
+            if (outcome == null) throw StateError('后台执行意外终止');
+            break;
+          }
+          if (message is! Map) continue;
+          switch (message['kind']) {
+            case 'progress':
+              final completed = message['completed'] as int;
+              final total = message['total'] as int;
+              executionCompletedNodes = completed;
+              executionTotalNodes = total;
+              executionProgress = total == 0 ? 1 : completed / total;
+              notifyListeners();
+              break;
+            case 'outcome':
+              outcome = message['value'] as RunOutcome;
+              break;
+            case 'error':
+              throw StateError('${message['message']}\n${message['stack']}');
+          }
+          if (outcome != null) break;
+        }
+      } catch (error, stack) {
+        debugPrint('后台执行失败: $error\n$stack');
+        if (revision == executionRevision) {
+          executionStatus = 'failed';
+          lastError = '$error';
+          structuredError = {
+            'code': 'isolate_failure',
+            'message': '$error',
+            'stack': '$stack',
+          };
+          notifyListeners();
+        }
+        return;
+      } finally {
+        port.close();
+        if (identical(_activeExecutionIsolate, workerIsolate)) {
+          _activeExecutionIsolate = null;
+        }
+        workerIsolate?.kill(priority: Isolate.immediate);
       }
-      _applyOutcome(outcome);
+      if (outcome != null) _applyOutcome(outcome, revision);
     }
 
     _runChain = _runChain.then((_) => task()).catchError((Object e) {
       addLog('error', '执行失败:$e');
     });
     return _runChain;
+  }
+
+  /// Logically cancels queued/running work. An isolate already computing may
+  /// finish, but its obsolete revision is forbidden from committing results.
+  void cancelExecution() {
+    executionRevision++;
+    _activeExecutionIsolate?.kill(priority: Isolate.immediate);
+    _activeExecutionIsolate = null;
+    executionStatus = 'cancelled';
+    executionProgress = 0;
+    executionCompletedNodes = 0;
+    notifyListeners();
   }
 
   /// 运行单个节点及其全部下游(右键菜单"运行此节点")

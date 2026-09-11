@@ -33,6 +33,7 @@ void main() {
               nodeId: 'n1',
               callbacks: NodeCardCallbacks(
                 onSelect: (_) {},
+                onActivateViewer: (_) {},
                 onSecondaryTap: (_) {},
               ),
             ),

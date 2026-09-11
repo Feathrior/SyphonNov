@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show
@@ -10,19 +11,23 @@ import 'package:flutter/gestures.dart'
         PointerSignalEvent,
         kPrimaryButton,
         kSecondaryMouseButton;
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
-import '../i18n.dart';
+import '../models/color_utils.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
 import '../store/graph_store.dart';
+import '../store/settings_store.dart';
 import 'canvas_geometry.dart';
 import 'context_menu.dart';
 import 'mini_map.dart';
+import 'motion.dart';
 import 'node_card.dart';
 import 'node_context_menus.dart';
+import 'radial_node_menu.dart';
 import 'theme.dart';
 
 // ==================== 背景网格 ====================
@@ -77,6 +82,137 @@ class _BgPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BgPainter old) =>
       old.bg != bg || old.dot != dot || old.pan != pan || old.zoom != zoom;
+}
+
+class _PackageRegionPainter extends CustomPainter {
+  final Color color;
+  final double zoom;
+
+  const _PackageRegionPainter({required this.color, required this.zoom});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final radius = Radius.circular(10 / zoom);
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(rect, radius);
+    canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: .105));
+    final path = Path()..addRRect(rrect);
+    final paint = Paint()
+      ..color = color.withValues(alpha: .78)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.35 / zoom;
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      final dash = 7 / zoom;
+      final gap = 5 / zoom;
+      while (distance < metric.length) {
+        canvas.drawPath(
+          metric.extractPath(
+            distance,
+            math.min(distance + dash, metric.length),
+          ),
+          paint,
+        );
+        distance += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PackageRegionPainter oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.zoom != zoom;
+}
+
+class _PackageOverviewPainter extends CustomPainter {
+  final List<GraphNode> nodes;
+  final List<GraphEdge> edges;
+  final Color color;
+  final int revision;
+
+  const _PackageOverviewPainter({
+    required this.nodes,
+    required this.edges,
+    required this.color,
+    required this.revision,
+  });
+
+  Color _nodeColor(GraphNode node) {
+    final category = getConfig(node.configId)?.category;
+    final hex = category == null ? null : kCategoryInfo[category]?.color;
+    return parseColor(hex, color);
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (nodes.isEmpty || size.isEmpty) return;
+    final nodeRects = <String, Rect>{
+      for (final node in nodes) node.id: node.position & nodeSize(node, edges),
+    };
+    Rect? world;
+    for (final rect in nodeRects.values) {
+      world = world == null ? rect : world.expandToInclude(rect);
+    }
+    if (world == null || world.width <= 0 || world.height <= 0) return;
+    final scale = math.min(
+      (size.width - 12) / world.width,
+      (size.height - 10) / world.height,
+    );
+    final fitted = Size(world.width * scale, world.height * scale);
+    final origin = Offset(
+      (size.width - fitted.width) / 2 - world.left * scale,
+      (size.height - fitted.height) / 2 - world.top * scale,
+    );
+    Offset map(Offset point) => origin + point * scale;
+
+    final ids = nodeRects.keys.toSet();
+    final edgePaint = Paint()
+      ..color = color.withValues(alpha: .42)
+      ..strokeWidth = 1.15
+      ..strokeCap = StrokeCap.round;
+    for (final edge in edges) {
+      if (!ids.contains(edge.source) || !ids.contains(edge.target)) continue;
+      final source = nodeRects[edge.source]!;
+      final target = nodeRects[edge.target]!;
+      final a = map(source.centerRight);
+      final b = map(target.centerLeft);
+      final path = Path()
+        ..moveTo(a.dx, a.dy)
+        ..cubicTo((a.dx + b.dx) / 2, a.dy, (a.dx + b.dx) / 2, b.dy, b.dx, b.dy);
+      canvas.drawPath(path, edgePaint);
+    }
+    for (final node in nodes) {
+      final nodeColor = _nodeColor(node);
+      final rect = nodeRects[node.id]!;
+      final mapped = Rect.fromPoints(map(rect.topLeft), map(rect.bottomRight));
+      final compact = Rect.fromCenter(
+        center: mapped.center,
+        width: mapped.width.clamp(12, 34),
+        height: mapped.height.clamp(7, 19),
+      );
+      final rrect = RRect.fromRectAndRadius(compact, const Radius.circular(3));
+      canvas.drawRRect(
+        rrect,
+        Paint()
+          ..color = nodeColor.withValues(alpha: .48)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.3),
+      );
+      canvas.drawRRect(
+        rrect,
+        Paint()
+          ..color = nodeColor.withValues(alpha: .92)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.1,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PackageOverviewPainter oldDelegate) =>
+      oldDelegate.revision != revision ||
+      oldDelegate.color != color ||
+      oldDelegate.nodes.length != nodes.length ||
+      oldDelegate.edges.length != edges.length;
 }
 
 // ==================== 连线绘制 ====================
@@ -153,6 +289,8 @@ class _EdgesPainter extends CustomPainter {
   // 预计算锚点:edgeId → (源锚点, 目标锚点)。
   // 一次性遍历节点端口统计,避免逐边重复 O(E) 扫描(连线多时性能关键)
   late final Map<String, ({Offset a, Offset b})> _anchors;
+  late final Map<String, NodeGroup> _collapsedPackageByNode;
+  late final Map<String, Rect> _packageRects;
 
   _EdgesPainter({
     required List<GraphNode> nodes,
@@ -178,6 +316,16 @@ class _EdgesPainter extends CustomPainter {
     this.slashTrail = const [],
     this.slashTrailProgress = 1,
   }) : nodeMap = {for (final n in nodes) n.id: n} {
+    _collapsedPackageByNode = {
+      for (final group in groups)
+        if (group.isPackage && group.collapsed)
+          for (final id in group.nodeIds) id: group,
+    };
+    _packageRects = {};
+    for (final group in groups) {
+      final rect = packageProxyRect(group, nodes, edges);
+      if (rect != null) _packageRects[group.id] = rect;
+    }
     _initAnchors();
   }
 
@@ -186,9 +334,10 @@ class _EdgesPainter extends CustomPainter {
   void _initAnchors() {
     _anchors = <String, ({Offset a, Offset b})>{};
     for (final n in nodeMap.values) {
+      if (_collapsedPackageByNode.containsKey(n.id)) continue;
       final cfg = getConfig(n.configId);
       if (cfg == null) continue;
-      final w = nodeWidth(n.configId);
+      final w = nodeVisualWidth(n);
       final inRows = inputSockets(n, edges);
       final outRows = outputSockets(n, edges);
       // 输出锚点(源)
@@ -230,12 +379,15 @@ class _EdgesPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 分组框在最底层(连线/节点之上被遮挡部分自然隐藏,标签始终可见)
-    _paintGroupFrames(canvas);
     for (final e in edges) {
       final src = nodeMap[e.source];
       final tgt = nodeMap[e.target];
       if (src == null || tgt == null) continue;
+      final sourcePackage = _collapsedPackageByNode[e.source];
+      final targetPackage = _collapsedPackageByNode[e.target];
+      if (sourcePackage != null && sourcePackage.id == targetPackage?.id) {
+        continue;
+      }
       _paintEdge(canvas, e, src, tgt);
     }
     // 连线拖拽中:三次贝塞尔曲线预览(与正式连线同曲率,虚线区分);
@@ -274,8 +426,20 @@ class _EdgesPainter extends CustomPainter {
 
   void _paintEdge(Canvas canvas, GraphEdge e, GraphNode src, GraphNode tgt) {
     final anchor = _anchors[e.id];
-    final a = anchor?.a ?? edgeSourceAnchor(e, src, edges);
-    final b = anchor?.b ?? edgeTargetAnchor(e, tgt, edges);
+    final sourcePackage = _collapsedPackageByNode[e.source];
+    final targetPackage = _collapsedPackageByNode[e.target];
+    final sourceRect = sourcePackage == null
+        ? null
+        : _packageRects[sourcePackage.id];
+    final targetRect = targetPackage == null
+        ? null
+        : _packageRects[targetPackage.id];
+    final a = sourceRect == null || sourcePackage == null
+        ? anchor?.a ?? edgeSourceAnchor(e, src, edges)
+        : _packageAnchor(sourcePackage, sourceRect, e, isSource: true);
+    final b = targetRect == null || targetPackage == null
+        ? anchor?.b ?? edgeTargetAnchor(e, tgt, edges)
+        : _packageAnchor(targetPackage, targetRect, e, isSource: false);
     final mid = e.mid;
     final samples = edgeSamples(a: a, b: b, mid: mid);
     if (samples.length < 2) return;
@@ -347,6 +511,25 @@ class _EdgesPainter extends CustomPainter {
     }
   }
 
+  Offset _packageAnchor(
+    NodeGroup group,
+    Rect rect,
+    GraphEdge edge, {
+    required bool isSource,
+  }) {
+    final ports = isSource
+        ? packageOutputPorts(group, nodeMap.values.toList(), edges)
+        : packageInputPorts(group, nodeMap.values.toList(), edges);
+    final nodeId = isSource ? edge.source : edge.target;
+    final socketId = isSource ? edge.sourceHandle : edge.targetHandle;
+    final port = ports
+        .where((item) => item.nodeId == nodeId && item.socketId == socketId)
+        .firstOrNull;
+    return port == null
+        ? (isSource ? rect.centerRight : rect.centerLeft)
+        : packagePortAnchor(rect, ports, port, isSource: isSource);
+  }
+
   /// 连线基础色 = 源端口颜色(kSocketColor 映射);找不到端口时回退 React 默认色 #7c8db5
   Color _edgeColor(GraphEdge e, GraphNode src) {
     final cfg = getConfig(src.configId);
@@ -366,100 +549,6 @@ class _EdgesPainter extends CustomPainter {
     var h = hex.replaceFirst('#', '');
     if (h.length == 6) h = 'FF$h';
     return Color(int.tryParse(h, radix: 16) ?? 0xFF000000);
-  }
-
-  /// 分组外框(Blender 风格):圆角矩形 + 顶部内嵌标签。
-  /// 完整画 rrect,再用 fill 色在标签位置盖掉顶边实现"断开",
-  /// 最后画深色小标签 + 白字。
-  void _paintGroupFrames(Canvas canvas) {
-    if (groups.isEmpty) return;
-    final padX = 14.0 / zoom;
-    final padBottom = 14.0 / zoom;
-    final padTop = 22.0 / zoom; // 顶部更多空间容纳内嵌标签
-    final radius = 10.0 / zoom;
-    final strokeWidth = 1.2 / zoom;
-    final stroke = Paint()
-      ..color = accent.withValues(alpha: 0.55)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth;
-    final fill = Paint()..color = accent.withValues(alpha: 0.05);
-    final labelBg = Color.lerp(accent, Colors.black, isDark ? 0.55 : 0.28)!;
-    final coverPaint = Paint()..color = accent.withValues(alpha: 0.05);
-    for (final g in groups) {
-      Rect? box;
-      for (final id in g.nodeIds) {
-        final n = nodeMap[id];
-        if (n == null) continue;
-        final r = n.position & nodeSize(n, edges);
-        box = box == null ? r : box.expandToInclude(r);
-      }
-      final inGroup = g.nodeIds.toSet();
-      for (final e in edges) {
-        final mid = e.mid;
-        if (mid == null) continue;
-        if (!inGroup.contains(e.source) || !inGroup.contains(e.target))
-          continue;
-        box = box == null
-            ? Rect.fromCircle(center: mid, radius: 0)
-            : box.expandToInclude(Rect.fromCircle(center: mid, radius: 0));
-      }
-      if (box == null) continue;
-      final rect = Rect.fromLTRB(
-        box.left - padX,
-        box.top - padTop,
-        box.right + padX,
-        box.bottom + padBottom,
-      );
-      final rrect = RRect.fromRectAndRadius(rect, Radius.circular(radius));
-      // 1) 完整圆角填充 + 完整圆角描边(天然正确,无方向问题)
-      canvas.drawRRect(rrect, fill);
-      canvas.drawRRect(rrect, stroke);
-
-      // 2) 标签参数
-      final tp = TextPainter(
-        text: TextSpan(
-          text: g.name,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 12 / zoom,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout();
-      const lblH = 16.0; // 屏幕恒定高度
-      const lblPad = 5.0; // 文字左右 padding
-      const lblMargin = 6.0; // 标签距左边框的边距
-      const lblTopOverlap = 1.0; // 标签向上嵌入边框 1px(屏幕恒定)
-      final lblHeight = lblH / zoom;
-      final lblWidth = tp.width + 2 * lblPad / zoom;
-      final lblL = rect.left + lblMargin / zoom;
-      final lblT = rect.top - lblTopOverlap / zoom;
-      final lblR = lblL + lblWidth;
-
-      // 3) 用 fill 色在标签位置覆盖顶边的 stroke,制造"断开"效果
-      // stroke 居中画在 rect 边缘,一半外侧一半内侧;
-      // coverRect 须从 stroke 外侧到 stroke 内侧完全盖净
-      final cover = Rect.fromLTRB(
-        lblL - 0.5 / zoom,
-        rect.top - strokeWidth / 2 - 0.2 / zoom,
-        lblR + 0.5 / zoom,
-        rect.top + strokeWidth / 2 + 0.2 / zoom,
-      );
-      canvas.drawRect(cover, coverPaint);
-
-      // 4) 画标签:深色小矩形 + 白字
-      final lblRect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(lblL, lblT, lblWidth, lblHeight),
-        Radius.circular(4 / zoom),
-      );
-      canvas.drawRRect(lblRect, Paint()..color = labelBg);
-      tp.paint(
-        canvas,
-        Offset(lblL + lblPad / zoom, lblT + (lblHeight - tp.height) / 2),
-      );
-    }
   }
 
   /// Alt 拆分预览点:12px 白底圆 + 2px 紫边 + 外圈光晕(React .nf-alt-split-dot)
@@ -690,14 +779,18 @@ class NodeCanvas extends StatefulWidget {
   State<NodeCanvas> createState() => NodeCanvasState();
 }
 
-class NodeCanvasState extends State<NodeCanvas>
-    with SingleTickerProviderStateMixin {
+class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   final GraphStore store = GraphStore.instance;
   final ValueNotifier<double> _zoomNotifier = ValueNotifier(1);
   final FocusNode _focusNode = FocusNode();
+  final ValueNotifier<({Offset local, Color color, bool accepted})?>
+  _dropPreview = ValueNotifier(null);
 
   // 切断粒子爆裂动画:每帧刷新直到动画结束
   late final Ticker _cutTicker;
+  late final AnimationController _conversionLayoutController;
+  Map<String, Offset> _conversionLayoutOrigins = const {};
+  Map<String, Offset> _conversionLayoutTargets = const {};
   final List<_ParticleBurst> _bursts = []; // 一次手势可爆出多次(每次切断追加一颗)
 
   double _zoom = 1;
@@ -740,6 +833,9 @@ class NodeCanvasState extends State<NodeCanvas>
   Map<String, Offset> _dragOrigins = {}; // 各拖动节点按下时的世界坐标(位移基准)
   bool _downAddedNode = false; // 本次按下是否把节点新加入多选(down 与 tap 共用,防重复切换)
   bool _dragSnapshotted = false; // 本次拖动是否已记录撤销快照(首次实际位移时才记录)
+  String? _resizingViewerId;
+  bool _viewerResizeSnapshotted = false;
+  String? _draggingPackageId;
   int _downButtons = 0; // 本次按下包含的鼠标按钮(区分左/右键 up:右键不触发空白清选)
   bool _spaceDown = false;
   bool _panFromNode = false; // 背景 pan 起点落在节点内部:忽略平移(节点内拖动不移动背景)
@@ -773,13 +869,17 @@ class NodeCanvasState extends State<NodeCanvas>
   _Conn? _pendingConn;
   Set<String>? _nodeMenuFor; // 多选右键菜单对应的节点集(与 _menuPos 配合)
   String? _groupMenuFor; // 分组右键菜单对应的分组 id(与 _menuPos 配合)
+  Timer? _radialHoldTimer;
+  Offset? _rightPressScreen;
+  Offset _radialPointer = Offset.zero;
+  bool _radialVisible = false;
+  int? _radialSection;
+  int? _radialDetail;
+  List<RadialNodeItem> _radialItems = const [];
+  RadialNodeItem? _radialLockedItem;
+  Offset? _radialDetachAnchor;
 
-  // 分组标签双击重命名检测(双击 = 两次快速按下标签)
-  DateTime? _lastGroupLabelDownAt;
-  String? _lastGroupLabelDownId;
-  Offset _lastGroupLabelDownFlow = Offset.zero;
   // 鼠标最后位置(flow 坐标):Ctrl+V 粘贴定位用(hover/move 时更新)
-  Offset _lastPointerFlow = Offset.zero;
   Offset? _boxStart; // 屏幕坐标
   Offset? _boxEnd;
   Offset? _downPosScreen;
@@ -795,6 +895,189 @@ class NodeCanvasState extends State<NodeCanvas>
   Offset _toScreen(Offset flow) =>
       Offset(flow.dx * _zoom + _pan.dx, flow.dy * _zoom + _pan.dy);
 
+  /// 顶部节点条拖动时，仅刷新这个轻量 overlay，不触发节点世界重建。
+  void updateExternalNodeDrag(
+    String configId,
+    Category category,
+    Offset globalPosition,
+  ) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final local = box.globalToLocal(globalPosition);
+    final accepted = (Offset.zero & box.size).contains(local);
+    final hex = kCategoryInfo[category]?.color ?? '#7c8db5';
+    final color = Color(
+      int.tryParse(hex.replaceFirst('#', '0xFF')) ?? 0xFF7C8DB5,
+    );
+    _dropPreview.value = (local: local, color: color, accepted: accepted);
+  }
+
+  void cancelExternalNodeDrag() => _dropPreview.value = null;
+
+  /// 用全局指针坐标放置节点。返回 false 表示画布外取消，工作流不变化。
+  bool addNodeFromGlobal(String configId, Offset globalPosition) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    final local = box.globalToLocal(globalPosition);
+    if (!(Offset.zero & box.size).contains(local)) return false;
+    var flow = _toFlow(local) - const Offset(30, 20);
+    if (SettingsStore.instance.snapNodePlacement) {
+      const step = 20.0;
+      flow = Offset(
+        (flow.dx / step).round() * step,
+        (flow.dy / step).round() * step,
+      );
+    }
+    final id = store.addNode(configId, flow);
+    final node = store.nodeOf(id);
+    if (node != null) {
+      final size = nodeSize(node, store.edges, result: store.results[id]);
+      final min = _toFlow(const Offset(12, 12));
+      final bottomRight = _toFlow(
+        Offset(
+          math.max(12, box.size.width - 12),
+          math.max(12, box.size.height - 12),
+        ),
+      );
+      final maxX = math.max(min.dx, bottomRight.dx - size.width);
+      final maxY = math.max(min.dy, bottomRight.dy - size.height);
+      final clamped = Offset(
+        flow.dx.clamp(min.dx, maxX),
+        flow.dy.clamp(min.dy, maxY),
+      );
+      if (clamped != flow) store.moveNode(id, clamped);
+    }
+    cancelExternalNodeDrag();
+    _focusNode.requestFocus();
+    return true;
+  }
+
+  void addNodeAtViewportCenter(String configId) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final global = box.localToGlobal(box.size.center(Offset.zero));
+    addNodeFromGlobal(configId, global);
+  }
+
+  void createPackageAtViewportCenter(Map<String, dynamic> template) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final center = _toFlow(box.size.center(Offset.zero));
+    store.instantiatePackage(template, center - const Offset(130, 55));
+    _focusNode.requestFocus();
+  }
+
+  void _startPackageDrag(NodeGroup group) {
+    _focusNode.requestFocus();
+    store.setMultiSelected(group.nodeIds.toSet());
+    store.snapshotNow();
+    _draggingPackageId = group.id;
+  }
+
+  void _updatePackageDrag(NodeGroup group, Offset screenDelta) {
+    if (_draggingPackageId != group.id) return;
+    final delta = screenDelta / _zoom;
+    store.moveNodesTo(group.nodeIds.toSet(), {
+      for (final id in group.nodeIds) id: _nodePos(id) + delta,
+    });
+  }
+
+  void _endPackageDrag(NodeGroup group) {
+    if (_draggingPackageId != group.id) return;
+    _draggingPackageId = null;
+    store.finishLayoutChange();
+  }
+
+  void _expandPackage(NodeGroup group) {
+    final members = [
+      for (final node in store.nodes)
+        if (group.nodeIds.contains(node.id)) node,
+    ];
+    if (members.isEmpty) {
+      store.setPackageCollapsed(group.id, false);
+      return;
+    }
+    if (_conversionLayoutController.isAnimating) {
+      _conversionLayoutController.stop();
+      if (_conversionLayoutTargets.isNotEmpty) {
+        store.moveNodesTo(
+          _conversionLayoutTargets.keys.toSet(),
+          _conversionLayoutTargets,
+        );
+        store.finishLayoutChange();
+      }
+    }
+    final ids = group.nodeIds.toSet();
+    final sizes = {
+      for (final node in members)
+        node.id: nodeSize(node, store.edges, result: store.results[node.id]),
+    };
+    final obstacles = [
+      for (final node in store.nodes)
+        if (!ids.contains(node.id))
+          node.position &
+              nodeSize(node, store.edges, result: store.results[node.id]),
+    ];
+    final targets = resolveRepulsiveNodeLayout(
+      moving: [
+        for (final node in members)
+          (id: node.id, position: node.position, size: sizes[node.id]!),
+      ],
+      obstacles: obstacles,
+      gap: 34,
+    );
+    final proxy = packageProxyRect(
+      group.copyWith(collapsed: true),
+      store.nodes,
+      store.edges,
+    );
+    final center =
+        proxy?.center ??
+        members
+                .map(
+                  (node) => node.position + sizes[node.id]!.center(Offset.zero),
+                )
+                .reduce((a, b) => a + b) /
+            members.length.toDouble();
+    final origins = {
+      for (final node in members)
+        node.id: Offset.lerp(
+          center - sizes[node.id]!.center(Offset.zero),
+          targets[node.id]!,
+          .2,
+        )!,
+    };
+
+    store.setPackageCollapsed(group.id, false);
+    store.moveNodesTo(ids, origins);
+    final duration = MotionTokens.spatial(context);
+    if (duration == Duration.zero) {
+      store.moveNodesTo(ids, targets);
+      store.finishLayoutChange();
+      return;
+    }
+    _conversionLayoutOrigins = origins;
+    _conversionLayoutTargets = targets;
+    _conversionLayoutController.duration = Duration(
+      milliseconds: (duration.inMilliseconds * 1.25).round(),
+    );
+    _conversionLayoutController.forward(from: 0);
+  }
+
+  void _collapsePackage(NodeGroup group) {
+    final memberIds = group.nodeIds.toSet();
+    if (_conversionLayoutController.isAnimating &&
+        _conversionLayoutTargets.keys.any(memberIds.contains)) {
+      _conversionLayoutController.stop();
+      final targets = Map<String, Offset>.from(_conversionLayoutTargets);
+      _conversionLayoutOrigins = const {};
+      _conversionLayoutTargets = const {};
+      store.moveNodesTo(targets.keys.toSet(), targets);
+      store.finishLayoutChange();
+    }
+    store.setPackageCollapsed(group.id, true);
+  }
+
   void _bump() {
     _revision++;
     if (mounted) setState(() {});
@@ -803,6 +1086,27 @@ class NodeCanvasState extends State<NodeCanvas>
   @override
   void initState() {
     super.initState();
+    _conversionLayoutController = AnimationController(vsync: this)
+      ..addListener(() {
+        if (_conversionLayoutTargets.isEmpty) return;
+        final progress = MotionTokens.emphasized.transform(
+          _conversionLayoutController.value,
+        );
+        store.moveNodesTo(_conversionLayoutTargets.keys.toSet(), {
+          for (final entry in _conversionLayoutTargets.entries)
+            entry.key: Offset.lerp(
+              _conversionLayoutOrigins[entry.key],
+              entry.value,
+              progress,
+            )!,
+        });
+      })
+      ..addStatusListener((status) {
+        if (status != AnimationStatus.completed) return;
+        store.finishLayoutChange();
+        _conversionLayoutOrigins = const {};
+        _conversionLayoutTargets = const {};
+      });
     // 切断粒子爆裂/刀光动画:每帧刷新直到动画全部结束(渲染层,不改交互逻辑)
     _cutTicker = createTicker((_) {
       if (!mounted) return;
@@ -836,6 +1140,9 @@ class NodeCanvasState extends State<NodeCanvas>
   /// - 非 Shift:点击已选节点保持多选(Blender 语义),点击未选节点重置单选
   /// - Shift:down 已新加入多选的节点,此处跳过(防 down 加选 → tap 再切换互相抵消)
   void _onSelect(String id) {
+    // onTap 在手势竞技场结束后执行；此处再次收回焦点，覆盖属性输入框在
+    // pointer-down 之后完成的延迟聚焦，保证随后 Delete 到达画布。
+    _focusNode.requestFocus();
     if (_shift) {
       if (_downAddedNode) return; // down 已加入多选,点击/拖动共用,不重复处理
       final sel = store.multiSelected;
@@ -856,10 +1163,44 @@ class NodeCanvasState extends State<NodeCanvas>
 
   bool _pointInAnyNode(Offset flow) {
     for (final n in store.nodes) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final r = n.position & nodeSize(n, store.edges);
       if (r.contains(flow)) return true;
     }
     return false;
+  }
+
+  bool _nodeHiddenByCollapsedPackage(String nodeId) => store.groups.any(
+    (group) =>
+        group.isPackage && group.collapsed && group.nodeIds.contains(nodeId),
+  );
+
+  NodeGroup? _collapsedPackageForNode(String nodeId) => store.groups
+      .where(
+        (group) =>
+            group.isPackage &&
+            group.collapsed &&
+            group.nodeIds.contains(nodeId),
+      )
+      .firstOrNull;
+
+  Offset _packageAnchorForEdge(
+    NodeGroup group,
+    Rect rect,
+    GraphEdge edge, {
+    required bool isSource,
+  }) {
+    final ports = isSource
+        ? packageOutputPorts(group, store.nodes, store.edges)
+        : packageInputPorts(group, store.nodes, store.edges);
+    final nodeId = isSource ? edge.source : edge.target;
+    final socketId = isSource ? edge.sourceHandle : edge.targetHandle;
+    final port = ports
+        .where((item) => item.nodeId == nodeId && item.socketId == socketId)
+        .firstOrNull;
+    return port == null
+        ? (isSource ? rect.centerRight : rect.centerLeft)
+        : packagePortAnchor(rect, ports, port, isSource: isSource);
   }
 
   /// 节点拖拽(画布层统一管理,绕开手势竞技场)
@@ -893,6 +1234,7 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   void _onNodeDragEnd(String id, {required bool single}) {
+    final moved = _dragSnapshotted;
     _draggingId = null;
     _dragIds = {};
     _dragOrigins = {};
@@ -902,6 +1244,7 @@ class NodeCanvasState extends State<NodeCanvas>
     }
     _insertPreviewEdge = null;
     _insertPreviewPoint = null;
+    if (moved) store.finishLayoutChange();
     _bump();
   }
 
@@ -923,11 +1266,15 @@ class NodeCanvasState extends State<NodeCanvas>
     return Offset.zero;
   }
 
-  // ---------------- 分组几何(与 _EdgesPainter._paintGroupFrames 一致) ----------------
+  // ---------------- Package 几何与命中 ----------------
 
   /// 分组包围盒:成员矩形 + 组内连线断点 + 14px/zoom 内边距(世界坐标;
   /// 与 _EdgesPainter._paintGroupFrames 一致)
-  Rect? _groupRect(NodeGroup g) {
+  Rect? _groupRect(NodeGroup g, {bool expandedGeometry = false}) {
+    final proxy = expandedGeometry
+        ? null
+        : packageProxyRect(g, store.nodes, store.edges);
+    if (proxy != null) return proxy;
     Rect? box;
     for (final id in g.nodeIds) {
       for (final n in store.nodes) {
@@ -961,65 +1308,29 @@ class NodeCanvasState extends State<NodeCanvas>
     );
   }
 
-  /// 返回包含 flow 点的分组 id(整个分组框内部,右键解散分组用)
+  Rect? _packageTargetRect(NodeGroup group) {
+    Rect? box;
+    for (final node in store.nodes) {
+      if (!group.nodeIds.contains(node.id)) continue;
+      final position = _conversionLayoutTargets[node.id] ?? node.position;
+      final rect = position & nodeSize(node, store.edges);
+      box = box == null ? rect : box.expandToInclude(rect);
+    }
+    if (box == null) return null;
+    return Rect.fromLTRB(
+      box.left - 14 / _zoom,
+      box.top - 22 / _zoom,
+      box.right + 14 / _zoom,
+      box.bottom + 14 / _zoom,
+    );
+  }
+
+  /// 返回包含 flow 点的 Package id。
   String? _groupAt(Offset flow) {
     for (final g in store.groups) {
+      if (!g.isPackage) continue;
       final r = _groupRect(g);
       if (r != null && r.contains(flow)) return g.id;
-    }
-    return null;
-  }
-
-  /// 将节点矩形夹到容器矩形内:超出哪一侧就向内侧平移贴边。
-  /// 若节点本身大于容器,则保持原位(已无处可夹)。
-  Offset _clampInside(Offset pos, Size nodeSize, Rect container) {
-    var dx = pos.dx;
-    var dy = pos.dy;
-    // 左边界越界 → 贴左
-    if (dx < container.left) dx = container.left;
-    // 右边界越界 → 贴右
-    if (dx + nodeSize.width > container.right) {
-      dx = container.right - nodeSize.width;
-    }
-    // 上边界越界 → 贴上
-    if (dy < container.top) dy = container.top;
-    // 下边界越界 → 贴下
-    if (dy + nodeSize.height > container.bottom) {
-      dy = container.bottom - nodeSize.height;
-    }
-    return Offset(dx, dy);
-  }
-
-  /// 命中分组顶部内嵌标签(深色小矩形 + 白字)—— 拖拽标签整体移动分组
-  String? _groupLabelAt(Offset flow) {
-    const lblH = 16.0;
-    const lblPad = 5.0;
-    const lblMargin = 6.0;
-    const lblTopOverlap = 1.0;
-    const hitPad = 2.0; // 额外点击容错
-    for (final g in store.groups) {
-      final rect = _groupRect(g);
-      if (rect == null) continue;
-      final tp = TextPainter(
-        text: TextSpan(
-          text: g.name,
-          style: TextStyle(fontSize: 12 / _zoom, fontWeight: FontWeight.w600),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout();
-      final lblHeight = lblH / _zoom;
-      final lblWidth = tp.width + 2 * lblPad / _zoom;
-      final lblL = rect.left + lblMargin / _zoom;
-      final lblT = rect.top - lblTopOverlap / _zoom;
-      // 命中区:标签矩形 + 周围 hitPad 容错
-      final hitRect = Rect.fromLTRB(
-        lblL - hitPad / _zoom,
-        lblT - hitPad / _zoom,
-        lblL + lblWidth + hitPad / _zoom,
-        lblT + lblHeight + hitPad / _zoom,
-      );
-      if (hitRect.contains(flow)) return g.id;
     }
     return null;
   }
@@ -1120,7 +1431,6 @@ class NodeCanvasState extends State<NodeCanvas>
           targetHandle: conn.socketId,
         );
       }
-      if (store.autoRun) store.runPipeline();
     } else {
       // 空白处松开:弹出新建节点菜单并携带待连线
       _menuPos = _toScreen(flowPos);
@@ -1165,7 +1475,7 @@ class NodeCanvasState extends State<NodeCanvas>
       // 第 i 个节点位置:整段(中心 ± half)内按 (i+1)/(k+1) 等分
       final t = (i + 1) / (k + 1);
       final pos = center + unit * (t - 0.5) * 2 * half;
-      final nid = store.addNode(path[i], pos);
+      final nid = store.addNode(path[i], pos, triggerRun: false);
       ids.add(nid);
       inSocks.add(cfg.inputs.first.id);
       outSocks.add(cfg.outputs.first.id);
@@ -1179,6 +1489,7 @@ class NodeCanvasState extends State<NodeCanvas>
         target: ids.first,
         sourceHandle: conn.socketId,
         targetHandle: inSocks.first,
+        triggerRun: false,
       );
       for (var i = 0; i + 1 < ids.length; i++) {
         store.onConnect(
@@ -1186,6 +1497,7 @@ class NodeCanvasState extends State<NodeCanvas>
           target: ids[i + 1],
           sourceHandle: outSocks[i],
           targetHandle: inSocks[i + 1],
+          triggerRun: false,
         );
       }
       store.onConnect(
@@ -1193,6 +1505,7 @@ class NodeCanvasState extends State<NodeCanvas>
         target: target.nodeId,
         sourceHandle: outSocks.last,
         targetHandle: target.socketId,
+        triggerRun: false,
       );
     } else {
       store.onConnect(
@@ -1200,6 +1513,7 @@ class NodeCanvasState extends State<NodeCanvas>
         target: ids.first,
         sourceHandle: target.socketId,
         targetHandle: inSocks.first,
+        triggerRun: false,
       );
       for (var i = 0; i + 1 < ids.length; i++) {
         store.onConnect(
@@ -1207,6 +1521,7 @@ class NodeCanvasState extends State<NodeCanvas>
           target: ids[i + 1],
           sourceHandle: outSocks[i],
           targetHandle: inSocks[i + 1],
+          triggerRun: false,
         );
       }
       store.onConnect(
@@ -1214,9 +1529,108 @@ class NodeCanvasState extends State<NodeCanvas>
         target: conn.nodeId,
         sourceHandle: outSocks.last,
         targetHandle: conn.socketId,
+        triggerRun: false,
       );
     }
     store.addLog('ok', '已自动插入转换节点:${logLabels.join('→')}');
+    _startConversionLayout(
+      conn.isSource
+          ? [conn.nodeId, ...ids, target.nodeId]
+          : [target.nodeId, ...ids, conn.nodeId],
+    );
+    if (store.autoRun) store.runAfterGraphChange(edgeChanged: true);
+  }
+
+  void _startConversionLayout(List<String> orderedIds) {
+    if (_conversionLayoutController.isAnimating) {
+      _conversionLayoutController.stop();
+      if (_conversionLayoutTargets.isNotEmpty) {
+        store.moveNodesTo(
+          _conversionLayoutTargets.keys.toSet(),
+          _conversionLayoutTargets,
+        );
+        store.finishLayoutChange();
+      }
+    }
+    final movingIds = orderedIds.toSet();
+    final nodesById = {for (final node in store.nodes) node.id: node};
+    final ordered = [
+      for (final id in orderedIds)
+        if (nodesById[id] != null) nodesById[id]!,
+    ];
+    if (ordered.length < 2) return;
+    final sizes = {
+      for (final node in ordered)
+        node.id: nodeSize(node, store.edges, result: store.results[node.id]),
+    };
+    final obstacles = <Rect>[];
+    for (final node in store.nodes) {
+      final size = nodeSize(node, store.edges, result: store.results[node.id]);
+      if (!movingIds.contains(node.id)) {
+        obstacles.add(node.position & size);
+      }
+    }
+
+    final first = ordered.first;
+    final last = ordered.last;
+    final firstCenter = first.position + sizes[first.id]!.center(Offset.zero);
+    final lastCenter = last.position + sizes[last.id]!.center(Offset.zero);
+    final midpoint = (firstCenter + lastCenter) / 2;
+    final delta = lastCenter - firstCenter;
+    const chainGap = 72.0;
+    final horizontal = delta.dx.abs() >= delta.dy.abs();
+    final sign = horizontal
+        ? (delta.dx < 0 ? -1.0 : 1.0)
+        : (delta.dy < 0 ? -1.0 : 1.0);
+    final totalExtent =
+        ordered.fold<double>(
+          0,
+          (sum, node) =>
+              sum +
+              (horizontal ? sizes[node.id]!.width : sizes[node.id]!.height),
+        ) +
+        chainGap * (ordered.length - 1);
+    var cursor =
+        (horizontal ? midpoint.dx : midpoint.dy) - sign * totalExtent / 2;
+    final preferred = <String, Offset>{};
+    for (final node in ordered) {
+      final size = sizes[node.id]!;
+      if (horizontal) {
+        final left = sign > 0 ? cursor : cursor - size.width;
+        preferred[node.id] = Offset(left, midpoint.dy - size.height / 2);
+        cursor += sign * (size.width + chainGap);
+      } else {
+        final top = sign > 0 ? cursor : cursor - size.height;
+        preferred[node.id] = Offset(midpoint.dx - size.width / 2, top);
+        cursor += sign * (size.height + chainGap);
+      }
+    }
+    final groupBounds = ordered
+        .map((node) => preferred[node.id]! & sizes[node.id]!)
+        .reduce((a, b) => a.expandToInclude(b));
+    final groupTarget = resolveRepulsiveNodeLayout(
+      moving: [
+        (id: '_chain', position: groupBounds.topLeft, size: groupBounds.size),
+      ],
+      obstacles: obstacles,
+      gap: 36,
+    )['_chain']!;
+    final groupShift = groupTarget - groupBounds.topLeft;
+    final targets = {
+      for (final node in ordered) node.id: preferred[node.id]! + groupShift,
+    };
+    final origins = {for (final node in ordered) node.id: node.position};
+    if (targets.entries.every((e) => origins[e.key] == e.value)) return;
+    final duration = MotionTokens.spatial(context);
+    if (duration == Duration.zero) {
+      store.moveNodesTo(movingIds, targets);
+      store.finishLayoutChange();
+      return;
+    }
+    _conversionLayoutOrigins = origins;
+    _conversionLayoutTargets = targets;
+    _conversionLayoutController.duration = duration;
+    _conversionLayoutController.forward(from: 0);
   }
 
   /// 被拖拽端口 → 目标端口类型 的最短转换链(多步);无转换路径返回 null
@@ -1247,6 +1661,7 @@ class NodeCanvasState extends State<NodeCanvas>
     best;
     var bestDist = threshold;
     for (final n in store.nodes) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       if (n.id == conn.nodeId) continue;
       final cfg = getConfig(n.configId);
       if (cfg == null) continue;
@@ -1259,7 +1674,7 @@ class NodeCanvasState extends State<NodeCanvas>
       for (var i = 0; i < rows.length; i++) {
         // 目标端口位置 = handle 中点(与起点锚点一致:输入 左-1.5 / 输出 右+1.5)
         final pos = Offset(
-          n.position.dx + (isTargetInput ? -1.5 : nodeWidth(n.configId) + 1.5),
+          n.position.dx + (isTargetInput ? -1.5 : nodeVisualWidth(n) + 1.5),
           n.position.dy + rows[i].center,
         );
         final d = (pos - flowPos).distance;
@@ -1276,6 +1691,41 @@ class NodeCanvasState extends State<NodeCanvas>
             socketId: rows[i].id,
             isSource: !isTargetInput,
             type: socks[i].type,
+            anchor: pos,
+            conversion: convertible,
+          );
+        }
+      }
+    }
+    for (final group in store.groups.reversed) {
+      if (!group.isPackage || !group.collapsed) continue;
+      if (group.nodeIds.contains(conn.nodeId)) continue;
+      final rect = packageProxyRect(group, store.nodes, store.edges);
+      if (rect == null) continue;
+      final isTargetInput = conn.isSource;
+      final ports = isTargetInput
+          ? packageInputPorts(group, store.nodes, store.edges)
+          : packageOutputPorts(group, store.nodes, store.edges);
+      for (final port in ports) {
+        final pos = packagePortAnchor(
+          rect,
+          ports,
+          port,
+          isSource: !isTargetInput,
+        );
+        final distance = (pos - flowPos).distance;
+        final compatible = isCompatible(conn.type, port.type);
+        final convertible =
+            !compatible &&
+            allowConversion &&
+            _conversionPath(conn, port.type) != null;
+        if (distance < bestDist && (compatible || convertible)) {
+          bestDist = distance;
+          best = (
+            nodeId: port.nodeId,
+            socketId: port.socketId,
+            isSource: !isTargetInput,
+            type: port.type,
             anchor: pos,
             conversion: convertible,
           );
@@ -1349,8 +1799,45 @@ class NodeCanvasState extends State<NodeCanvas>
   _handleAt(Offset flow) {
     const hw = 11.0; // handle 宽
     final m = 5.0 / _zoom; // 屏幕恒定 5px 命中边距
+    for (final group in store.groups.reversed) {
+      final rect = packageProxyRect(group, store.nodes, store.edges);
+      if (rect == null) continue;
+      final inputs = packageInputPorts(group, store.nodes, store.edges);
+      final outputs = packageOutputPorts(group, store.nodes, store.edges);
+      for (final port in inputs) {
+        final anchor = packagePortAnchor(rect, inputs, port, isSource: false);
+        if (Rect.fromCircle(
+          center: anchor,
+          radius: hw / 2 + m,
+        ).contains(flow)) {
+          return (
+            nodeId: port.nodeId,
+            socketId: port.socketId,
+            isSource: false,
+            type: port.type,
+            anchor: anchor,
+          );
+        }
+      }
+      for (final port in outputs) {
+        final anchor = packagePortAnchor(rect, outputs, port, isSource: true);
+        if (Rect.fromCircle(
+          center: anchor,
+          radius: hw / 2 + m,
+        ).contains(flow)) {
+          return (
+            nodeId: port.nodeId,
+            socketId: port.socketId,
+            isSource: true,
+            type: port.type,
+            anchor: anchor,
+          );
+        }
+      }
+    }
     // 逆序遍历:后绘制的节点位于图层上方,其端口判定区优先(与渲染顺序一致)
     for (final n in store.nodes.reversed) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final size = nodeSize(n, store.edges);
       for (final s in inputSockets(n, store.edges)) {
         final hh = handleH(portCount(n.id, s.id, store.edges));
@@ -1404,7 +1891,6 @@ class NodeCanvasState extends State<NodeCanvas>
   /// 悬停更新:端口优先(卡片动画),其次连线悬停高亮(Alt 拆分预览/普通高亮)
   void _updateHover(Offset local) {
     final flow = _toFlow(local);
-    _lastPointerFlow = flow; // Ctrl+V 粘贴定位
     NodeCanvas.lastMouseWorldPos = flow; // 同步到 static 供外部(main.dart)访问
     final h = _handleAt(flow);
     final cur = _sockHover.value;
@@ -1459,11 +1945,17 @@ class NodeCanvasState extends State<NodeCanvas>
   void _onBackgroundDown(PointerDownEvent e) {
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
+    // 缩放手柄先在子 Listener 中开启状态；祖先 Listener 收到同一个 down 时
+    // 不得再把它解释为节点拖动，否则缩放结束后会残留拖动态。
+    if (_resizingViewerId != null) return;
     // 预览窗面板内:指针事件由预览窗自身处理,画布层一律忽略
     // (防误触发清空多选/框选/Alt 划线等画布逻辑)
     if (_inMiniMap(e.position)) return;
     // 缩放控制按钮组内:指针事件由按钮自身处理,画布层一律忽略
     if (_inZoomControl(e.position)) return;
+    // 从属性输入框等控件返回画布时立即收回键盘焦点，确保 Delete/Backspace
+    // 由画布快捷键处理。此前节点虽然已选中，EditableText 仍会吞掉删除键。
+    if (e.buttons & kPrimaryButton != 0) _focusNode.requestFocus();
     _downButtons = e.buttons;
     _downPosScreen = e.localPosition;
     // 按下即结束实时预览:点击生成断点/命中节点/断点圆点等任何操作时,
@@ -1474,8 +1966,8 @@ class NodeCanvasState extends State<NodeCanvas>
       _bump();
     }
     final flow = _toFlow(e.localPosition);
-    // 右键:节点上走卡片折叠;分组框内部空白 → 分组右键菜单(取消分组/复制分组);
-    // 其余空白 → 新建节点菜单
+    // 右键:节点上走卡片折叠；Package 区域打开 Package 菜单；
+    // 其余空白打开新建节点菜单。
     if (e.buttons & kSecondaryMouseButton != 0) {
       if (_pointInAnyNode(flow)) return; // 节点上右键走卡片折叠
       final gid = _groupAt(flow);
@@ -1487,9 +1979,14 @@ class NodeCanvasState extends State<NodeCanvas>
         _bump();
         return;
       }
-      _menuPos = e.localPosition;
-      _pendingConn = null;
-      _bump();
+      final settings = SettingsStore.instance;
+      if (settings.radialNodeMenuEnabled) {
+        _beginRadialGesture(e.localPosition);
+      } else if (settings.contextNodeMenuEnabled) {
+        _menuPos = e.localPosition;
+        _pendingConn = null;
+        _bump();
+      }
       return;
     }
     // 主键命中端口 handle:开始连线拖拽(画布层命中,见 _handleAt 注释)
@@ -1513,6 +2010,7 @@ class NodeCanvasState extends State<NodeCanvas>
     // 统一管理,绕开手势竞技场)。逆序遍历:后绘制的节点在图层上方,应优先命中
     // (与渲染顺序一致)。主体内按下仅完成选中,不拖动节点。
     for (final n in store.nodes.reversed) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final size = nodeSize(n, store.edges);
       final r = n.position & size;
       if (r.contains(flow)) {
@@ -1551,32 +2049,6 @@ class NodeCanvasState extends State<NodeCanvas>
         return;
       }
     }
-    // 命中分组标签(顶部蓝色矩形):选中组内节点并整体拖动(Blender 分组语义);
-    // 快速连续两次按下(双击)标签 → 弹出重命名分组对话框
-    final gid = _groupLabelAt(flow);
-    if (gid != null) {
-      final g = store.groups.firstWhere((x) => x.id == gid);
-      final now = DateTime.now();
-      if (gid == _lastGroupLabelDownId &&
-          _lastGroupLabelDownAt != null &&
-          now.difference(_lastGroupLabelDownAt!).inMilliseconds < 400 &&
-          (flow - _lastGroupLabelDownFlow).distance < 12 / _zoom) {
-        _lastGroupLabelDownAt = null;
-        _renameGroupDialog(g);
-        return;
-      }
-      _lastGroupLabelDownAt = now;
-      _lastGroupLabelDownId = gid;
-      _lastGroupLabelDownFlow = flow;
-      final ids = g.nodeIds.toSet();
-      store.setMultiSelected(ids);
-      _downAddedNode = false;
-      _startNodeDrag(ids);
-      if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
-      store.selectEdge(null);
-      if (store.selectedEdgeId != null) store.selectEdge(null);
-      return;
-    }
     // 命中连线(无修饰键 → 取消分割点选择;Alt → 进入划线模式,给经过的连线加断点)
     if (!_ctrl && !_shift) {
       final hit = _hitEdgeAt(flow, threshold: 46 / _zoom);
@@ -1597,6 +2069,15 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   void _onBackgroundMove(PointerMoveEvent e) {
+    final resizingViewerId = _resizingViewerId;
+    if (resizingViewerId != null) {
+      _onViewerResizeUpdate(resizingViewerId, e.delta);
+      return;
+    }
+    if (_rightPressScreen != null) {
+      _updateRadialGesture(e.localPosition);
+      return;
+    }
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 预览窗拖拽进行中:画布层忽略(拖出面板后 up 位置在面板外,仍需此标志守卫)
@@ -1688,7 +2169,6 @@ class NodeCanvasState extends State<NodeCanvas>
         );
         if (_bursts.length > 16) _bursts.removeAt(0); // 手势中限长防堆积
         if (!_cutTicker.isActive) _cutTicker.start();
-        if (store.autoRun) store.runPipeline();
       }
       _bump();
       return;
@@ -1707,6 +2187,17 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   void _onBackgroundUp(PointerUpEvent e) {
+    final resizingViewerId = _resizingViewerId;
+    if (resizingViewerId != null) {
+      _onViewerResizeEnd(resizingViewerId);
+      _downPosScreen = null;
+      return;
+    }
+    if (_rightPressScreen != null) {
+      _finishRadialGesture(e.localPosition);
+      _downPosScreen = null;
+      return;
+    }
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 预览窗内的松开/预览窗拖拽结束(可能拖出面板后松开):画布层忽略,
@@ -1725,7 +2216,6 @@ class NodeCanvasState extends State<NodeCanvas>
     if (_altSweeping) {
       if (_altSweptEdges.isNotEmpty) {
         store.addLog('info', '已在 ${_altSweptEdges.length} 条曲线上插入分割点');
-        if (store.autoRun) store.runPipeline();
       }
       _altSweeping = false;
       _altSweptEdges.clear();
@@ -1798,8 +2288,13 @@ class NodeCanvasState extends State<NodeCanvas>
     final rect = Rect.fromPoints(a, b);
     final sel = <String>[];
     for (final n in store.nodes) {
+      if (_nodeHiddenByCollapsedPackage(n.id)) continue;
       final r = n.position & nodeSize(n, store.edges);
       if (rect.overlaps(r)) sel.add(n.id);
+    }
+    for (final group in store.groups) {
+      final proxy = packageProxyRect(group, store.nodes, store.edges);
+      if (proxy != null && rect.overlaps(proxy)) sel.addAll(group.nodeIds);
     }
     if (sel.isEmpty) {
       store.setMultiSelected({});
@@ -1822,8 +2317,28 @@ class NodeCanvasState extends State<NodeCanvas>
       final src = nodeMap[e.source];
       final tgt = nodeMap[e.target];
       if (src == null || tgt == null) continue;
-      final a = edgeSourceAnchor(e, src, store.edges);
-      final b = edgeTargetAnchor(e, tgt, store.edges);
+      final sourcePackage = _collapsedPackageForNode(e.source);
+      final targetPackage = _collapsedPackageForNode(e.target);
+      if (sourcePackage != null && sourcePackage.id == targetPackage?.id) {
+        continue;
+      }
+      final sourceRect = sourcePackage == null
+          ? null
+          : packageProxyRect(sourcePackage, store.nodes, store.edges);
+      final targetRect = targetPackage == null
+          ? null
+          : packageProxyRect(targetPackage, store.nodes, store.edges);
+      final a = sourceRect == null || sourcePackage == null
+          ? edgeSourceAnchor(e, src, store.edges)
+          : _packageAnchorForEdge(sourcePackage, sourceRect, e, isSource: true);
+      final b = targetRect == null || targetPackage == null
+          ? edgeTargetAnchor(e, tgt, store.edges)
+          : _packageAnchorForEdge(
+              targetPackage,
+              targetRect,
+              e,
+              isSource: false,
+            );
       final hit = closestOnEdge(a: a, b: b, mid: e.mid, p: flowPos);
       if (hit != null &&
           hit.dist < threshold &&
@@ -1870,11 +2385,23 @@ class NodeCanvasState extends State<NodeCanvas>
     // 菜单打开期间:pan 手势与 Listener 指针事件是两条独立路径,
     // 菜单弹出瞬间可能仍有残余 pan 手势在竞技场中,此处一并忽略(防反复重建)
     if (_menuPos != null) return;
+    final flow = _toFlow(d.localPosition);
+    for (final group in store.groups) {
+      if (!group.isPackage || !group.collapsed) continue;
+      final proxy = packageProxyRect(group, store.nodes, store.edges);
+      if (proxy != null && proxy.contains(flow)) {
+        _startPackageDrag(group);
+        _panFromNode = true;
+        return;
+      }
+    }
     // 记录起点是否落在节点内部:节点内部拖动不移动背景
     // (端口连线手势在节点卡内部,此处只处理冒泡到背景的 pan)
     _panFromNode = _pointInAnyNode(_toFlow(d.localPosition));
     // 节点/多选/分组拖动中(分组标签在节点外,无法靠 _pointInAnyNode 命中):绝不平移、不框选
-    if (_draggingId != null) _panFromNode = true;
+    if (_draggingId != null || _draggingPackageId != null) {
+      _panFromNode = true;
+    }
     // 连线拖拽中(handle 可能溢出节点边缘,不在节点矩形内):绝不平移、不框选
     if (_connecting != null) _panFromNode = true;
     // 分割点拖拽中:与节点拖拽同理,不平移背景、不框选(否则断点跟着画布漂移)
@@ -1893,6 +2420,14 @@ class NodeCanvasState extends State<NodeCanvas>
 
   void _onBackgroundPanUpdate(DragUpdateDetails d) {
     if (_menuPos != null) return;
+    final packageId = _draggingPackageId;
+    if (packageId != null) {
+      final group = store.groups
+          .where((item) => item.id == packageId)
+          .firstOrNull;
+      if (group != null) _updatePackageDrag(group, d.delta);
+      return;
+    }
     if (_boxDragging) {
       _boxEnd = d.localPosition;
       _bump();
@@ -1907,6 +2442,16 @@ class NodeCanvasState extends State<NodeCanvas>
 
   void _onBackgroundPanEnd(DragEndDetails d) {
     if (_menuPos != null) return;
+    final packageId = _draggingPackageId;
+    if (packageId != null) {
+      final group = store.groups
+          .where((item) => item.id == packageId)
+          .firstOrNull;
+      if (group != null) _endPackageDrag(group);
+      _panFromNode = false;
+      _bump();
+      return;
+    }
     _panFromNode = false;
     if (_boxDragging) {
       _finishBoxSelect(_boxEnd ?? _boxStart ?? Offset.zero);
@@ -1917,6 +2462,116 @@ class NodeCanvasState extends State<NodeCanvas>
     _bump();
   }
 
+  void _beginRadialGesture(Offset localPosition) {
+    _rightPressScreen = localPosition;
+    _radialPointer = localPosition;
+    _radialVisible = false;
+    _radialSection = null;
+    _radialDetail = null;
+    _radialItems = const [];
+    _radialLockedItem = null;
+    _radialDetachAnchor = null;
+    _radialHoldTimer?.cancel();
+    _radialHoldTimer = Timer(const Duration(milliseconds: 170), () {
+      if (!mounted || _rightPressScreen == null) return;
+      _radialVisible = true;
+      _updateRadialGesture(_radialPointer);
+    });
+  }
+
+  void _updateRadialGesture(Offset localPosition) {
+    final center = _rightPressScreen;
+    if (center == null) return;
+    _radialPointer = localPosition;
+    final delta = localPosition - center;
+    if (!_radialVisible && delta.distance >= 12) {
+      _radialHoldTimer?.cancel();
+      _radialVisible = true;
+    }
+    if (!_radialVisible) return;
+    if (_radialLockedItem != null) {
+      if (delta.distance < radialDeadRadius) {
+        _radialLockedItem = null;
+        _radialDetachAnchor = null;
+        _radialSection = null;
+        _radialDetail = null;
+        _radialItems = const [];
+      }
+      _bump();
+      return;
+    }
+    final section = radialSectionIndex(delta);
+    final items = section == null
+        ? const <RadialNodeItem>[]
+        : radialItemsFor(
+            radialNodeSections[section],
+            SettingsStore.instance.packageLibrary,
+          );
+    final detail = section == null
+        ? null
+        : radialDetailIndex(delta, section, items.length);
+    _radialSection = section;
+    _radialItems = items;
+    _radialDetail = detail;
+    if (delta.distance >= radialDetachRadius &&
+        detail != null &&
+        detail < items.length) {
+      _radialLockedItem = items[detail];
+      _radialDetachAnchor = radialAttachmentPoint(center, localPosition);
+    }
+    _bump();
+  }
+
+  void _finishRadialGesture(Offset localPosition) {
+    final center = _rightPressScreen;
+    if (center == null) return;
+    _radialHoldTimer?.cancel();
+    final wasVisible = _radialVisible;
+    if (wasVisible) _updateRadialGesture(localPosition);
+    final item = _radialLockedItem;
+    _rightPressScreen = null;
+    _radialVisible = false;
+    _radialSection = null;
+    _radialDetail = null;
+    _radialItems = const [];
+    _radialLockedItem = null;
+    _radialDetachAnchor = null;
+    if (item != null) {
+      if (item.isPackage) {
+        final value = SettingsStore.instance.packageLibrary
+            .where((entry) => '${entry['id']}' == item.id)
+            .firstOrNull;
+        if (value != null) {
+          store.instantiatePackage(
+            value,
+            _toFlow(localPosition) - const Offset(130, 55),
+          );
+        }
+      } else {
+        final box = context.findRenderObject();
+        if (box is RenderBox && box.hasSize) {
+          addNodeFromGlobal(item.id, box.localToGlobal(localPosition));
+          SettingsStore.instance.recordNodeUse(item.id);
+        }
+      }
+    } else if (!wasVisible && SettingsStore.instance.contextNodeMenuEnabled) {
+      _menuPos = center;
+      _pendingConn = null;
+    }
+    _bump();
+  }
+
+  void _cancelRadialGesture() {
+    _radialHoldTimer?.cancel();
+    _rightPressScreen = null;
+    _radialVisible = false;
+    _radialSection = null;
+    _radialDetail = null;
+    _radialItems = const [];
+    _radialLockedItem = null;
+    _radialDetachAnchor = null;
+  }
+
   void _closeMenu() {
     _menuPos = null;
     _pendingConn = null;
@@ -1925,27 +2580,104 @@ class NodeCanvasState extends State<NodeCanvas>
     _bump();
   }
 
-  // ---------------- 多选右键菜单动作(分组/复制/删除) ----------------
+  // ---------------- 多选右键菜单动作(Package/复制/删除) ----------------
 
-  void _groupSelection() {
+  Future<void> _packageSelection() async {
     final sel = _nodeMenuFor;
     if (sel == null || sel.length < 2) return;
-    store.createGroup(sel.toList());
+    final t = SyphonTheme.of(context);
+    final panelColor = t.isDark
+        ? const Color(0xFF34383E)
+        : const Color(0xFFE1E3E6);
+    var draftName = 'Package';
+    final name = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: .3),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: panelColor,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.black.withValues(alpha: .35),
+        shape: RoundedRectangleBorder(
+          side: BorderSide(color: t.strokeStrong),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        title: Text('创建 Package', style: TextStyle(color: t.text)),
+        content: TextFormField(
+          initialValue: draftName,
+          autofocus: true,
+          style: TextStyle(color: t.text),
+          decoration: InputDecoration(
+            labelText: 'Package 名称',
+            labelStyle: TextStyle(color: t.textDim),
+            filled: true,
+            fillColor: t.bgNode.withValues(alpha: .72),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(9),
+              borderSide: BorderSide(color: t.strokeStrong),
+            ),
+          ),
+          onChanged: (value) => draftName = value,
+          onFieldSubmitted: (value) => Navigator.of(ctx).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(draftName),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    if (name == null) return;
+    store.createPackage(sel.toList(), name);
     _closeMenu();
   }
 
-  void _ungroupSelection() {
-    final sel = _nodeMenuFor;
-    if (sel == null) return;
-    final gids = <String>{};
-    for (final id in sel) {
-      final gid = store.groupOf(id);
-      if (gid != null) gids.add(gid);
-    }
-    for (final gid in gids) {
-      store.dissolveGroup(gid);
-    }
+  void _savePackageToLibrary(String groupId) {
+    final value = store.packageTemplate(groupId);
+    if (value == null) return;
+    SettingsStore.instance.savePackage(value);
+    store.addLog('ok', 'Package 已保存到库');
     _closeMenu();
+  }
+
+  void _instantiateSavedPackage(Map<String, dynamic> value) {
+    final menu = _menuPos;
+    if (menu == null) return;
+    store.instantiatePackage(value, _toFlow(menu));
+    _closeMenu();
+  }
+
+  Widget? _savedPackageMenu() {
+    final items = SettingsStore.instance.packageLibrary;
+    if (items.isEmpty) return null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 5, 10, 3),
+          child: Text(
+            'PACKAGE 库',
+            style: TextStyle(
+              color: SyphonTheme.of(context).textFaint,
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              letterSpacing: .8,
+            ),
+          ),
+        ),
+        for (final item in items.take(8))
+          CtxMenuItem(
+            icon: Icons.inventory_2_outlined,
+            label: '${item['name'] ?? 'Package'}',
+            onTap: () => _instantiateSavedPackage(item),
+          ),
+      ],
+    );
   }
 
   void _duplicateSelection() {
@@ -1962,77 +2694,24 @@ class NodeCanvasState extends State<NodeCanvas>
     _closeMenu();
   }
 
-  // ---------------- 分组右键菜单动作(取消分组/复制分组) ----------------
-
-  void _ungroupFromGroupMenu() {
+  void _dissolvePackageFromMenu() {
     final gid = _groupMenuFor;
-    if (gid != null) store.dissolveGroup(gid);
+    if (gid != null) store.dissolvePackage(gid);
     _closeMenu();
   }
 
-  void _duplicateGroupFromMenu() {
-    final gid = _groupMenuFor;
-    if (gid != null) store.duplicateGroup(gid);
-    _closeMenu();
-  }
-
-  /// 双击分组标签 → 重命名分组
-  Future<void> _renameGroupDialog(NodeGroup g) async {
-    final controller = TextEditingController(text: g.name);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('重命名分组'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '输入分组名称'),
-          onSubmitted: (v) => Navigator.of(ctx).pop(v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    if (name != null && name.trim().isNotEmpty) {
-      store.renameGroup(g.id, name.trim());
+  void _activateViewer(String id) {
+    _focusNode.requestFocus();
+    final selected = _shift ? {...store.multiSelected, id} : <String>{id};
+    if (!setEquals(selected, store.multiSelected)) {
+      store.setMultiSelected(selected);
     }
-  }
-
-  // ---------------- Ctrl+C / Ctrl+V 复制粘贴(节点/节点组) ----------------
-
-  /// Ctrl+C:复制多选(或单选)节点;所选构成完整分组的节点,分组信息一并复制
-  void _copySelection() {
-    final sel = store.multiSelected.isNotEmpty
-        ? store.multiSelected
-        : (store.selectedId != null ? {store.selectedId!} : <String>{});
-    if (sel.isEmpty) return;
-    store.copySelection(sel);
-  }
-
-  /// Ctrl+V:在鼠标当前位置粘贴剪贴板内容(节点/节点组);无鼠标记录时用视口中心
-  void _pasteSelection() {
-    if (!store.hasClipboard) return;
-    final anchor = _lastPointerFlow == Offset.zero
-        ? Offset(
-            (_canvasSize.width / 2 - _pan.dx) / _zoom,
-            (_canvasSize.height / 2 - _pan.dy) / _zoom,
-          )
-        : _lastPointerFlow;
-    store.pasteAt(anchor);
+    if (store.selectedSplitEdgeId != null) store.selectSplitEdge(null);
+    if (store.selectedEdgeId != null) store.selectEdge(null);
   }
 
   void _pickNode(String configId) {
     final menuPos = _menuPos;
-    final targetGroup = _groupMenuFor;
     _menuPos = null;
     _groupMenuFor = null;
     if (menuPos == null) return;
@@ -2041,33 +2720,6 @@ class NodeCanvasState extends State<NodeCanvas>
 
     store.addNode(configId, initPos);
     final newNodeId = store.selectedId;
-
-    // 分组内右键新建节点 → 自动并入分组 + 边界夹紧(贴边不越界)
-    if (targetGroup != null && newNodeId != null) {
-      NodeGroup? g;
-      for (final x in store.groups) {
-        if (x.id == targetGroup) {
-          g = x;
-          break;
-        }
-      }
-      if (g != null) {
-        // 在入组前先夹紧位置(此时 group rect 不含新节点,正好作为边界)
-        final gRect = _groupRect(g);
-        if (gRect != null) {
-          final newNode = store.nodes.firstWhere(
-            (n) => n.id == newNodeId,
-            orElse: () => store.nodes.first,
-          );
-          final size = nodeSize(newNode, store.edges);
-          final clamped = _clampInside(initPos, size, gRect);
-          if (clamped != initPos) {
-            store.moveNode(newNodeId, clamped);
-          }
-        }
-        store.addNodeToGroup(newNodeId, targetGroup);
-      }
-    }
 
     final pc = _pendingConn;
     if (pc != null && newNodeId != null) {
@@ -2092,7 +2744,6 @@ class NodeCanvasState extends State<NodeCanvas>
     }
     _pendingConn = null;
     _connecting = null;
-    if (store.autoRun) store.runPipeline();
     _bump();
   }
 
@@ -2196,8 +2847,11 @@ class NodeCanvasState extends State<NodeCanvas>
 
   @override
   void dispose() {
+    _radialHoldTimer?.cancel();
     _cutTicker.dispose();
+    _conversionLayoutController.dispose();
     _zoomNotifier.dispose();
+    _dropPreview.dispose();
     _sockHover.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -2266,8 +2920,45 @@ class NodeCanvasState extends State<NodeCanvas>
 
   // ---------------- 交互回调装配 ----------------
 
-  NodeCardCallbacks get _cardCallbacks =>
-      NodeCardCallbacks(onSelect: _onSelect, onSecondaryTap: _onSecondaryTap);
+  NodeCardCallbacks get _cardCallbacks => NodeCardCallbacks(
+    onSelect: _onSelect,
+    onActivateViewer: _activateViewer,
+    onSecondaryTap: _onSecondaryTap,
+    onResizeStart: _onViewerResizeStart,
+    onResizeUpdate: _onViewerResizeUpdate,
+    onResizeEnd: _onViewerResizeEnd,
+  );
+
+  void _onViewerResizeStart(String id) {
+    _activateViewer(id);
+    _draggingId = null;
+    _dragIds = {};
+    _dragOrigins = {};
+    _resizingViewerId = id;
+    _viewerResizeSnapshotted = false;
+  }
+
+  void _onViewerResizeUpdate(String id, Offset screenDelta) {
+    if (_resizingViewerId != id) return;
+    final node = store.nodeOf(id);
+    if (node == null) return;
+    if (!_viewerResizeSnapshotted && screenDelta != Offset.zero) {
+      store.snapshotNow();
+      _viewerResizeSnapshotted = true;
+    }
+    store.resizeViewerNode(
+      id,
+      nodeVisualWidth(node) + screenDelta.dx / _zoom,
+      nodeViewerHeight(node) + screenDelta.dy / _zoom,
+    );
+  }
+
+  void _onViewerResizeEnd(String id) {
+    if (_resizingViewerId != id) return;
+    _resizingViewerId = null;
+    _viewerResizeSnapshotted = false;
+    store.finishLayoutChange();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2283,8 +2974,88 @@ class NodeCanvasState extends State<NodeCanvas>
         clipBehavior: Clip.none,
         children: [
           Positioned.fill(child: _buildCanvasLayer(t)),
-          if (_menuPos != null) _buildMenuLayer(),
+          _buildExternalDropPreview(t),
+          Positioned.fill(
+            child: AnimatedSwitcher(
+              duration: MotionTokens.standard(context),
+              reverseDuration: MotionTokens.quick(context),
+              switchInCurve: MotionTokens.emphasized,
+              switchOutCurve: MotionTokens.exit,
+              child: !_radialVisible || _rightPressScreen == null
+                  ? const SizedBox.shrink(
+                      key: ValueKey('radial-node-menu-empty'),
+                    )
+                  : RadialNodeMenu(
+                      key: const ValueKey('radial-node-menu-visible'),
+                      center: _rightPressScreen!,
+                      pointer: _radialPointer,
+                      sectionIndex: _radialSection,
+                      detailIndex: _radialDetail,
+                      detailItems: _radialItems,
+                      lockedItem: _radialLockedItem,
+                      detachAnchor: _radialDetachAnchor,
+                    ),
+            ),
+          ),
+          Positioned.fill(
+            child: AnimatedSwitcher(
+              duration: MotionTokens.standard(context),
+              reverseDuration: MotionTokens.quick(context),
+              switchInCurve: MotionTokens.emphasized,
+              switchOutCurve: MotionTokens.exit,
+              transitionBuilder: (child, animation) =>
+                  PopupMotionScope(animation: animation, child: child),
+              child: _menuPos == null
+                  ? const SizedBox.shrink(key: ValueKey('canvas-menu-empty'))
+                  : KeyedSubtree(
+                      key: const ValueKey('canvas-menu-visible'),
+                      child: _buildMenuLayer(),
+                    ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildExternalDropPreview(SyphonTheme t) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _dropPreview,
+          builder: (context, _) {
+            final preview = _dropPreview.value;
+            if (preview == null) return const SizedBox.shrink();
+            final color = preview.accepted ? preview.color : t.textFaint;
+            return Stack(
+              children: [
+                Positioned(
+                  left: preview.local.dx - 25,
+                  top: preview.local.dy - 25,
+                  child: Container(
+                    key: const Key('canvas-node-drop-preview'),
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: color.withValues(alpha: .09),
+                      border: Border.all(
+                        color: color.withValues(alpha: .72),
+                        width: 1.5,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: color.withValues(alpha: .24),
+                          blurRadius: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -2353,6 +3124,13 @@ class NodeCanvasState extends State<NodeCanvas>
         builder: (context, _) {
           final nodes = store.nodes;
           final edges = store.edges;
+          final selected = store.selectedId;
+          final paintNodes = selected == null
+              ? nodes
+              : [
+                  ...nodes.where((node) => node.id != selected),
+                  ...nodes.where((node) => node.id == selected),
+                ];
           return Transform(
             transform: Matrix4.identity()
               ..translateByDouble(_pan.dx, _pan.dy, 0, 1)
@@ -2362,8 +3140,16 @@ class NodeCanvasState extends State<NodeCanvas>
               clipBehavior: Clip.none,
               children: [
                 _buildBgLayer(t),
+                for (final group in store.groups)
+                  if (group.isPackage) _buildPackageBackgroundLayer(group, t),
                 _buildEdgesLayer(t, nodes, edges),
-                for (final n in nodes) _buildNodeLayer(n),
+                for (final n in paintNodes) _buildNodeLayer(n),
+                // Keep collapsed Package proxies above their hidden members so
+                // the whole card, including its expand button, remains hittable.
+                for (final group in store.groups)
+                  if (group.isPackage) _buildPackageLayer(group, t),
+                for (final group in store.groups)
+                  if (group.isPackage) _buildExpandedPackageToggle(group, t),
               ],
             ),
           );
@@ -2396,10 +3182,13 @@ class NodeCanvasState extends State<NodeCanvas>
     List<GraphEdge> edges,
   ) {
     return Positioned.fill(
-      child: RepaintBoundary(
-        child: CustomPaint(
-          painter: _buildEdgePainter(t, nodes, edges),
-          size: Size.infinite,
+      child: AnimatedBuilder(
+        animation: store.layoutRevision,
+        builder: (context, _) => RepaintBoundary(
+          child: CustomPaint(
+            painter: _buildEdgePainter(t, store.nodes, store.edges),
+            size: Size.infinite,
+          ),
         ),
       ),
     );
@@ -2456,13 +3245,479 @@ class NodeCanvasState extends State<NodeCanvas>
 
   /// 单节点卡片层(独立 RepaintBoundary:hover/拖拽只重绘该卡片层)
   Widget _buildNodeLayer(GraphNode n) {
-    return Positioned(
-      left: n.position.dx,
-      top: n.position.dy,
+    return AnimatedBuilder(
+      key: ValueKey('node-layer-${n.id}'),
+      animation: store.layoutRevision,
       child: CanvasZoom(
         notifier: _zoomNotifier,
         child: RepaintBoundary(
-          child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
+          child: TweenAnimationBuilder<double>(
+            key: ValueKey('node-entry-${n.id}'),
+            tween: Tween(begin: 0.0, end: 1.0),
+            duration: MotionTokens.spatial(context),
+            curve: MotionTokens.emphasized,
+            builder: (context, value, child) => BlurScaleTransition(
+              animation: AlwaysStoppedAnimation(value),
+              alignment: Alignment.topLeft,
+              child: child!,
+            ),
+            child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
+          ),
+        ),
+      ),
+      builder: (context, child) {
+        final current = store.nodes
+            .where((node) => node.id == n.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final package = store.groups
+            .where(
+              (group) => group.isPackage && group.nodeIds.contains(current.id),
+            )
+            .firstOrNull;
+        if (package == null) {
+          return Transform.translate(offset: current.position, child: child);
+        }
+        final hidden = package.collapsed;
+        return TweenAnimationBuilder<double>(
+          key: ValueKey('package-member-motion-${current.id}'),
+          tween: Tween(end: hidden ? 0 : 1),
+          duration: MotionTokens.spatial(context),
+          curve: MotionTokens.emphasized,
+          builder: (context, value, positionedChild) => IgnorePointer(
+            ignoring: hidden,
+            child: Opacity(
+              opacity: value,
+              child: Transform.scale(
+                scale: .94 + .06 * value,
+                alignment: Alignment.topLeft,
+                child: positionedChild,
+              ),
+            ),
+          ),
+          child: Transform.translate(offset: current.position, child: child),
+        );
+      },
+    );
+  }
+
+  Widget _buildPackageBackgroundLayer(NodeGroup group, SyphonTheme t) {
+    return AnimatedBuilder(
+      key: ValueKey('package-region-layout-${group.id}'),
+      animation: store.layoutRevision,
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final isExpanding =
+            _conversionLayoutController.isAnimating &&
+            _conversionLayoutTargets.keys.any(current.nodeIds.contains);
+        // During repulsive expansion the nodes move every frame. Anchor the
+        // control to the final frame so it cannot slide out from under a click.
+        final rect = isExpanding
+            ? _packageTargetRect(current)
+            : _groupRect(current, expandedGeometry: true);
+        if (rect == null) return const SizedBox.shrink();
+        return Positioned(
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              key: ValueKey('package-region-${current.id}'),
+              opacity: current.collapsed ? 0 : 1,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: AnimatedScale(
+                scale: current.collapsed ? .97 : 1,
+                duration: MotionTokens.spatial(context),
+                curve: MotionTokens.emphasized,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _PackageRegionPainter(
+                          color: const Color(0xFF8A9099),
+                          zoom: _zoom,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 7 / _zoom,
+                      top: 5 / _zoom,
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 6 / _zoom,
+                          vertical: 2 / _zoom,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF777D86).withValues(alpha: .88),
+                          borderRadius: BorderRadius.circular(4 / _zoom),
+                        ),
+                        child: Text(
+                          current.name,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 11 / _zoom,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildExpandedPackageToggle(NodeGroup group, SyphonTheme t) {
+    return AnimatedBuilder(
+      key: ValueKey('package-expanded-control-layout-${group.id}'),
+      animation: store.layoutRevision,
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final isExpanding =
+            _conversionLayoutController.isAnimating &&
+            _conversionLayoutTargets.keys.any(current.nodeIds.contains);
+        final rect = isExpanding
+            ? _packageTargetRect(current)
+            : _groupRect(current, expandedGeometry: true);
+        if (rect == null) return const SizedBox.shrink();
+        final size = 24 / _zoom;
+        return Positioned(
+          left: rect.right - size - 6 / _zoom,
+          top: rect.top + 5 / _zoom,
+          width: size,
+          height: size,
+          child: IgnorePointer(
+            ignoring: current.collapsed,
+            child: AnimatedOpacity(
+              opacity: current.collapsed ? 0 : 1,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: Tooltip(
+                message: '收起 Package',
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    key: ValueKey('package-toggle-expanded-${current.id}'),
+                    behavior: HitTestBehavior.opaque,
+                    onTapDown: (_) => _collapsePackage(current),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8A9099).withValues(alpha: .2),
+                        borderRadius: BorderRadius.circular(6 / _zoom),
+                        border: Border.all(
+                          color: const Color(0xFF8A9099).withValues(alpha: .5),
+                          width: 1 / _zoom,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.unfold_less_rounded,
+                        size: 15 / _zoom,
+                        color: t.textDim,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPackageLayer(NodeGroup group, SyphonTheme t) {
+    return AnimatedBuilder(
+      key: ValueKey('package-layout-${group.id}'),
+      animation: store.layoutRevision,
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final compact = current.copyWith(collapsed: true);
+        final rect = packageProxyRect(compact, store.nodes, store.edges);
+        if (rect == null) return const SizedBox.shrink();
+        final selected = current.nodeIds.every(store.multiSelected.contains);
+        final inputs = packageInputPorts(current, store.nodes, store.edges);
+        final outputs = packageOutputPorts(current, store.nodes, store.edges);
+        final members = [
+          for (final node in store.nodes)
+            if (current.nodeIds.contains(node.id)) node,
+        ];
+        return Positioned(
+          key: ValueKey('package-node-${group.id}'),
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: IgnorePointer(
+            ignoring: !current.collapsed,
+            child: AnimatedOpacity(
+              opacity: current.collapsed ? 1 : 0,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: AnimatedScale(
+                scale: current.collapsed ? 1 : .92,
+                duration: MotionTokens.spatial(context),
+                curve: MotionTokens.emphasized,
+                alignment: Alignment.topLeft,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.move,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      _focusNode.requestFocus();
+                      store.setMultiSelected(current.nodeIds.toSet());
+                    },
+                    child: AnimatedContainer(
+                      duration: MotionTokens.standard(context),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8A9099).withValues(alpha: .12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: selected ? t.accent : const Color(0xFF8A9099),
+                          width: selected ? 2 : 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: .12),
+                            blurRadius: 18,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(11),
+                        child: BackdropFilter(
+                          filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              Positioned(
+                                left: 10,
+                                top: 10,
+                                child: Text(
+                                  inputs.isEmpty ? '无前置输入' : '前置输入',
+                                  key: ValueKey(
+                                    'package-input-label-${group.id}',
+                                  ),
+                                  style: TextStyle(
+                                    color: t.textFaint,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 10,
+                                top: 10,
+                                child: Text(
+                                  outputs.isEmpty ? '无后续输出' : '后续输出',
+                                  key: ValueKey(
+                                    'package-output-label-${group.id}',
+                                  ),
+                                  style: TextStyle(
+                                    color: t.textFaint,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              for (
+                                var index = 0;
+                                index < inputs.length;
+                                index++
+                              )
+                                _packagePortVisual(
+                                  inputs[index],
+                                  index,
+                                  isSource: false,
+                                  theme: t,
+                                ),
+                              for (
+                                var index = 0;
+                                index < outputs.length;
+                                index++
+                              )
+                                _packagePortVisual(
+                                  outputs[index],
+                                  index,
+                                  isSource: true,
+                                  theme: t,
+                                ),
+                              Positioned(
+                                left: 72,
+                                right: 72,
+                                top: 27,
+                                bottom: 8,
+                                child: RepaintBoundary(
+                                  key: ValueKey(
+                                    'package-glass-overview-${current.id}',
+                                  ),
+                                  child: ImageFiltered(
+                                    imageFilter: ui.ImageFilter.blur(
+                                      sigmaX: .75,
+                                      sigmaY: .75,
+                                    ),
+                                    child: CustomPaint(
+                                      painter: _PackageOverviewPainter(
+                                        nodes: members,
+                                        edges: store.edges,
+                                        color: const Color(0xFF737983),
+                                        revision: store.layoutRevision.value,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                left: 86,
+                                right: 86,
+                                bottom: 13,
+                                child: IgnorePointer(
+                                  child: Text(
+                                    '${current.name} · ${current.nodeIds.length}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: t.text,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                      shadows: [
+                                        Shadow(
+                                          color: t.bgNode.withValues(alpha: .9),
+                                          blurRadius: 5,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                right: 8,
+                                bottom: 8,
+                                child: Tooltip(
+                                  message: '展开 Package',
+                                  child: MouseRegion(
+                                    cursor: SystemMouseCursors.click,
+                                    child: GestureDetector(
+                                      key: ValueKey(
+                                        'package-toggle-${current.id}',
+                                      ),
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () => _expandPackage(current),
+                                      child: Container(
+                                        width: 28,
+                                        height: 24,
+                                        decoration: BoxDecoration(
+                                          color: const Color(
+                                            0xFF8A9099,
+                                          ).withValues(alpha: .16),
+                                          borderRadius: BorderRadius.circular(
+                                            7,
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.unfold_more_rounded,
+                                          size: 16,
+                                          color: Color(0xFF737983),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Positioned(
+                                left: 92,
+                                right: 92,
+                                top: 7,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.drag_indicator_rounded,
+                                      size: 12,
+                                      color: t.textFaint,
+                                    ),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      '拖动区域',
+                                      style: TextStyle(
+                                        color: t.textFaint,
+                                        fontSize: 8,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _packagePortVisual(
+    PackagePort port,
+    int index, {
+    required bool isSource,
+    required SyphonTheme theme,
+  }) {
+    final dot = Container(
+      width: 11,
+      height: 11,
+      decoration: BoxDecoration(
+        color: socketColor(port.type),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: theme.bgSurface, width: 1),
+      ),
+    );
+    final label = Flexible(
+      child: Text(
+        port.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: theme.textDim, fontSize: 9),
+      ),
+    );
+    return Positioned(
+      key: ValueKey(
+        'package-${isSource ? 'output' : 'input'}-${port.nodeId}-${port.socketId}',
+      ),
+      left: isSource ? null : -5.5,
+      right: isSource ? -5.5 : null,
+      top: 37.5 + index * 22,
+      width: 82,
+      height: 18,
+      child: IgnorePointer(
+        child: Row(
+          mainAxisAlignment: isSource
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: isSource
+              ? [label, const SizedBox(width: 5), dot]
+              : [dot, const SizedBox(width: 5), label],
         ),
       ),
     );
@@ -2493,7 +3748,7 @@ class NodeCanvasState extends State<NodeCanvas>
       right: 14,
       bottom: 14,
       child: AnimatedBuilder(
-        animation: store,
+        animation: Listenable.merge([store, store.layoutRevision]),
         builder: (context, _) => MiniMapView(
           key: _miniMapKey,
           nodes: store.nodes,
@@ -2558,14 +3813,13 @@ class NodeCanvasState extends State<NodeCanvas>
   }
 
   /// 菜单层:与画布层平级,独立指针链。
-  /// 分组内右键 → NodeMenu(新建节点 + 自动入组) + 底部"取消分组/复制分组";
-  /// 多选右键 → NodeContextMenu(分组/复制/删除);空白 → NodeMenu(新建节点)
+  /// Package 右键 → Package 菜单；多选右键 → Package/复制/删除；
+  /// 空白 → NodeMenu(新建节点)。
   Widget _buildMenuLayer() {
     final nodeMenu = _nodeMenuFor;
     final groupMenuId = _groupMenuFor;
     Widget? menu;
     if (groupMenuId != null) {
-      // 分组内右键:合并菜单 = 新建节点 + 底部分组操作
       NodeGroup? g;
       for (final x in store.groups) {
         if (x.id == groupMenuId) {
@@ -2573,40 +3827,22 @@ class NodeCanvasState extends State<NodeCanvas>
           break;
         }
       }
-      if (g != null) {
-        menu = NodeMenu(
+      if (g != null && g.isPackage) {
+        menu = PackageContextMenu(
           position: _menuPos!,
-          onPick: _pickNode,
-          onClose: _closeMenu,
-          bottomSlot: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              CtxMenuItem(
-                icon: Icons.group_remove_outlined,
-                label: L.t('取消分组'),
-                onTap: _ungroupFromGroupMenu,
-              ),
-              CtxMenuItem(
-                icon: Icons.copy_outlined,
-                label: L.t('复制分组'),
-                onTap: _duplicateGroupFromMenu,
-              ),
-            ],
-          ),
+          onSave: () => _savePackageToLibrary(g!.id),
+          onDissolve: _dissolvePackageFromMenu,
         );
       }
     } else if (nodeMenu != null) {
       menu = NodeContextMenu(
         position: _menuPos!,
-        canGroup: nodeMenu.length >= 2,
-        canUngroup: nodeMenu.any((id) => store.groupOf(id) != null),
+        canPackage: nodeMenu.length >= 2,
         onRunNode: () {
           store.runPipelineDirty(nodeMenu);
           _closeMenu();
         },
-        onGroup: _groupSelection,
-        onUngroup: _ungroupSelection,
+        onPackage: _packageSelection,
         onDuplicate: _duplicateSelection,
         onDelete: _deleteSelectionFromMenu,
       );
@@ -2615,15 +3851,14 @@ class NodeCanvasState extends State<NodeCanvas>
         position: _menuPos!,
         onPick: _pickNode,
         onClose: _closeMenu,
+        bottomSlot: _savedPackageMenu(),
       );
     }
-    return Positioned.fill(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _closeMenu,
-        onSecondaryTap: _closeMenu,
-        child: Stack(clipBehavior: Clip.none, children: [?menu]),
-      ),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _closeMenu,
+      onSecondaryTap: _closeMenu,
+      child: Stack(clipBehavior: Clip.none, children: [?menu]),
     );
   }
 
@@ -2654,21 +3889,9 @@ class NodeCanvasState extends State<NodeCanvas>
       _bump();
       return KeyEventResult.handled;
     }
-    // Ctrl+C 复制所选(节点/节点组)/ Ctrl+V 粘贴(仅 down 触发一次,repeat 忽略)
-    if (event is KeyDownEvent &&
-        (HardwareKeyboard.instance.isControlPressed ||
-            HardwareKeyboard.instance.isMetaPressed)) {
-      if (event.logicalKey == LogicalKeyboardKey.keyC) {
-        _copySelection();
-        return KeyEventResult.handled;
-      }
-      if (event.logicalKey == LogicalKeyboardKey.keyV) {
-        _pasteSelection();
-        return KeyEventResult.handled;
-      }
-    }
     if (event is KeyDownEvent || event is KeyRepeatEvent) {
-      if (event.logicalKey == LogicalKeyboardKey.delete ||
+      if (SettingsStore.instance.matchesShortcut('delete', event) ||
+          event.logicalKey == LogicalKeyboardKey.delete ||
           event.logicalKey == LogicalKeyboardKey.backspace) {
         // 节点菜单打开期间(焦点在搜索框,已被上方 _focusInTextField 守卫放行;
         // 此分支仅覆盖焦点仍在画布的兜底场景):退格/删除不删除选中节点。
@@ -2677,7 +3900,10 @@ class NodeCanvasState extends State<NodeCanvas>
         return KeyEventResult.handled;
       }
       if (event.logicalKey == LogicalKeyboardKey.escape) {
-        if (_menuPos != null) {
+        if (_rightPressScreen != null || _radialVisible) {
+          _cancelRadialGesture();
+          _bump();
+        } else if (_menuPos != null) {
           _closeMenu();
         } else {
           store.selectNode(null);
@@ -2703,6 +3929,12 @@ class NodeCanvasState extends State<NodeCanvas>
 
   /// 指针取消(如窗口失焦):清理连线拖拽状态,避免残留预览线
   void _onPointerCancel(PointerCancelEvent e) {
+    final resizingViewerId = _resizingViewerId;
+    if (resizingViewerId != null) _onViewerResizeEnd(resizingViewerId);
+    if (_rightPressScreen != null || _radialVisible) {
+      _cancelRadialGesture();
+      _bump();
+    }
     if (_connecting != null || _connectDownScreen != null) {
       _connecting = null;
       _connectDownScreen = null;
@@ -2726,6 +3958,14 @@ class NodeCanvasState extends State<NodeCanvas>
 
   /// pan 手势取消:清理框选状态
   void _onBackgroundPanCancel() {
+    final packageId = _draggingPackageId;
+    if (packageId != null) {
+      final group = store.groups
+          .where((item) => item.id == packageId)
+          .firstOrNull;
+      if (group != null) _endPackageDrag(group);
+    }
+    _panFromNode = false;
     _boxDragging = false;
     _boxStart = null;
     _boxEnd = null;

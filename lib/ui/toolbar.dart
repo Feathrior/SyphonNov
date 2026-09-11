@@ -39,6 +39,7 @@ import '../i18n.dart';
 import '../models/presets.dart';
 import '../store/graph_store.dart';
 import '../store/settings_store.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 // ════════════════════════════════════════════════════════════════════
@@ -191,16 +192,20 @@ class Toolbar extends StatelessWidget {
   }
 
   /// 勾选菜单项(内置 ✓ 勾选位,如"框选模式")
-  fluent.ToggleMenuFlyoutItem _mCheck(
+  fluent.MenuFlyoutItem _mCheck(
     SyphonTheme t,
     String label,
     bool checked,
     VoidCallback onToggle,
   ) {
-    return fluent.ToggleMenuFlyoutItem(
+    return fluent.MenuFlyoutItem(
+      leading: Icon(
+        checked ? Icons.check_rounded : null,
+        size: 16,
+        color: t.accent,
+      ),
       text: Text(label),
-      value: checked,
-      onChanged: (_) => onToggle(),
+      onPressed: onToggle,
     );
   }
 
@@ -272,14 +277,14 @@ class Toolbar extends StatelessWidget {
         t,
         L.t('撤销'),
         icon: Icons.undo,
-        shortcut: 'Ctrl+Z',
+        shortcut: SettingsStore.instance.shortcutFor('undo'),
         onTap: () => GraphStore.instance.undo(),
       ),
       _mItem(
         t,
         L.t('重做'),
         icon: Icons.redo,
-        shortcut: 'Ctrl+Y',
+        shortcut: SettingsStore.instance.shortcutFor('redo'),
         onTap: () => GraphStore.instance.redo(),
       ),
       _mDivider(t),
@@ -435,7 +440,7 @@ class Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Text('Syphon v0.3.3', style: const TextStyle(fontSize: 15)),
+            Text('SyphonNov v0.4.3', style: const TextStyle(fontSize: 15)),
           ],
         ),
         content: Text(
@@ -520,10 +525,48 @@ class _MenuButtonState extends State<_MenuButton> {
         dismissOnPointerMoveAway: true,
         placementMode: fluent.FlyoutPlacementMode.bottomLeft,
         additionalOffset: 2,
-        builder: (context) => fluent.MenuFlyout(items: widget.items),
+        transitionDuration: MotionTokens.standard(context),
+        reverseTransitionDuration: MotionTokens.quick(context),
+        transitionCurve: MotionTokens.emphasized,
+        transitionBuilder: (context, animation, placement, child) =>
+            BlurScaleTransition(
+              animation: CurvedAnimation(
+                parent: animation,
+                curve: MotionTokens.emphasized,
+                reverseCurve: MotionTokens.exit,
+              ),
+              alignment: Alignment.topLeft,
+              child: child,
+            ),
+        builder: (context) => fluent.MenuFlyout(items: _closeableItems()),
       );
     }
   }
+
+  /// 由本按钮的 controller 先关闭浮层，再执行动作。这样会触发父级
+  /// setState 的菜单项也不会在退出动画中重建并滞留。
+  List<fluent.MenuFlyoutItemBase> _closeableItems() => [
+    for (final item in widget.items)
+      if (item is fluent.MenuFlyoutItem)
+        fluent.MenuFlyoutItem(
+          key: item.key,
+          text: item.text,
+          leading: item.leading,
+          trailing: item.trailing,
+          selected: item.selected,
+          focusNode: item.focusNode,
+          closeAfterClick: false,
+          onLongPress: item.onLongPress,
+          onPressed: item.onPressed == null
+              ? null
+              : () {
+                  _controller.close();
+                  item.onPressed!.call();
+                },
+        )
+      else
+        item,
+  ];
 
   // 用 Listener 手动接管点击(绕开手势竞技场):工具栏外层 DragToMoveArea
   // 的 pan/双击识别器会抢占普通 GestureDetector 的 tap,导致单击无响应。

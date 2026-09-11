@@ -6,7 +6,7 @@ import 'dart:math' as math;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
-import 'package:flutter/gestures.dart' show PointerScrollEvent;
+import 'package:flutter/gestures.dart' show GestureBinding, PointerScrollEvent;
 import 'package:flutter/material.dart';
 
 import '../i18n.dart';
@@ -16,6 +16,7 @@ import '../models/data.dart' as md;
 import '../models/exec_engine.dart';
 import '../models/registry.dart';
 import '../store/graph_store.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 // ==================== 输出描述 ====================
@@ -50,6 +51,314 @@ String _describeOutput(md.DataObject? obj) {
     return '$v 段渐变 ${obj.min ?? ''}~${obj.max ?? ''}${obj.horizontal == false ? '(垂直)' : ''}';
   }
   return '';
+}
+
+/// 数值属性的滚轮步进。上滚增大、下滚减小，缺少任一边界时仍可工作。
+double numericWheelValue(
+  md.ParamSpec spec,
+  double current,
+  double scrollDelta, {
+  double? maxOverride,
+}) {
+  final count = (scrollDelta.abs() / 24).ceil().clamp(1, 12);
+  final direction = scrollDelta < 0 ? 1 : -1;
+  final step = spec.step != null && spec.step! > 0
+      ? spec.step!
+      : _numericWheelUnit(current);
+  var next = current + direction * count * step;
+  if (spec.step != null && spec.step! > 0) {
+    next = (next / spec.step!).round() * spec.step!;
+  }
+  if (spec.min != null) next = math.max(spec.min!, next);
+  final max = maxOverride ?? spec.max;
+  if (max != null) next = math.min(max, next);
+  return next;
+}
+
+double _numericWheelUnit(double current) {
+  final magnitude = current.abs();
+  if (magnitude < 1e-12) return 1;
+  return math.pow(10, (math.log(magnitude) / math.ln10).floor()).toDouble();
+}
+
+const Map<String, Set<String>> kAxisPropertyGroups = {
+  '基础': {'name', 'dim', 'axisVisibility', 'axisOrigin'},
+  '尺寸与比例': {'xLen', 'yLen', 'zLen', 'aspectMode'},
+  '范围与尺度': {
+    'xScale',
+    'yScale',
+    'zScale',
+    'symlogThreshold',
+    'xStart',
+    'xEnd',
+    'yStart',
+    'yEnd',
+    'zStart',
+    'zEnd',
+  },
+  '坐标轴与网格': {
+    'showBorder',
+    'axisColorX',
+    'axisColorY',
+    'axisColorZ',
+    'axisWidthX',
+    'axisWidthY',
+    'axisWidthZ',
+    'gridX',
+    'gridY',
+    'gridZ',
+    'labelX',
+    'labelY',
+    'labelZ',
+    'arrowX',
+    'arrowY',
+  },
+  '三维视角': {'rotX', 'rotY', 'rotZ'},
+  '场景外观': {'fontSize', 'fontFamily', 'colorPreset', 'bgColor'},
+  '图例': {
+    'legendMode',
+    'legendPosition',
+    'legendGrouping',
+    'legendOrder',
+    'legendHidden',
+  },
+  '论文导出': {
+    'exportPreset',
+    'exportUnit',
+    'exportWidth',
+    'exportHeight',
+    'exportDpi',
+    'fontExportStrategy',
+  },
+};
+
+const List<String> kGenericPropertyGroupOrder = [
+  '基础',
+  '数据与计算',
+  '范围与精度',
+  '外观',
+  '导入导出',
+];
+
+String propertyGroupForParam(md.ParamSpec spec) {
+  final key = spec.key.toLowerCase();
+  bool hasAny(Iterable<String> words) => words.any(key.contains);
+
+  if (hasAny([
+    'file',
+    'path',
+    'header',
+    'delimiter',
+    'encoding',
+    'sheet',
+    'export',
+    'dpi',
+  ])) {
+    return '导入导出';
+  }
+  if (((key == 'rows' || key == 'columns') && spec.defaultValue is num) ||
+      hasAny([
+        'min',
+        'max',
+        'start',
+        'end',
+        'step',
+        'sample',
+        'resolution',
+        'tolerance',
+        'iteration',
+        'degree',
+        'bandwidth',
+        'bins',
+        'budget',
+        'depth',
+        'seed',
+      ])) {
+    return '范围与精度';
+  }
+  if (key.endsWith('col') ||
+      key.contains('column') ||
+      hasAny([
+        'expr',
+        'formula',
+        'method',
+        'operation',
+        'normalize',
+        'missing',
+        'threshold',
+        'stat',
+        'source',
+        'target',
+      ])) {
+    return '数据与计算';
+  }
+  if (hasAny([
+    'color',
+    'opacity',
+    'width',
+    'size',
+    'style',
+    'shape',
+    'font',
+    'label',
+    'legend',
+    'display',
+    'show',
+    'visible',
+    'marker',
+    'line',
+    'blend',
+    'wireframe',
+  ])) {
+    return '外观';
+  }
+  return '基础';
+}
+
+/// 不使用高度动画的属性分栏。展开时只做一次布局，避免大量 Fluent
+/// Slider/TextBox 在 AnimatedSize 中逐帧重新测量。
+class _PropertyDisclosure extends StatefulWidget {
+  final SyphonTheme theme;
+  final String title;
+  final List<Widget> children;
+  final bool initiallyExpanded;
+
+  const _PropertyDisclosure({
+    super.key,
+    required this.theme,
+    required this.title,
+    required this.children,
+    this.initiallyExpanded = false,
+  });
+
+  @override
+  State<_PropertyDisclosure> createState() => _PropertyDisclosureState();
+}
+
+class _PropertyDisclosureState extends State<_PropertyDisclosure>
+    with SingleTickerProviderStateMixin {
+  late bool _expanded = widget.initiallyExpanded;
+  late bool _showContent = _expanded;
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    value: _expanded ? 1 : 0,
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _controller.duration = MotionTokens.standard(context);
+    _controller.reverseDuration = MotionTokens.quick(context);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    final next = !_expanded;
+    setState(() {
+      _expanded = next;
+      if (next) _showContent = true;
+    });
+    if (next) {
+      _controller.forward();
+    } else {
+      _controller.reverse().then((_) {
+        if (mounted && !_expanded) setState(() => _showContent = false);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = widget.theme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: t.bgSurface,
+        border: Border.all(color: t.stroke),
+        borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Semantics(
+            button: true,
+            expanded: _expanded,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _toggle,
+              child: SizedBox(
+                height: 36,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.title,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: t.textFaint,
+                            letterSpacing: .8,
+                          ),
+                        ),
+                      ),
+                      AnimatedRotation(
+                        turns: _expanded ? .25 : 0,
+                        duration: MotionTokens.standard(context),
+                        curve: MotionTokens.emphasized,
+                        child: Icon(
+                          Icons.keyboard_arrow_right,
+                          size: 17,
+                          color: t.textDim,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          if (_showContent)
+            ClipRect(
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, child) {
+                  final animation = CurvedAnimation(
+                    parent: _controller,
+                    curve: MotionTokens.emphasized,
+                    reverseCurve: MotionTokens.exit,
+                  );
+                  return Align(
+                    alignment: Alignment.topCenter,
+                    heightFactor: animation.value,
+                    child: BlurScaleTransition(
+                      animation: animation,
+                      alignment: Alignment.topCenter,
+                      beginScale: .99,
+                      maxBlur: 4,
+                      child: child!,
+                    ),
+                  );
+                },
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: widget.children,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 Color _catColor(md.Category c) {
@@ -1140,7 +1449,7 @@ class _ParamControl extends StatelessWidget {
   /// 数字参数控件:
   /// - 有明确 min/max → 输入框 + 拉杆(滑块按 step 取整,输入框自由输入,
   ///   输入框内滚轮可步进);
-  /// - 无界(实数域 / 0~∞)→ 仅输入框占满整行,不提供滚轮增减。
+  /// - 无界(实数域 / 0~∞)→ 仅输入框占满整行，仍支持滚轮增减。
   Widget _buildNumControl(md.ParamSpec spec, dynamic v) {
     final cv = v is num
         ? v.toDouble()
@@ -1173,60 +1482,55 @@ class _ParamControl extends StatelessWidget {
       },
     );
 
-    // 无界参数:仅输入框(整行宽度),无拉杆、无滚轮步进
-    if (!bounded) return field;
-
-    // 有界参数:拉杆 + 输入框;输入框内滚轮上滑/下滑按数量级步进
-    final wheelField = Listener(
+    Widget withWheel(Widget child) => Listener(
       behavior: HitTestBehavior.translucent,
       onPointerSignal: (e) {
         if (e is! PointerScrollEvent) return;
-        // 上滑(scrollDelta.dy<0)递增,下滑递减;幅度按滚动量折算 1~12 步
-        final count = (e.scrollDelta.dy.abs() / 24).ceil().clamp(1, 12);
-        final dir = e.scrollDelta.dy < 0 ? 1 : -1;
-        var nv = cv + dir * count * _wheelUnit(spec, cv);
-        nv = nv.clamp(spec.min!, max);
-        if (step != null && step > 0) nv = (nv / step).round() * step;
-        onChanged(nv);
+        GestureBinding.instance.pointerSignalResolver.register(e, (event) {
+          final scroll = event as PointerScrollEvent;
+          onChanged(
+            numericWheelValue(
+              spec,
+              cv,
+              scroll.scrollDelta.dy,
+              maxOverride: spec.key == 'maxRows' ? max : null,
+            ),
+          );
+        });
       },
-      child: field,
+      child: child,
     );
+
+    // 无界参数:仅输入框(整行宽度)，滚轮按 step 或当前数量级调整。
+    if (!bounded) return withWheel(field);
 
     final min = spec.min ?? 0.0;
     final snapped = step != null && step > 0 ? (cv / step).round() * step : cv;
-    return Row(
-      children: [
-        Expanded(
-          child: fluent.Slider(
-            value: snapped.clamp(min, max),
-            min: min,
-            max: max,
-            divisions: step != null && step > 0
-                ? ((max - min) / step).round().clamp(1, 1000)
-                : null,
-            onChanged: (d) =>
-                onChanged(step != null ? (d / step).round() * step : d),
+    return withWheel(
+      Row(
+        children: [
+          Expanded(
+            child: fluent.Slider(
+              value: snapped.clamp(min, max),
+              min: min,
+              max: max,
+              divisions: step != null && step > 0
+                  ? ((max - min) / step).round().clamp(1, 1000)
+                  : null,
+              onChanged: (d) =>
+                  onChanged(step != null ? (d / step).round() * step : d),
+            ),
           ),
-        ),
-        SizedBox(width: 64, child: wheelField),
-      ],
+          SizedBox(width: 64, child: field),
+        ],
+      ),
     );
-  }
-
-  /// 滚轮步进步长:参数定义了 step 用之;否则按当前值数量级取整
-  /// (1/0.1/0.01… 与 1/10/100…),保证任意量级都能"合适地"步进。
-  double _wheelUnit(md.ParamSpec spec, double cv) {
-    final s = spec.step;
-    if (s != null && s > 0) return s;
-    final a = cv.abs();
-    if (a < 1e-12) return 1.0;
-    return math.pow(10, (math.log(a) / math.ln10).floor()).toDouble();
   }
 
   Future<void> _pickDataFile(BuildContext context) async {
     const group = XTypeGroup(
       label: '数据文件',
-      extensions: ['csv', 'tsv', 'txt', 'xlsx', 'xls'],
+      extensions: ['csv', 'tsv', 'txt', 'xlsx'],
     );
     final file = await openFile(acceptedTypeGroups: const [group]);
     if (file == null) return;
@@ -1234,7 +1538,11 @@ class _ParamControl extends StatelessWidget {
     if (path.isEmpty) return;
     try {
       // UTF-8 解码文本文件;Excel 取第一个工作表转 CSV(GraphStore 自动执行会刷新图)
-      final text = await dataFileToCsvText(path);
+      final node = GraphStore.instance.nodeOf(nodeId);
+      final text = await dataFileToCsvText(
+        path,
+        strictEncoding: node?.params['encodingMode'] != 'replace',
+      );
       if (!context.mounted) return;
       _applyImportedTable(path, text);
     } catch (e) {
@@ -1441,7 +1749,11 @@ class PropertiesPanel extends StatelessWidget {
         }
         final cfg = node == null ? null : getConfig(node.configId);
         if (node == null || cfg == null) {
-          return _emptyState(t);
+          return _animatedPanel(
+            context,
+            const ValueKey('properties-empty'),
+            _emptyState(t),
+          );
         }
         final exposedKeys = node.exposed;
         final result = store.results[node.id];
@@ -1450,66 +1762,87 @@ class PropertiesPanel extends StatelessWidget {
         final selId = node.id;
 
         // .nf-props:width 300、bg-surface、border-left 1px stroke
-        return Container(
-          width: SyphonDims.propsW,
-          decoration: BoxDecoration(
-            color: t.bgSurface,
-            border: Border(left: BorderSide(color: t.stroke, width: 1)),
-          ),
-          child: ListView(
-            padding: const EdgeInsets.all(12), // .nf-props-body
-            children: [
-              _buildHead(t, cfg, catColor, catInfo),
-              _buildDesc(t, cfg),
+        return _animatedPanel(
+          context,
+          ValueKey('properties-$selId'),
+          Container(
+            width: SyphonDims.propsW,
+            decoration: BoxDecoration(
+              color: t.bgSurface,
+              border: Border(left: BorderSide(color: t.stroke, width: 1)),
+            ),
+            child: ListView(
+              padding: const EdgeInsets.all(12), // .nf-props-body
+              children: [
+                _buildHead(t, cfg, catColor, catInfo),
+                _buildDesc(t, cfg),
 
-              // 参数
-              if (cfg.params.isNotEmpty)
-                _section(t, '参数', [
-                  for (final p in cfg.params)
-                    if (_paramVisible(cfg, node, p))
-                      _paramRow(context, t, p, node, exposedKeys),
-                ]),
+                // 参数
+                if (cfg.params.isNotEmpty)
+                  ..._parameterSections(context, t, cfg, node, exposedKeys),
 
-              // 输出状态
-              if (cfg.outputs.isNotEmpty)
-                _section(t, '输出状态', [
-                  for (final o in cfg.outputs) _outputRow(t, o, result),
-                  if (result?.error != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Text(
-                        '错误:${result!.error}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: t.danger,
-                          height: 1.5,
+                // 输出状态
+                if (cfg.outputs.isNotEmpty)
+                  _section(t, '输出状态', [
+                    for (final o in cfg.outputs) _outputRow(t, o, result),
+                    if (result?.error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          '错误:${result!.error}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: t.danger,
+                            height: 1.5,
+                          ),
                         ),
                       ),
-                    ),
-                ]),
+                  ]),
 
-              // 节点操作
-              _section(t, '节点操作', [
-                // .nf-props-actions:flex gap 6
-                Row(
-                  children: [
-                    _SmButton(
-                      label: '复制',
-                      onPressed: () => store.duplicateNodes([selId]),
-                    ),
-                    const SizedBox(width: 6),
-                    _SmButton(
-                      label: '删除',
-                      danger: true,
-                      onPressed: () => store.removeNodes([selId]),
-                    ),
-                  ],
-                ),
-              ]),
-            ],
+                // 节点操作
+                _section(t, '节点操作', [
+                  // .nf-props-actions:flex gap 6
+                  Row(
+                    children: [
+                      _SmButton(
+                        label: '复制',
+                        onPressed: () => store.duplicateNodes([selId]),
+                      ),
+                      const SizedBox(width: 6),
+                      _SmButton(
+                        label: '删除',
+                        danger: true,
+                        onPressed: () => store.removeNodes([selId]),
+                      ),
+                    ],
+                  ),
+                ]),
+              ],
+            ),
           ),
         );
       },
+    );
+  }
+
+  Widget _animatedPanel(BuildContext context, Key key, Widget child) {
+    return AnimatedSwitcher(
+      duration: MotionTokens.standard(context),
+      reverseDuration: MotionTokens.quick(context),
+      switchInCurve: MotionTokens.emphasized,
+      switchOutCurve: MotionTokens.exit,
+      layoutBuilder: (current, previous) => Stack(
+        alignment: Alignment.topRight,
+        children: [...previous, ?current],
+      ),
+      transitionBuilder: (child, animation) => BlurScaleTransition(
+        animation: animation,
+        alignment: Alignment.centerRight,
+        beginScale: 0.985,
+        maxBlur: 6,
+        child: child,
+      ),
+      child: KeyedSubtree(key: key, child: child),
     );
   }
 
@@ -1600,6 +1933,75 @@ class PropertiesPanel extends StatelessWidget {
           ...children,
         ],
       ),
+    );
+  }
+
+  List<Widget> _parameterSections(
+    BuildContext context,
+    SyphonTheme t,
+    md.NodeConfig cfg,
+    GraphNode node,
+    List<String> exposedKeys,
+  ) {
+    late final Map<String, Set<String>> allGroups;
+    if (cfg.id == 'axis_input') {
+      final assigned = kAxisPropertyGroups.values
+          .expand((keys) => keys)
+          .toSet();
+      allGroups = <String, Set<String>>{
+        ...kAxisPropertyGroups,
+        if (cfg.params.any((p) => !assigned.contains(p.key)))
+          '其他': {
+            for (final p in cfg.params)
+              if (!assigned.contains(p.key)) p.key,
+          },
+      };
+    } else {
+      allGroups = {
+        for (final title in kGenericPropertyGroupOrder)
+          title: {
+            for (final p in cfg.params)
+              if (propertyGroupForParam(p) == title) p.key,
+          },
+      };
+    }
+    final visibleGroups = allGroups.entries
+        .where(
+          (entry) => cfg.params.any(
+            (p) => entry.value.contains(p.key) && _paramVisible(cfg, node, p),
+          ),
+        )
+        .toList(growable: false);
+    return [
+      for (var i = 0; i < visibleGroups.length; i++)
+        _collapsibleSection(
+          t,
+          '${node.id}:properties:${visibleGroups[i].key}',
+          visibleGroups[i].key,
+          [
+            for (final p in cfg.params)
+              if (visibleGroups[i].value.contains(p.key) &&
+                  _paramVisible(cfg, node, p))
+                _paramRow(context, t, p, node, exposedKeys),
+          ],
+          initiallyExpanded: i == 0,
+        ),
+    ];
+  }
+
+  Widget _collapsibleSection(
+    SyphonTheme t,
+    String storageKey,
+    String title,
+    List<Widget> children, {
+    bool initiallyExpanded = false,
+  }) {
+    return _PropertyDisclosure(
+      key: ValueKey(storageKey),
+      theme: t,
+      title: title,
+      initiallyExpanded: initiallyExpanded,
+      children: children,
     );
   }
 

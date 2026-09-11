@@ -1,18 +1,18 @@
-; SyphonNov2 Windows installer script (NSIS 3.x, ASCII only)
-; Build: makensis install.nsi  ->  dist\SyphonNov2_Setup.exe
+; SyphonNov Windows installer script (NSIS 3.x, ASCII only)
+; Build: makensis install.nsi  ->  dist\SyphonNov-5.0.0-Setup.exe
 Unicode True
 
 !include "MUI2.nsh"
 
-Name "SyphonNov2"
-OutFile "dist\SyphonNov2_Setup.exe"
-InstallDir "$PROGRAMFILES64\SyphonNov2"
-InstallDirRegKey HKCU "Software\SyphonNov2" "InstallDir"
+Name "SyphonNov"
+OutFile "dist\SyphonNov-5.0.0-Setup.exe"
+InstallDir "$PROGRAMFILES64\SyphonNov"
+InstallDirRegKey HKCU "Software\SyphonNov" "InstallDir"
 RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\syphon_nov.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Run SyphonNov2 now"
+!define MUI_FINISHPAGE_RUN_TEXT "Run SyphonNov now"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -30,20 +30,20 @@ Section "Install" SEC_MAIN
   File /r "build\windows\x64\runner\Release\*.*"
 
   ; Start menu and desktop shortcuts
-  CreateDirectory "$SMPROGRAMS\SyphonNov2"
-  CreateShortcut "$SMPROGRAMS\SyphonNov2\SyphonNov2.lnk" "$INSTDIR\syphon_nov.exe"
-  CreateShortcut "$DESKTOP\SyphonNov2.lnk" "$INSTDIR\syphon_nov.exe"
+  CreateDirectory "$SMPROGRAMS\SyphonNov"
+  CreateShortcut "$SMPROGRAMS\SyphonNov\SyphonNov.lnk" "$INSTDIR\syphon_nov.exe"
+  CreateShortcut "$DESKTOP\SyphonNov.lnk" "$INSTDIR\syphon_nov.exe"
 
   ; Uninstaller and registry uninstall info
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  WriteRegStr HKCU "Software\SyphonNov2" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "DisplayName" "SyphonNov2"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "DisplayVersion" "1.0.0"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "Publisher" "Syphon"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "DisplayIcon" "$INSTDIR\syphon_nov.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2" "NoRepair" 1
+  WriteRegStr HKCU "Software\SyphonNov" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayName" "SyphonNov"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayVersion" "5.0.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "Publisher" "Feathrior"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "DisplayIcon" "$INSTDIR\syphon_nov.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall" SEC_UNINSTALL
@@ -51,13 +51,13 @@ Section "Uninstall" SEC_UNINSTALL
   nsExec::Exec 'taskkill /f /im syphon_nov.exe'
   Sleep 500
 
-  Delete "$DESKTOP\SyphonNov2.lnk"
-  Delete "$SMPROGRAMS\SyphonNov2\SyphonNov2.lnk"
-  RMDir "$SMPROGRAMS\SyphonNov2"
+  Delete "$DESKTOP\SyphonNov.lnk"
+  Delete "$SMPROGRAMS\SyphonNov\SyphonNov.lnk"
+  RMDir "$SMPROGRAMS\SyphonNov"
 
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR"
 
-  DeleteRegKey HKCU "Software\SyphonNov2"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov2"
+  DeleteRegKey HKCU "Software\SyphonNov"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\SyphonNov"
 SectionEnd

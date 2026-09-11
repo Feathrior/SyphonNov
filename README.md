@@ -16,9 +16,9 @@ A node-based data processing & visualization workbench. Connect input → transf
 - **自动执行**：拓扑顺序自动重算整条流水线，参数修改即时反映到图上
 - **数据导入**：内置预设、粘贴 CSV/TSV、选择文件，或把 `.csv` / `.xlsx` 直接拖进窗口生成表格节点
 - **数据处理**：清洗(缺失值/去重)、标准化、条件筛选、抽样、提取列/行、表格↔散点/曲线互转
-- **数据运算**：求导、积分、拟合、平滑、公式运算、曲线求交
+- **数据运算**：求导、积分、拟合、平滑、公式运算，以及曲线×曲线、曲线×曲面、曲面×曲面求交
 - **数据可视化**：散点 / 折线 / 柱状 / 火山 / 热力 / 箱线 / 小提琴 / 桑基 / 网络 共 9 类图表，全部自绘（无图表库依赖），支持缩放平移与导出 PNG；桑基图支持直线/环形两种布局与多色带
-- **原理化输出**：像 Blender 一样在坐标系内组合点/线/面/文本图元，支持颜色预设、导出与预览等比例
+- **原理化输出**：像 Blender 一样在坐标系内组合点/线/曲面/文本图元；支持 linear/log/log2/symlog/time 尺度、误差条与区间带、图例、曲面 LOD、PNG/SVG/PDF 和论文物理尺寸预设
 - **参数暴露**：点大小/颜色、线宽/颜色等参数可暴露为输入口，接入数据列后逐点/逐段变化
 - 其他：撤销/重做、亮/暗主题、全局快捷键、无边框自定义标题栏
 
@@ -26,9 +26,9 @@ A node-based data processing & visualization workbench. Connect input → transf
 
 | 分类 | 节点 |
 | --- | --- |
-| 输入 | 表格、坐标系、文本、色带、线、平面、网格数据、聚合点、曲线、函数曲线 |
+| 输入 | 表格、坐标系、文本、色带、线、曲面、网格数据、聚合点、曲线、函数曲线 |
 | 清洗 | 数据清洗、标准化、条件筛选、数据抽样 |
-| 运算 | 数值求导、数值积分、曲线拟合、平滑、公式运算、曲线求交 |
+| 运算 | 数值求导、数值积分、曲线拟合、平滑、公式运算、误差与区间、几何求交 |
 | 转化 | 提取列、提取行、表格转散点、表格转曲线、曲线转散点、散点转表格 |
 | 可视化 | 散点图、折线图、柱状图、火山图、热力图、箱线图、小提琴图、桑基图、网络示意图、原理化输出、数据输出 |
 
@@ -37,7 +37,7 @@ A node-based data processing & visualization workbench. Connect input → transf
 1. 空白处右键 → 新建「表格输入」（选预设 / 粘贴 CSV / 选择或拖入文件）
 2. 再添加一个可视化节点（如「散点图」），从表格输出口拖线连到图表输入口
 3. 任意修改参数都会自动重算；或点工具栏「运行」手动触发
-4. 想画 3D：添加「坐标系输入」+ 点/线/面/文本输入，连到「原理化输出」
+4. 想画 3D：添加「坐标系输入」+ 点/线/曲面/文本输入，连到「原理化输出」
 
 ### 快捷键
 
@@ -75,9 +75,9 @@ flutter build windows
 - **Auto execution**: the whole pipeline re-runs in topological order whenever a parameter changes; charts update live
 - **Data import**: built-in presets, paste CSV/TSV, pick files, or drag `.csv` / `.xlsx` directly into the window to create a table input node at the drop position
 - **Data cleaning & transform**: missing-value / dedup clean, standardize, filter, sample, extract columns / rows, table ↔ scatter / curve
-- **Compute**: numerical derivative, integral, polynomial / exponential fit, smoothing, formula eval, curve-curve intersection
+- **Compute**: numerical derivative, integral, fitting, smoothing, formula evaluation, uncertainty intervals, and curve/surface intersections
 - **Visualization**: 9 chart types (scatter, line, bar, volcano, heatmap, box, violin, sankey, network), all custom-painted with zero chart-library dependency; pan / zoom inside each viewport; PNG export; sankey supports linear or circular layout with multiple palettes
-- **Principled output**: compose point / line / surface / text primitives in a coordinate space (Blender-style); 3D rotation, color presets, wireframe / filled surfaces; export isometric to preview
+- **Principled output**: compose point / line / surface / text primitives in a Blender-style coordinate space; linear/log/log2/symlog/time scales, error bars and bands, legends, 3D surfaces, and PNG/SVG/PDF publication export
 - **Param exposure**: point size / color, line width / color, etc. can be exposed as input sockets and driven by data columns (per-point / per-segment variation)
 - Undo / redo, light & dark themes, global shortcuts, custom frameless title bar
 
@@ -85,9 +85,9 @@ flutter build windows
 
 | Category | Nodes |
 | --- | --- |
-| Input | Table, CoordinateSystem, Text, Colorbar, Line, Plane, Grid, AggregatePoints, Curve, FunctionCurve |
+| Input | Table, CoordinateSystem, Text, Colorbar, Line, Surface, Grid, AggregatePoints, Curve, FunctionCurve |
 | Clean | Clean, Standardize, Filter, Sample |
-| Compute | Derivative, Integral, Fit, Smooth, Formula, CurveIntersect |
+| Compute | Derivative, Integral, Fit, Smooth, Formula, Uncertainty, GeometryIntersect |
 | Transform | SelectCols, SelectRows, TableToScatter, TableToCurve, CurveToScatter, ScatterToTable |
 | Visualize | Scatter, Line, Bar, Volcano, Heatmap, Box, Violin, Sankey, Network, Principled, DataOutput |
 

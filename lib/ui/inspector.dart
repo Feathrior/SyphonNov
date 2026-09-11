@@ -98,6 +98,10 @@ class ObjectPreview extends StatelessWidget {
       return _Summary([
         '${L.t('顶点')}: ${o.vertices.length}',
         '${L.t('三角面')}: ${o.faces.length}',
+        if (o.previewFaceBudget != null)
+          '预览: ${o.faces.length <= o.previewFaceBudget! ? o.faces.length : o.previewFaceBudget! + 2} / ${o.sourceFaceCount ?? o.faces.length} 三角面',
+        if (o.vertexValues != null)
+          '顶点标量: ${o.valueLabel ?? 'value'} (${o.valueMin} ~ ${o.valueMax})',
         '${L.t('名称')}: ${o.name}',
       ]);
     }
@@ -112,7 +116,10 @@ class ObjectPreview extends StatelessWidget {
               '${b.count}',
             ],
         ],
-        footer: L.fmt('共 {a} 组, {b} 个样本', {'a': '${o.bins.length}', 'b': '${o.sampleCount}'}),
+        footer: L.fmt('共 {a} 组, {b} 个样本', {
+          'a': '${o.bins.length}',
+          'b': '${o.sampleCount}',
+        }),
       );
     }
     if (o is md.AxesData) {
@@ -311,13 +318,15 @@ class _InspectorState extends State<Inspector> {
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: _DashedLine(t.strokeStrong),
           ),
-        if (store.hasCycle) _logLine(t, '⚠ ${L.t('检测到连接回路,部分节点未按顺序执行')}', error: true),
+        if (store.hasCycle)
+          _logLine(t, '⚠ ${L.t('检测到连接回路,部分节点未按顺序执行')}', error: true),
         if (store.lastError != null) _logLine(t, store.lastError!, error: true),
         if (errors.isEmpty && !store.hasCycle && store.logs.isEmpty)
           _logLine(t, L.t('执行正常,无错误。')),
         for (final e in errors)
           _logLine(t, '[${e.label}] ${e.msg}', error: true),
-        if (okCount > 0) _logLine(t, L.fmt('{n} 个节点执行成功', {'n': '$okCount'}), ok: true),
+        if (okCount > 0)
+          _logLine(t, L.fmt('{n} 个节点执行成功', {'n': '$okCount'}), ok: true),
         // 热点:top3 慢节点
         ...() {
           final entries = store.results.entries.toList()

@@ -13,9 +13,8 @@ class Preset {
 
 String _buildGraph(
   List<Map<String, dynamic>> nodes,
-  List<Map<String, dynamic>> edges, {
-  List<Map<String, dynamic>>? groups,
-}) {
+  List<Map<String, dynamic>> edges,
+) {
   return const JsonEncoder.withIndent('  ').convert({
     'format': 'syphon-graph',
     'version': 1,
@@ -43,7 +42,7 @@ String _buildGraph(
           },
         )
         .toList(),
-    'groups': groups ?? <Map<String, dynamic>>[],
+    'groups': <Map<String, dynamic>>[],
   });
 }
 
@@ -166,7 +165,7 @@ List<Preset> _buildPresets() {
 
 // ==================== 功能全景演示图 ====================
 // 示例节点组:覆盖全部 36 种节点(输入/清理/运算/转化/可视化/原理化),
-// 按区域分组布局;首次启动自动载入(见 main.dart)。
+// 按区域排列；首次启动自动载入(见 main.dart)。
 
 /// 首次启动自动载入的全景演示图画布 JSON
 final String kDemoGraphJson = _buildDemoGraph();
@@ -282,7 +281,7 @@ String _buildDemoGraph() {
         'name': '正弦函数',
         'expression': 'sin(x)',
       }),
-      node('ci', 'curve_intersect', 900, 1940),
+      node('ci', 'geometry_intersect', 900, 1940),
       node('ct', 'series_to_scatter', 1180, 1940),
 
       // ---- 区域 5:点/线/面/文本/坐标系 → 原理化输出 ----
@@ -300,9 +299,13 @@ String _buildDemoGraph() {
           {'x': 5, 'y': 3, 'size': 5, 'color': '#2a9d8f'},
         ],
       }),
-      node('pl', 'plane_input', 330, 2820, {
-        'shape': 'circle',
-        'radius': 3,
+      node('pl', 'surface_input', 330, 2820, {
+        'name': '高斯曲面',
+        'mode': 'preset',
+        'preset': 'gaussian',
+        'size': 2,
+        'rows': 41,
+        'columns': 41,
         'color': '#4f8ef7',
         'opacity': 0.7,
       }),
@@ -369,51 +372,6 @@ String _buildDemoGraph() {
       edge('tts-ft', 'tts', 'ft'),
       edge('ft-do2', 'ft', 'do2', sourceHandle: 'out1'),
       edge('t3-tse', 't3', 'tse'),
-    ],
-    groups: [
-      {
-        'id': 'g_sales',
-        'name': '销售分析',
-        'nodeIds': [
-          't1',
-          'c1',
-          'c2',
-          'c3',
-          'c4',
-          'e1',
-          'e2',
-          'do1',
-          'vl',
-          'vb',
-          'vs',
-        ],
-      },
-      {
-        'id': 'g_viz',
-        'name': '可视化对比',
-        'nodeIds': ['t2', 'vv', 't3', 'vh', 'vbx', 'vvi', 't4', 'vsk', 'vg'],
-      },
-      {
-        'id': 'g_math',
-        'name': '曲线运算',
-        'nodeIds': ['s1', 'd1', 'i1', 'sm1', 'f1', 'fc', 'ci', 'ct'],
-      },
-      {
-        'id': 'g_pr',
-        'name': '原理化与变换',
-        'nodeIds': [
-          'ax',
-          'lt',
-          'ps',
-          'pl',
-          'tx',
-          'pr',
-          'tts',
-          'ft',
-          'tse',
-          'do2',
-        ],
-      },
     ],
   );
 }

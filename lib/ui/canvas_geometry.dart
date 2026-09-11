@@ -188,7 +188,7 @@ String paramSummary(GraphNode node, NodeConfig cfg) {
 /// 节点尺寸(根据配置、折叠状态与端口连线数确定)
 Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
   final cfg = getConfig(node.configId);
-  final w = nodeWidth(node.configId);
+  final w = nodeVisualWidth(node);
   if (cfg == null) return Size(w, NodeGeom.headerH + 24);
   final inRows = inputSockets(node, edges);
   final outRows = outputSockets(node, edges);
@@ -209,7 +209,7 @@ Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
     h += NodeGeom.paramLineMargin + NodeGeom.paramLineH;
   }
   if (cfg.isViewer) {
-    h += NodeGeom.viewerMargin + NodeGeom.viewerH;
+    h += NodeGeom.viewerMargin + nodeViewerHeight(node);
   }
   if (cfg.outputs.isNotEmpty) {
     h += NodeGeom.outputsLineMargin + NodeGeom.outputsLineH;
@@ -221,11 +221,170 @@ Size nodeSize(GraphNode node, List<GraphEdge> edges, {ExecResult? result}) {
   return Size(w, h);
 }
 
+typedef PackagePort = ({
+  String nodeId,
+  String socketId,
+  String name,
+  SocketType type,
+});
+
+List<PackagePort> packageInputPorts(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  final ids = group.nodeIds.toSet();
+  final internallyConnected = {
+    for (final edge in edges)
+      if (ids.contains(edge.source) && ids.contains(edge.target))
+        '${edge.target}\u0000${edge.targetHandle}',
+  };
+  final externallyConnected = {
+    for (final edge in edges)
+      if (!ids.contains(edge.source) && ids.contains(edge.target))
+        '${edge.target}\u0000${edge.targetHandle}',
+  };
+  return [
+    for (final node in nodes)
+      if (ids.contains(node.id))
+        for (final socket
+            in getConfig(node.configId)?.inputs ?? const <Socket>[])
+          if (!internallyConnected.contains('${node.id}\u0000${socket.id}') ||
+              externallyConnected.contains('${node.id}\u0000${socket.id}'))
+            (
+              nodeId: node.id,
+              socketId: socket.id,
+              name:
+                  '${getConfig(node.configId)?.label ?? node.configId} · ${socket.name}',
+              type: socket.type,
+            ),
+  ];
+}
+
+List<PackagePort> packageOutputPorts(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  final ids = group.nodeIds.toSet();
+  final internallyConnected = {
+    for (final edge in edges)
+      if (ids.contains(edge.source) && ids.contains(edge.target))
+        '${edge.source}\u0000${edge.sourceHandle}',
+  };
+  final externallyConnected = {
+    for (final edge in edges)
+      if (ids.contains(edge.source) && !ids.contains(edge.target))
+        '${edge.source}\u0000${edge.sourceHandle}',
+  };
+  return [
+    for (final node in nodes)
+      if (ids.contains(node.id))
+        for (final socket
+            in getConfig(node.configId)?.outputs ?? const <Socket>[])
+          if (!internallyConnected.contains('${node.id}\u0000${socket.id}') ||
+              externallyConnected.contains('${node.id}\u0000${socket.id}'))
+            (
+              nodeId: node.id,
+              socketId: socket.id,
+              name:
+                  '${getConfig(node.configId)?.label ?? node.configId} · ${socket.name}',
+              type: socket.type,
+            ),
+  ];
+}
+
+Size packageNodeVisualSize(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  final rows = math.max(
+    packageInputPorts(group, nodes, edges).length,
+    packageOutputPorts(group, nodes, edges).length,
+  );
+  return Size(260, math.max(110, 54 + rows * 22));
+}
+
+Rect? packageProxyRect(
+  NodeGroup group,
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+) {
+  if (!group.isPackage || !group.collapsed) return null;
+  Rect? bounds;
+  final ids = group.nodeIds.toSet();
+  for (final node in nodes) {
+    if (!ids.contains(node.id)) continue;
+    final rect = node.position & nodeSize(node, edges);
+    bounds = bounds == null ? rect : bounds.expandToInclude(rect);
+  }
+  return bounds == null
+      ? null
+      : bounds.topLeft & packageNodeVisualSize(group, nodes, edges);
+}
+
+Offset packagePortAnchor(
+  Rect rect,
+  List<PackagePort> ports,
+  PackagePort port, {
+  required bool isSource,
+}) {
+  final index = ports.indexWhere(
+    (item) => item.nodeId == port.nodeId && item.socketId == port.socketId,
+  );
+  final y = rect.top + 43 + math.max(0, index) * 22;
+  return Offset(isSource ? rect.right + 1.5 : rect.left - 1.5, y);
+}
+
+/// 将一组新节点从首选位置推出已有节点的占用范围。
+///
+/// 算法逐个求解最小轴向位移，并把已安置的新节点加入障碍集合。这样 Alt
+/// 自动补出的转换链保持原有顺序，同时不会堆叠在已有节点或彼此之上。
+Map<String, Offset> resolveRepulsiveNodeLayout({
+  required List<({String id, Offset position, Size size})> moving,
+  required Iterable<Rect> obstacles,
+  double gap = 28,
+  int maxIterations = 96,
+}) {
+  final occupied = obstacles.toList(growable: true);
+  final result = <String, Offset>{};
+  for (final item in moving) {
+    var rect = item.position & item.size;
+    for (var iteration = 0; iteration < maxIterations; iteration++) {
+      Rect? hit;
+      for (final obstacle in occupied) {
+        if (rect.overlaps(obstacle.inflate(gap))) {
+          hit = obstacle.inflate(gap);
+          break;
+        }
+      }
+      if (hit == null) break;
+      final shifts = <Offset>[
+        Offset(hit.left - rect.right, 0),
+        Offset(hit.right - rect.left, 0),
+        Offset(0, hit.top - rect.bottom),
+        Offset(0, hit.bottom - rect.top),
+      ]..sort((a, b) => a.distanceSquared.compareTo(b.distanceSquared));
+      var shift = shifts.first;
+      // 避免恰好贴边时因浮点误差下一轮仍被判为相交。
+      if (shift.dx < 0) shift += const Offset(-0.01, 0);
+      if (shift.dx > 0) shift += const Offset(0.01, 0);
+      if (shift.dy < 0) shift += const Offset(0, -0.01);
+      if (shift.dy > 0) shift += const Offset(0, 0.01);
+      rect = rect.shift(shift);
+    }
+    result[item.id] = rect.topLeft;
+    occupied.add(rect);
+  }
+  return result;
+}
+
 /// 连线端点(世界坐标)。多条连线共用端口时端点纵向均匀排开。
 /// handle 11px 宽、溢出节点边缘 7px,锚点取 handle 中点:
 /// 输出 = 节点右边缘 - 4 + 5.5 = 右 + 1.5;输入 = 节点左边缘 - 7 + 5.5 = 左 - 1.5
 Offset edgeSourceAnchor(GraphEdge edge, GraphNode node, List<GraphEdge> edges) {
-  final w = nodeWidth(node.configId);
+  final w = nodeVisualWidth(node);
   return Offset(
     node.position.dx + w + 1.5,
     node.position.dy + _anchorY(edge, node, edges, isSource: true),

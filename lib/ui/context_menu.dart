@@ -1,4 +1,4 @@
-﻿// 新建节点右键菜单(按分类分组;可选 pendingConn 以自动连线)
+// 新建节点右键菜单(按分类分组;可选 pendingConn 以自动连线)
 library;
 
 import 'package:flutter/material.dart';
@@ -7,6 +7,7 @@ import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import '../i18n.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 /// 视口自适应浮动菜单壳:优先从鼠标右下方弹出;
@@ -90,11 +91,19 @@ class _ViewportAwareMenuState extends State<ViewportAwareMenu> {
   @override
   Widget build(BuildContext context) {
     final pos = _pos ?? _offscreen;
+    final animation = PopupMotionScope.maybeOf(context);
+    final content = animation == null
+        ? widget.child
+        : BlurScaleTransition(
+            animation: animation,
+            alignment: Alignment.topLeft,
+            child: widget.child,
+          );
     return Positioned(
       left: pos.dx,
       top: pos.dy,
       width: widget.width,
-      child: widget.child,
+      child: content,
     );
   }
 }
@@ -103,7 +112,7 @@ class NodeMenu extends StatefulWidget {
   final Offset position;
   final void Function(String configId) onPick;
   final VoidCallback onClose;
-  final Widget? bottomSlot; // 可选底部扩展区(分组内右键时显示分组操作)
+  final Widget? bottomSlot; // 可选底部扩展区（例如 Package 库）
 
   const NodeMenu({
     super.key,
@@ -150,6 +159,16 @@ class _NodeMenuState extends State<NodeMenu> {
     for (final cfg in _allConfigs) {
       m.putIfAbsent(cfg.category, () => []).add(cfg);
     }
+    const inputOrder = {
+      'scatter_input': 0,
+      'func_curve': 1,
+      'surface_input': 2,
+    };
+    m[Category.input]?.sort((a, b) {
+      final pa = inputOrder[a.id] ?? 100;
+      final pb = inputOrder[b.id] ?? 100;
+      return pa != pb ? pa.compareTo(pb) : 0;
+    });
     return m;
   }();
   late final List<Category> _cats = Category.values
@@ -249,7 +268,9 @@ class _NodeMenuState extends State<NodeMenu> {
               color: t.bgInput,
               borderRadius: BorderRadius.circular(SyphonDims.radiusS),
               border: Border.all(
-                color: focused ? t.accent.withValues(alpha: 0.5) : t.strokeStrong,
+                color: focused
+                    ? t.accent.withValues(alpha: 0.5)
+                    : t.strokeStrong,
               ),
             ),
             padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -308,8 +329,9 @@ class _NodeMenuState extends State<NodeMenu> {
   void _pickFirst() {
     final q = _query.trim();
     if (q.isEmpty) return;
-    final results =
-        _allConfigs.where((c) => _matches(c, q)).toList(growable: false);
+    final results = _allConfigs
+        .where((c) => _matches(c, q))
+        .toList(growable: false);
     if (results.isNotEmpty) widget.onPick(results.first.id);
   }
 
