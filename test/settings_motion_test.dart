@@ -88,6 +88,20 @@ void main() {
     expect(MotionTokens.spatial(context), Duration.zero);
   });
 
+  testWidgets('motion amplitude maps full reduced and off settings', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final context = tester.element(find.byKey(const Key('node-shelf')));
+
+    SettingsStore.instance.motionMode = MotionMode.full;
+    expect(MotionTokens.amplitude(context), 1);
+    SettingsStore.instance.motionMode = MotionMode.reduced;
+    expect(MotionTokens.amplitude(context), .42);
+    SettingsStore.instance.motionMode = MotionMode.off;
+    expect(MotionTokens.amplitude(context), 0);
+  });
+
   test('one right-click setting drives the menu and the ring entries', () {
     final settings = SettingsStore.instance;
     settings.nodeMenuMode = NodeMenuMode.menu;

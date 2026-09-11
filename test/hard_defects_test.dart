@@ -182,10 +182,10 @@ void main() {
       );
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 5.0.0+1'),
+        contains('version: 0.5.2+2'),
       );
       final nsi = File('install.nsi').readAsStringSync();
-      expect(nsi, contains('DisplayVersion" "5.0.0"'));
+      expect(nsi, contains('DisplayVersion" "0.5.2"'));
       expect(nsi, isNot(contains('SyphonNov2')));
       expect(File('.github/workflows/windows.yml').existsSync(), isTrue);
     },

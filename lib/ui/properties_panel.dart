@@ -340,8 +340,9 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure>
                     child: BlurScaleTransition(
                       animation: animation,
                       alignment: Alignment.topCenter,
-                      beginScale: .94,
+                      beginScale: .99,
                       maxBlur: 4,
+                      elastic: false,
                       child: child!,
                     ),
                   );
@@ -1838,8 +1839,9 @@ class PropertiesPanel extends StatelessWidget {
       transitionBuilder: (child, animation) => BlurScaleTransition(
         animation: animation,
         alignment: Alignment.centerRight,
-        beginScale: 0.94,
+        beginScale: 0.985,
         maxBlur: 6,
+        elastic: false,
         child: child,
       ),
       child: KeyedSubtree(key: key, child: child),

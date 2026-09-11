@@ -96,7 +96,63 @@ Offset radialAttachmentPoint(Offset center, Offset pointer) {
       delta / delta.distance * ((radialInnerRadius + radialOuterRadius) / 2);
 }
 
-class RadialNodeMenu extends StatelessWidget {
+@immutable
+class RadialEntranceFrame {
+  final double scale;
+  final double rotation;
+  final double blur;
+  final double opacity;
+
+  const RadialEntranceFrame({
+    required this.scale,
+    required this.rotation,
+    required this.blur,
+    required this.opacity,
+  });
+}
+
+/// 色环的完整入场轨迹。全幅模式从上一版 1.5% 的一半尺寸开始，旋转角、
+/// 越界量和模糊幅度提高 50%；旋转仍在总时长的前 2/3 完成，因此平均角
+/// 速度同步提高 50%。[amplitude] 对应完整、简化、关闭三档动效幅度。
+RadialEntranceFrame radialEntranceFrame(
+  double progress, {
+  double amplitude = 1,
+}) {
+  final t = progress.clamp(0.0, 1.0);
+  final strength = amplitude.clamp(0.0, 1.0);
+  final double fullScale;
+  if (t <= .62) {
+    final growth = Curves.easeInOutCubic.transform(t / .62);
+    fullScale = .0075 + 1.0975 * growth;
+  } else {
+    final settle = Curves.easeInOutCubic.transform((t - .62) / .38);
+    fullScale = 1.105 - .105 * settle;
+  }
+  final rotationTime = (t * 1.5).clamp(0.0, 1.0);
+  final turn = Curves.easeOutCubic.transform(rotationTime);
+  final fullRotation =
+      -math.pi * 1.17 * (1 - turn) +
+      .165 * math.sin(rotationTime * math.pi * 2) * (1 - rotationTime);
+  final clarity = Curves.easeOutCubic.transform(t);
+  final fullOpacity =
+      .32 + .68 * Curves.easeOut.transform((t / .34).clamp(0.0, 1.0));
+  return RadialEntranceFrame(
+    scale: 1 + (fullScale - 1) * strength,
+    rotation: fullRotation * strength,
+    blur: 45 * math.pow(1 - clarity, 1.35) * strength,
+    opacity: 1 - (1 - fullOpacity) * strength,
+  );
+}
+
+/// iOS 式橡皮筋距离：起初跟手，拉得越远阻力增长越明显，并渐近到上限。
+double radialRubberBand(double pull) {
+  if (pull <= 0) return 0;
+  const limit =
+      radialDetachRadius - ((radialInnerRadius + radialOuterRadius) / 2) - 4;
+  return limit * (1 - 1 / (1 + .55 * pull / limit));
+}
+
+class RadialNodeMenu extends StatefulWidget {
   final Offset center;
   final Offset pointer;
   final int? sectionIndex;
@@ -117,43 +173,80 @@ class RadialNodeMenu extends StatelessWidget {
   });
 
   @override
+  State<RadialNodeMenu> createState() => _RadialNodeMenuState();
+}
+
+class _RadialNodeMenuState extends State<RadialNodeMenu>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _entrance;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _entrance = AnimationController(vsync: this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _entrance.duration = Duration(
+      milliseconds: (MotionTokens.spatial(context).inMilliseconds * 1.45)
+          .round(),
+    );
+    if (!_started) {
+      _started = true;
+      _entrance.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _entrance.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final t = SyphonTheme.of(context);
-    final radius = math.max(154.0, (pointer - center).distance + 42);
-    final bounds = Rect.fromCircle(center: center, radius: radius);
-    final localCenter = center - bounds.topLeft;
-    final localPointer = pointer - bounds.topLeft;
-    final localAnchor = detachAnchor == null
+    final radius = math.max(
+      154.0,
+      (widget.pointer - widget.center).distance + 42,
+    );
+    final bounds = Rect.fromCircle(center: widget.center, radius: radius);
+    final localCenter = widget.center - bounds.topLeft;
+    final localPointer = widget.pointer - bounds.topLeft;
+    final localAnchor = widget.detachAnchor == null
         ? null
-        : detachAnchor! - bounds.topLeft;
+        : widget.detachAnchor! - bounds.topLeft;
     return Stack(
       clipBehavior: Clip.none,
       children: [
         Positioned.fromRect(
           rect: bounds,
-          child: TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0, end: 1),
-            duration: Duration(
-              milliseconds:
-                  (MotionTokens.spatial(context).inMilliseconds * 1.45).round(),
-            ),
-            curve: MotionTokens.emphasized,
-            builder: (context, opening, child) {
-              final eased = Curves.easeOutCubic.transform(opening);
+          child: AnimatedBuilder(
+            animation: _entrance,
+            builder: (context, child) {
+              final frame = radialEntranceFrame(
+                _entrance.value,
+                amplitude: MotionTokens.amplitude(context),
+              );
               return ImageFiltered(
+                key: const Key('radial-entrance-blur'),
                 imageFilter: ui.ImageFilter.blur(
-                  sigmaX: 26 * (1 - eased),
-                  sigmaY: 26 * (1 - eased),
+                  sigmaX: frame.blur,
+                  sigmaY: frame.blur,
                 ),
                 child: Opacity(
-                  opacity: Curves.easeOut.transform(opening),
+                  opacity: frame.opacity,
                   child: Transform.rotate(
-                    angle: -.42 * (1 - eased),
-                    origin: localCenter,
+                    key: const Key('radial-entrance-rotation'),
+                    angle: frame.rotation,
+                    alignment: Alignment.center,
                     child: Transform.scale(
-                      scale: .04 + .96 * eased,
-                      alignment: Alignment.topLeft,
-                      origin: localCenter,
+                      key: const Key('radial-entrance-scale'),
+                      scale: frame.scale,
+                      alignment: Alignment.center,
                       child: child,
                     ),
                   ),
@@ -161,14 +254,17 @@ class RadialNodeMenu extends StatelessWidget {
               );
             },
             child: TweenAnimationBuilder<double>(
-              key: ValueKey('radial-hover-${sectionIndex ?? -1}'),
-              tween: Tween(begin: 0, end: sectionIndex == null ? 0 : 1),
+              key: ValueKey('radial-hover-${widget.sectionIndex ?? -1}'),
+              tween: Tween(begin: 0, end: widget.sectionIndex == null ? 0 : 1),
               duration: MotionTokens.standard(context),
               curve: MotionTokens.emphasized,
               builder: (context, hoverProgress, child) =>
                   TweenAnimationBuilder<double>(
-                    key: ValueKey(lockedItem?.id ?? 'radial-attached'),
-                    tween: Tween(begin: 0, end: lockedItem == null ? 0 : 1),
+                    key: ValueKey(widget.lockedItem?.id ?? 'radial-attached'),
+                    tween: Tween(
+                      begin: 0,
+                      end: widget.lockedItem == null ? 0 : 1,
+                    ),
                     duration: MotionTokens.spatial(context),
                     curve: Curves.easeOutBack,
                     builder: (context, detachProgress, _) => RepaintBoundary(
@@ -177,10 +273,10 @@ class RadialNodeMenu extends StatelessWidget {
                         painter: _RadialNodeMenuPainter(
                           center: localCenter,
                           pointer: localPointer,
-                          sectionIndex: sectionIndex,
-                          detailIndex: detailIndex,
-                          detailItems: detailItems,
-                          lockedItem: lockedItem,
+                          sectionIndex: widget.sectionIndex,
+                          detailIndex: widget.detailIndex,
+                          detailItems: widget.detailItems,
+                          lockedItem: widget.lockedItem,
                           detachAnchor: localAnchor,
                           detachProgress: detachProgress,
                           hoverProgress: hoverProgress,
@@ -377,8 +473,9 @@ class _RadialNodeMenuPainter extends CustomPainter {
     if (lockedItem == null) {
       final pull = math.max(0.0, delta.distance - radialInnerRadius);
       final resisted =
-          ((radialInnerRadius + radialOuterRadius) / 2) + pull * .22;
-      dot = center + unit * math.min(resisted, radialDetachRadius - 4);
+          ((radialInnerRadius + radialOuterRadius) / 2) +
+          radialRubberBand(pull);
+      dot = center + unit * resisted;
     } else {
       dot = Offset.lerp(anchor, pointer, detachProgress.clamp(0, 1))!;
       final tether = Path()
