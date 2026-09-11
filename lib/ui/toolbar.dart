@@ -440,7 +440,7 @@ class Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Text('SyphonNov v0.4.3', style: const TextStyle(fontSize: 15)),
+            Text('SyphonNov v0.5.2', style: const TextStyle(fontSize: 15)),
           ],
         ),
         content: Text(
@@ -763,7 +763,7 @@ class _CircleIconBtn extends StatelessWidget {
             child: AnimatedRotation(
               // 悬停时旋转约 30°(1/12 圈),移出后转回
               turns: spinOnHover && hover ? 0.0833 : 0,
-              duration: const Duration(milliseconds: 200),
+              duration: MotionTokens.scaled(const Duration(milliseconds: 200)),
               curve: Curves.easeOut,
               child: Icon(
                 icon,

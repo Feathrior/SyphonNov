@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../store/graph_store.dart';
 import '../i18n.dart';
 import '../store/settings_store.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 class SettingsPanel extends StatefulWidget {
@@ -160,6 +161,20 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       t,
                     ),
                     _row(
+                      L.t('动画速度'),
+                      L.t('整体动画节奏:快速为当前速度,适中 0.75×,慢速 0.6×'),
+                      _Segmented<MotionSpeed>(
+                        value: settings.motionSpeed,
+                        options: [
+                          (MotionSpeed.fast, L.t('快速')),
+                          (MotionSpeed.medium, L.t('适中')),
+                          (MotionSpeed.slow, L.t('慢速')),
+                        ],
+                        onChanged: settings.setMotionSpeed,
+                      ),
+                      t,
+                    ),
+                    _row(
                       L.t('节点放置吸附'),
                       L.t('从顶部节点条拖入画布时吸附到 20 单位网格'),
                       fluent.ToggleSwitch(
@@ -182,22 +197,16 @@ class _SettingsPanelState extends State<SettingsPanel> {
                       t,
                     ),
                     _row(
-                      L.t('右键菜单'),
-                      L.t('快速单击画布右键时显示传统节点列表'),
-                      fluent.Checkbox(
-                        checked: settings.contextNodeMenuEnabled,
-                        onChanged: (value) =>
-                            settings.setContextNodeMenuEnabled(value ?? false),
-                      ),
-                      t,
-                    ),
-                    _row(
-                      L.t('右键圆环'),
-                      L.t('按住右键或向外滑动，通过方向手势创建节点'),
-                      fluent.Checkbox(
-                        checked: settings.radialNodeMenuEnabled,
-                        onChanged: (value) =>
-                            settings.setRadialNodeMenuEnabled(value ?? false),
+                      L.t('右键设置'),
+                      L.t('空白处右键呼出节点的方式:传统菜单、六向圆环或两者同时启用'),
+                      _Segmented<NodeMenuMode>(
+                        value: settings.nodeMenuMode,
+                        options: [
+                          (NodeMenuMode.menu, L.t('菜单')),
+                          (NodeMenuMode.radial, L.t('圆环')),
+                          (NodeMenuMode.both, L.t('菜单+圆环')),
+                        ],
+                        onChanged: settings.setNodeMenuMode,
                       ),
                       t,
                     ),
@@ -318,7 +327,7 @@ class _CloseButtonState extends State<_CloseButton> {
         child: AnimatedContainer(
           width: 28,
           height: 28,
-          duration: const Duration(milliseconds: 150),
+          duration: MotionTokens.scaled(const Duration(milliseconds: 150)),
           decoration: BoxDecoration(
             // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
             color: _hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0),
@@ -355,7 +364,7 @@ class _PrimaryButtonState extends State<_PrimaryButton> {
         onTap: widget.onPressed,
         child: AnimatedContainer(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
-          duration: const Duration(milliseconds: 150),
+          duration: MotionTokens.scaled(const Duration(milliseconds: 150)),
           decoration: BoxDecoration(
             color: _hover ? t.accentHover : t.accent,
             borderRadius: BorderRadius.circular(SyphonDims.radiusS),
@@ -425,7 +434,7 @@ class _SegmentedState<T> extends State<_Segmented<T>> {
         onTap: () => widget.onChanged(widget.options[i].$1),
         child: AnimatedContainer(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-          duration: const Duration(milliseconds: 150),
+          duration: MotionTokens.scaled(const Duration(milliseconds: 150)),
           decoration: BoxDecoration(
             color: selected
                 ? t.bgSurface

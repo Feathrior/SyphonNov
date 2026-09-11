@@ -6,40 +6,9 @@ import 'package:flutter/material.dart';
 
 import '../store/settings_store.dart';
 
-@immutable
-class PopMotionFrame {
-  final double scale;
-  final double opacity;
-  final double blur;
-
-  const PopMotionFrame({
-    required this.scale,
-    required this.opacity,
-    required this.blur,
-  });
-}
-
-/// 浮层与新节点共用的弹性出现轨迹。打开时允许轻微越过终点，关闭时保持
-/// 单调，避免菜单收起时反向弹跳。
-PopMotionFrame popMotionFrame(
-  double progress, {
-  double beginScale = .9,
-  double maxBlur = 14,
-  bool opening = true,
-}) {
-  final t = progress.clamp(0.0, 1.0);
-  final scaleProgress = opening
-      ? Curves.easeOutBack.transform(t)
-      : Curves.easeOutCubic.transform(t);
-  final clarity = Curves.easeOutCubic.transform(t);
-  return PopMotionFrame(
-    scale: beginScale + (1 - beginScale) * scaleProgress,
-    opacity: clarity,
-    blur: maxBlur * (1 - clarity) * (1 - clarity),
-  );
-}
-
 /// 全应用动效节奏。位移动画用平滑减速曲线，直接操控始终即时跟手。
+/// 除"完整/简化/关闭"外,还提供整体速度倍率(快速 = 当前速度),统一作用于
+/// [quick]/[standard]/[spatial] 以及各处硬编码时长([scaled])。
 class MotionTokens {
   MotionTokens._();
 
@@ -52,37 +21,50 @@ class MotionTokens {
       _duration(context, 230, 170);
   static Duration spatial(BuildContext context) => _duration(context, 320, 250);
 
+  /// 按设置中的动画速度倍率缩放任意动画时长(1.0× 时原样返回)。
+  /// 速度越慢,时长越长:适中 0.75× 速度 → 时长 ×1.33,慢速 0.6× → ×1.67。
+  static Duration scaled(Duration base) {
+    if (base <= Duration.zero) return Duration.zero;
+    final factor = SettingsStore.instance.motionSpeed.durationFactor;
+    if (factor == 1) return base;
+    return Duration(microseconds: (base.inMicroseconds * factor).round());
+  }
+
   static Duration _duration(BuildContext context, int full, int reduced) {
     final setting = SettingsStore.instance.motionMode;
     final systemReduced =
         MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     if (setting == MotionMode.off) return Duration.zero;
     if (setting == MotionMode.reduced || systemReduced) {
-      return Duration(milliseconds: reduced == 70 ? 0 : reduced);
+      // 简化模式下"快速"过渡直接归零,其余按简化时长(同样受速度倍率影响)
+      return reduced == 70
+          ? Duration.zero
+          : scaled(Duration(milliseconds: reduced));
     }
-    return Duration(milliseconds: full);
+    return scaled(Duration(milliseconds: full));
   }
 }
 
-/// iOS 风格的统一显隐过渡。内容在轻微缩放、淡入的同时由模糊恢复清晰；
+/// iOS 风格的统一显隐过渡。内容在明显缩放、淡入的同时由模糊恢复清晰；
 /// 动画结束后关闭滤镜，避免静止界面持续占用离屏渲染资源。
+///
+/// [origin] 可指定缩放的锚点(相对左下角对齐点的偏移),让内容"从某个位置
+/// 长出来"——例如新节点从上边栏拖出的圆环位置生长。
 class BlurScaleTransition extends AnimatedWidget {
   final Widget child;
   final Alignment alignment;
+  final Offset? origin;
   final double beginScale;
   final double maxBlur;
-  final Offset beginOffset;
-  final bool elastic;
 
   const BlurScaleTransition({
     super.key,
     required Animation<double> animation,
     required this.child,
     this.alignment = Alignment.center,
+    this.origin,
     this.beginScale = 0.9,
-    this.maxBlur = 14,
-    this.beginOffset = Offset.zero,
-    this.elastic = true,
+    this.maxBlur = 8,
   }) : super(listenable: animation);
 
   Animation<double> get animation => listenable as Animation<double>;
@@ -90,32 +72,19 @@ class BlurScaleTransition extends AnimatedWidget {
   @override
   Widget build(BuildContext context) {
     final value = animation.value.clamp(0.0, 1.0);
-    final frame = elastic
-        ? popMotionFrame(
-            value,
-            beginScale: beginScale,
-            maxBlur: maxBlur,
-            opening: animation.status != AnimationStatus.reverse,
-          )
-        : PopMotionFrame(
-            scale: beginScale + (1 - beginScale) * value,
-            opacity: value,
-            blur: maxBlur * (1 - value),
-          );
-    final content = Transform.translate(
-      offset: beginOffset * (1 - Curves.easeOutCubic.transform(value)),
-      child: Opacity(
-        opacity: frame.opacity,
-        child: Transform.scale(
-          scale: frame.scale,
-          alignment: alignment,
-          child: child,
-        ),
+    final sigma = maxBlur * (1 - value);
+    final content = Opacity(
+      opacity: value,
+      child: Transform.scale(
+        scale: beginScale + (1 - beginScale) * value,
+        alignment: alignment,
+        origin: origin,
+        child: child,
       ),
     );
-    if (frame.blur <= 0.05) return content;
+    if (sigma <= 0.05) return content;
     return ImageFiltered(
-      imageFilter: ui.ImageFilter.blur(sigmaX: frame.blur, sigmaY: frame.blur),
+      imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
       child: content,
     );
   }

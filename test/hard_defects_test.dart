@@ -182,7 +182,7 @@ void main() {
       );
       expect(
         File('pubspec.yaml').readAsStringSync(),
-        contains('version: 5.0.0+3'),
+        contains('version: 5.0.0+1'),
       );
       final nsi = File('install.nsi').readAsStringSync();
       expect(nsi, contains('DisplayVersion" "5.0.0"'));

@@ -16,6 +16,7 @@ import '../models/presets.dart';
 import 'store/graph_store.dart';
 import 'store/settings_store.dart';
 import 'ui/inspector.dart';
+import 'ui/motion.dart';
 import 'ui/node_canvas.dart';
 import 'ui/node_shelf.dart';
 import 'ui/properties_panel.dart';
@@ -94,11 +95,20 @@ class SyphonApp extends StatelessWidget {
             menuColor: bgFloat,
             // 细腻过渡动画:菜单/弹窗/ComboBox/InfoBar 等 fluent 控件的动画时长。
             // 层级 faster < fast < medium < slow;fast 90ms——MenuBar 点击到
-            // 弹出次级菜单的主要延迟就是它(叠加 easeIn 淡入起始慢),提速后接近原生
-            fasterAnimationDuration: const Duration(milliseconds: 75),
-            fastAnimationDuration: const Duration(milliseconds: 110),
-            mediumAnimationDuration: const Duration(milliseconds: 230),
-            slowAnimationDuration: const Duration(milliseconds: 420),
+            // 弹出次级菜单的主要延迟就是它(叠加 easeIn 淡入起始慢),提速后接近原生。
+            // 同时按设置中的动画速度倍率整体缩放。
+            fasterAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 75),
+            ),
+            fastAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 110),
+            ),
+            mediumAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 230),
+            ),
+            slowAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 420),
+            ),
           ),
           darkTheme: fluent.FluentThemeData(
             brightness: Brightness.dark,
@@ -108,10 +118,18 @@ class SyphonApp extends StatelessWidget {
             scaffoldBackgroundColor: bgApp,
             cardColor: bgSurface,
             menuColor: bgFloat,
-            fasterAnimationDuration: const Duration(milliseconds: 75),
-            fastAnimationDuration: const Duration(milliseconds: 110),
-            mediumAnimationDuration: const Duration(milliseconds: 230),
-            slowAnimationDuration: const Duration(milliseconds: 420),
+            fasterAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 75),
+            ),
+            fastAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 110),
+            ),
+            mediumAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 230),
+            ),
+            slowAnimationDuration: MotionTokens.scaled(
+              const Duration(milliseconds: 420),
+            ),
           ),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           // 普通 Text 继承微软雅黑(merge 保留各组件自带的字号/颜色)
@@ -324,7 +342,14 @@ class _AppShellState extends State<_AppShell> {
             RepaintBoundary(
               child: Column(
                 children: [
-                  SizedBox(height: SyphonDims.toolbarH + SyphonDims.nodeShelfH),
+                  // 上边栏关闭时不再预留节点条高度,否则工具栏下方会残留一条空带
+                  SizedBox(
+                    height:
+                        SyphonDims.toolbarH +
+                        (SettingsStore.instance.nodeShelfEnabled
+                            ? SyphonDims.nodeShelfH
+                            : 0),
+                  ),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,

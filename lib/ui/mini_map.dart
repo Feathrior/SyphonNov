@@ -23,6 +23,75 @@ const double _kMiniMapPad = 20;
 /// 世界坐标 → 迷你图坐标的映射参数
 typedef _MiniLayout = ({Rect bbox, double scale, Offset offset, Rect? vp});
 
+/// 迷你图渲染场景:折叠 Package 的成员节点在画布上已被隐藏,迷你图不能
+/// 再按它们的原始散布位置画出"幽灵节点",而应改为与画布一致的灰色代理矩形。
+typedef MiniMapScene = ({
+  List<GraphNode> nodes, // 可见节点(不含被折叠 Package 隐藏的成员)
+  Map<String, GraphNode> nodeMap, // 可见节点索引(连线端点换算用,免去逐边重建)
+  List<GraphEdge> edges, // 全部连线(节点尺寸仍按真实连线数计算)
+  Map<String, Rect> packages, // packageId → 世界坐标代理矩形
+  Set<String> hidden, // 被折叠 Package 隐藏的成员节点 id
+  Map<String, String> packageOf, // 成员节点 id → 所属折叠 Package id
+});
+
+MiniMapScene buildMiniMapScene(
+  List<GraphNode> nodes,
+  List<GraphEdge> edges,
+  List<NodeGroup> groups,
+) {
+  final packages = <String, Rect>{};
+  final hidden = <String>{};
+  final packageOf = <String, String>{};
+  for (final group in groups) {
+    if (!group.isPackage || !group.collapsed) continue;
+    final rect = packageProxyRect(group, nodes, edges);
+    if (rect == null) continue;
+    packages[group.id] = rect;
+    for (final id in group.nodeIds) {
+      hidden.add(id);
+      packageOf[id] = group.id;
+    }
+  }
+  final visible = [
+    for (final node in nodes)
+      if (!hidden.contains(node.id)) node,
+  ];
+  return (
+    nodes: visible,
+    nodeMap: {for (final node in visible) node.id: node},
+    edges: edges,
+    packages: packages,
+    hidden: hidden,
+    packageOf: packageOf,
+  );
+}
+
+/// 迷你图中一条连线的两端世界坐标;返回 null 表示这条线不该画
+/// (位于同一个折叠 Package 内部)。被折叠 Package 隐藏的成员节点,
+/// 其端点改指到代理矩形边缘(源取右缘、目标取左缘,与画布一致)。
+({Offset a, Offset b})? miniMapEdgeRoute(MiniMapScene scene, GraphEdge edge) {
+  final sourcePackage = scene.packageOf[edge.source];
+  if (sourcePackage != null && sourcePackage == scene.packageOf[edge.target]) {
+    return null;
+  }
+  Offset? endpoint(String nodeId, {required bool isSource}) {
+    final node = scene.nodeMap[nodeId];
+    if (node != null) {
+      final size = nodeSize(node, scene.edges);
+      return node.position + Offset(size.width / 2, size.height / 2);
+    }
+    final packageId = scene.packageOf[nodeId];
+    final rect = packageId == null ? null : scene.packages[packageId];
+    if (rect == null) return null;
+    return isSource ? rect.centerRight : rect.centerLeft;
+  }
+
+  final a = endpoint(edge.source, isSource: true);
+  final b = endpoint(edge.target, isSource: false);
+  if (a == null || b == null) return null;
+  return (a: a, b: b);
+}
+
 /// 迷你缩略预览窗
 class MiniMapView extends StatefulWidget {
   final List<GraphNode> nodes; // 全部节点
@@ -30,6 +99,8 @@ class MiniMapView extends StatefulWidget {
   final Offset pan; // 当前画布平移
   final Size viewport; // 画布视口尺寸(屏幕像素)
   final List<GraphEdge> edges; // 全部连线
+  /// 全部 Package 容器(折叠的 Package 在迷你图中画成灰色代理矩形)
+  final List<NodeGroup> groups;
   /// 画布平移更新回调(预览窗内拖拽改变视口位置);null 时预览窗仅展示
   final ValueChanged<Offset>? onPanChanged;
   /// 预览窗拖拽结束回调(画布层据此解除交互守卫)
@@ -42,6 +113,7 @@ class MiniMapView extends StatefulWidget {
     required this.pan,
     required this.viewport,
     required this.edges,
+    this.groups = const [],
     this.onPanChanged,
     this.onPanEnd,
   });
@@ -65,11 +137,10 @@ class _MiniMapViewState extends State<MiniMapView> {
     final base = _panStartValue;
     final cb = widget.onPanChanged;
     if (start == null || base == null || cb == null) return;
-    // 与绘制共用同一布局计算(节点 + 视口 bbox,含 scale 钳制),
+    // 与绘制共用同一布局计算(节点 + Package 代理 + 视口 bbox,含 scale 钳制),
     // 基于拖拽起点 pan 计算 → 拖拽期间映射保持线性
     final L = _MiniPainter.computeLayout(
-      widget.nodes,
-      widget.edges,
+      buildMiniMapScene(widget.nodes, widget.edges, widget.groups),
       zoom: widget.zoom,
       pan: base,
       viewport: widget.viewport,
@@ -112,8 +183,12 @@ class _MiniMapViewState extends State<MiniMapView> {
           child: CustomPaint(
             size: const Size(kMiniMapWidth, kMiniMapHeight),
             painter: _MiniPainter(
-              nodes: widget.nodes,
-              edges: widget.edges,
+              scene: buildMiniMapScene(
+                widget.nodes,
+                widget.edges,
+                widget.groups,
+              ),
+              groups: widget.groups,
               zoom: widget.zoom,
               pan: widget.pan,
               viewport: widget.viewport,
@@ -130,8 +205,8 @@ class _MiniMapViewState extends State<MiniMapView> {
 }
 
 class _MiniPainter extends CustomPainter {
-  final List<GraphNode> nodes;
-  final List<GraphEdge> edges;
+  final MiniMapScene scene;
+  final List<NodeGroup> groups;
   final double zoom;
   final Offset pan;
   final Size viewport;
@@ -141,8 +216,8 @@ class _MiniPainter extends CustomPainter {
   final Color flowEdge;
 
   const _MiniPainter({
-    required this.nodes,
-    required this.edges,
+    required this.scene,
+    required this.groups,
     required this.zoom,
     required this.pan,
     required this.viewport,
@@ -152,15 +227,14 @@ class _MiniPainter extends CustomPainter {
     required this.flowEdge,
   });
 
-  /// 统一布局计算:节点 bbox ∪ 视口矩形 → 等比缩放 + 居中偏移;
+  /// 统一布局计算:可见节点 bbox ∪ 折叠 Package 代理 ∪ 视口矩形 → 等比缩放 + 居中偏移;
   /// 绘制与拖拽换算共用同一结果,保证两者一致。
   ///
   /// 钳制:视口世界尺寸 = 画布/zoom,缩小(zoom<1)时会远大于节点群,
   /// 纳入 bbox 会把 scale 拉低到节点不可见 —— 因此 scale 不低于
-  /// 节点-only scale 的 55%,视口矩形伸出面板的部分被圆角裁剪(仍指示方向)。
+  /// 内容-only scale 的 55%,视口矩形伸出面板的部分被圆角裁剪(仍指示方向)。
   static _MiniLayout computeLayout(
-    List<GraphNode> nodes,
-    List<GraphEdge> edges, {
+    MiniMapScene scene, {
     required double zoom,
     required Offset pan,
     required Size viewport,
@@ -169,15 +243,21 @@ class _MiniPainter extends CustomPainter {
     var minY = double.infinity;
     var maxX = double.negativeInfinity;
     var maxY = double.negativeInfinity;
-    for (final n in nodes) {
-      final s = nodeSize(n, edges);
+    for (final n in scene.nodes) {
+      final s = nodeSize(n, scene.edges);
       minX = math.min(minX, n.position.dx);
       minY = math.min(minY, n.position.dy);
       maxX = math.max(maxX, n.position.dx + s.width);
       maxY = math.max(maxY, n.position.dy + s.height);
     }
-    // 无节点时使用默认 0~400 区域
-    if (nodes.isEmpty) {
+    for (final rect in scene.packages.values) {
+      minX = math.min(minX, rect.left);
+      minY = math.min(minY, rect.top);
+      maxX = math.max(maxX, rect.right);
+      maxY = math.max(maxY, rect.bottom);
+    }
+    // 无内容时使用默认 0~400 区域
+    if (scene.nodes.isEmpty && scene.packages.isEmpty) {
       minX = 0;
       minY = 0;
       maxX = 400;
@@ -224,7 +304,7 @@ class _MiniPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final L = computeLayout(nodes, edges, zoom: zoom, pan: pan, viewport: viewport);
+    final L = computeLayout(scene, zoom: zoom, pan: pan, viewport: viewport);
     final rrect = RRect.fromRectAndRadius(
         Offset.zero & size, const Radius.circular(8));
 
@@ -243,31 +323,25 @@ class _MiniPainter extends CustomPainter {
     // 绘制内容裁剪在面板圆角内
     canvas.clipRRect(rrect);
 
-    // 无节点时只画背景
-    if (nodes.isEmpty) return;
+    // 无可见内容(无节点、无 Package 代理)时只画背景
+    if (scene.nodes.isEmpty && scene.packages.isEmpty) return;
 
-    final nodeMap = {for (final n in nodes) n.id: n};
+    final edges = scene.edges;
 
-    // 连线:源/目标节点中心连 1px 细线(flowEdge 色,透明度 0.6)
+    // 连线:源/目标节点中心连 1px 细线(flowEdge 色,透明度 0.6);
+    // 折叠 Package 的成员端点由 miniMapEdgeRoute 改指到代理矩形边缘
     final edgePaint = Paint()
       ..strokeWidth = 1
       ..color = flowEdge.withValues(alpha: 0.6);
     for (final e in edges) {
-      final src = nodeMap[e.source];
-      final dst = nodeMap[e.target];
-      if (src == null || dst == null) continue;
-      final srcSize = nodeSize(src, edges);
-      final dstSize = nodeSize(dst, edges);
-      canvas.drawLine(
-        _map(src.position + Offset(srcSize.width / 2, srcSize.height / 2), L),
-        _map(dst.position + Offset(dstSize.width / 2, dstSize.height / 2), L),
-        edgePaint,
-      );
+      final route = miniMapEdgeRoute(scene, e);
+      if (route == null) continue;
+      canvas.drawLine(_map(route.a, L), _map(route.b, L), edgePaint);
     }
 
     // 节点:分类色圆角矩形(圆角 2px),宽高 = nodeSize * scale
     final nodePaint = Paint();
-    for (final n in nodes) {
+    for (final n in scene.nodes) {
       final cfg = getConfig(n.configId);
       final colorHex = cfg == null ? null : kCatInfo[cfg.category.name]?.color;
       nodePaint.color = parseColor(colorHex, const Color(0xFF888888));
@@ -282,6 +356,35 @@ class _MiniPainter extends CustomPainter {
         RRect.fromRectAndRadius(rect, const Radius.circular(2)),
         nodePaint,
       );
+    }
+
+    // 折叠 Package:与画布一致的灰色代理矩形(浅灰填充 + 灰边),
+    // 迷你图中不再出现已被隐藏的成员节点
+    final mapped = [
+      for (final rect in scene.packages.values)
+        Rect.fromPoints(_map(rect.topLeft, L), _map(rect.bottomRight, L)),
+    ];
+    if (mapped.isNotEmpty) {
+      const packageColor = Color(0xFF8A9099);
+      final fill = Paint()
+        ..color = packageColor.withValues(alpha: isDark ? .34 : .26);
+      final border = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = packageColor.withValues(alpha: .95);
+      for (final rect in mapped) {
+        final r = RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            rect.left,
+            rect.top,
+            math.max(rect.width, 2),
+            math.max(rect.height, 2),
+          ),
+          const Radius.circular(2),
+        );
+        canvas.drawRRect(r, fill);
+        canvas.drawRRect(r, border);
+      }
     }
 
     // 视口矩形:相当于屏幕大小的一块区域,灰色半透明填充 + 灰边,
@@ -312,8 +415,10 @@ class _MiniPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MiniPainter old) =>
-      old.nodes != nodes ||
-      old.edges != edges ||
+      old.scene.nodes != scene.nodes ||
+      old.scene.edges != scene.edges ||
+      old.scene.packages != scene.packages ||
+      old.groups != groups ||
       old.zoom != zoom ||
       old.pan != pan ||
       old.viewport != viewport ||

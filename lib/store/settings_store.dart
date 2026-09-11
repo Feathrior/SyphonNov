@@ -13,6 +13,25 @@ enum AppTheme { light, dark }
 
 enum MotionMode { full, reduced, off }
 
+/// 全应用动画节奏倍率。`fast` 即"当前速度"(1.0×),数值为速度倍率:
+/// 速度越慢,动画时长按 `1 / speedFactor` 放大。
+enum MotionSpeed {
+  fast(1.0),
+  medium(0.75),
+  slow(0.6);
+
+  const MotionSpeed(this.speedFactor);
+
+  /// 动画速度倍率(1.0 = 当前速度)
+  final double speedFactor;
+
+  /// 时长倍率 = 1 / 速度倍率
+  double get durationFactor => 1 / speedFactor;
+}
+
+/// 画布空白处右键时呼出节点的方式
+enum NodeMenuMode { menu, radial, both }
+
 const Map<String, String> defaultShortcutBindings = {
   'undo': 'Ctrl+Z',
   'redo': 'Ctrl+Y',
@@ -42,10 +61,10 @@ class SettingsStore extends ChangeNotifier {
   bool loaded = false;
   bool demoLoaded = false;
   MotionMode motionMode = MotionMode.full;
+  MotionSpeed motionSpeed = MotionSpeed.fast;
   bool snapNodePlacement = false;
   bool nodeShelfEnabled = true;
-  bool contextNodeMenuEnabled = true;
-  bool radialNodeMenuEnabled = true;
+  NodeMenuMode nodeMenuMode = NodeMenuMode.both;
   List<String> favoriteNodeIds = [];
   List<String> recentNodeIds = [];
   List<Map<String, dynamic>> packageLibrary = [];
@@ -53,6 +72,12 @@ class SettingsStore extends ChangeNotifier {
 
   /// 最近打开/保存的画布文件路径(新→旧,去重,最多 10 条)
   List<String> recentFiles = [];
+
+  /// 传统右键节点列表是否可用(兼容旧调用点)
+  bool get contextNodeMenuEnabled => nodeMenuMode != NodeMenuMode.radial;
+
+  /// 六向右键圆环是否可用
+  bool get radialNodeMenuEnabled => nodeMenuMode != NodeMenuMode.menu;
 
   static final SettingsStore instance = SettingsStore._();
   SettingsStore._();
@@ -76,10 +101,13 @@ class SettingsStore extends ChangeNotifier {
             (value) => value.name == j['motionMode'],
             orElse: () => MotionMode.full,
           );
+          motionSpeed = MotionSpeed.values.firstWhere(
+            (value) => value.name == j['motionSpeed'],
+            orElse: () => MotionSpeed.fast,
+          );
           snapNodePlacement = j['snapNodePlacement'] == true;
           nodeShelfEnabled = j['nodeShelfEnabled'] != false;
-          contextNodeMenuEnabled = j['contextNodeMenuEnabled'] != false;
-          radialNodeMenuEnabled = j['radialNodeMenuEnabled'] != false;
+          nodeMenuMode = _readNodeMenuMode(j);
           favoriteNodeIds = _stringList(j['favoriteNodeIds'], 24);
           recentNodeIds = _stringList(j['recentNodeIds'], 8);
           if (j['packageLibrary'] is List) {
@@ -145,6 +173,12 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setMotionSpeed(MotionSpeed value) {
+    motionSpeed = value;
+    _write();
+    notifyListeners();
+  }
+
   void setSnapNodePlacement(bool value) {
     snapNodePlacement = value;
     _write();
@@ -157,14 +191,8 @@ class SettingsStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setContextNodeMenuEnabled(bool value) {
-    contextNodeMenuEnabled = value;
-    _write();
-    notifyListeners();
-  }
-
-  void setRadialNodeMenuEnabled(bool value) {
-    radialNodeMenuEnabled = value;
+  void setNodeMenuMode(NodeMenuMode value) {
+    nodeMenuMode = value;
     _write();
     notifyListeners();
   }
@@ -270,6 +298,20 @@ class SettingsStore extends ChangeNotifier {
       ? value.whereType<String>().toSet().take(limit).toList()
       : <String>[];
 
+  /// 读取右键呼出方式:优先新键 `nodeMenuMode`;
+  /// 旧配置(菜单 / 圆环两个独立开关)按组合回落,两者都关闭时回落到传统菜单。
+  static NodeMenuMode _readNodeMenuMode(Map<dynamic, dynamic> j) {
+    final name = '${j['nodeMenuMode'] ?? ''}';
+    for (final value in NodeMenuMode.values) {
+      if (value.name == name) return value;
+    }
+    final menu = j['contextNodeMenuEnabled'] != false;
+    final radial = j['radialNodeMenuEnabled'] != false;
+    if (menu && radial) return NodeMenuMode.both;
+    if (radial) return NodeMenuMode.radial;
+    return NodeMenuMode.menu;
+  }
+
   /// 记录最近文件:置顶去重,超出 10 条截断
   void addRecentFile(String path) {
     recentFiles = [
@@ -288,8 +330,11 @@ class SettingsStore extends ChangeNotifier {
       'demoLoaded': demoLoaded,
       'recentFiles': recentFiles,
       'motionMode': motionMode.name,
+      'motionSpeed': motionSpeed.name,
       'snapNodePlacement': snapNodePlacement,
       'nodeShelfEnabled': nodeShelfEnabled,
+      'nodeMenuMode': nodeMenuMode.name,
+      // 兼容旧版读取方:仍写出两份独立的开关
       'contextNodeMenuEnabled': contextNodeMenuEnabled,
       'radialNodeMenuEnabled': radialNodeMenuEnabled,
       'favoriteNodeIds': favoriteNodeIds,

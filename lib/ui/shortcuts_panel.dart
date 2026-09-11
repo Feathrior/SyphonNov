@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../store/settings_store.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 const List<
@@ -248,7 +249,7 @@ class _ShortcutsPanelState extends State<ShortcutsPanel> {
       child: Row(
         children: [
           Text(
-            'SyphonNov v0.4.3',
+            'SyphonNov v0.5.2',
             style: TextStyle(fontSize: 11, color: t.textFaint),
           ),
           const Spacer(),
@@ -307,7 +308,7 @@ class _CloseButtonState extends State<_CloseButton> {
         child: AnimatedContainer(
           width: 28,
           height: 28,
-          duration: const Duration(milliseconds: 150),
+          duration: MotionTokens.scaled(const Duration(milliseconds: 150)),
           decoration: BoxDecoration(
             // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
             color: _hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0),
@@ -344,7 +345,7 @@ class _PrimaryButtonState extends State<_PrimaryButton> {
         onTap: widget.onPressed,
         child: AnimatedContainer(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 7),
-          duration: const Duration(milliseconds: 150),
+          duration: MotionTokens.scaled(const Duration(milliseconds: 150)),
           decoration: BoxDecoration(
             color: _hover ? t.accentHover : t.accent,
             borderRadius: BorderRadius.circular(SyphonDims.radiusS),

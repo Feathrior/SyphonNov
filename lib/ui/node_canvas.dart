@@ -803,6 +803,17 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   final GlobalKey _miniMapKey = GlobalKey();
   bool _miniMapDragging = false; // 预览窗拖拽进行中(拖出面板松开时仍能正确守卫)
 
+  /// 新节点的"出生点"(flow 坐标):入场动画以此为缩放锚点,产生
+  /// "从上边栏拖出的圆环/右键圆球里长出来"的感觉。动画结束后移除。
+  final Map<String, Offset> _nodeSpawnOrigins = {};
+
+  /// 记录若干新节点的出生点(取当前 store.nodes 与已知 id 的差集)
+  void _markSpawnOrigins(Iterable<String> ids, Offset origin) {
+    for (final id in ids) {
+      _nodeSpawnOrigins[id] = origin;
+    }
+  }
+
   /// 指针全局坐标是否落在预览窗面板内(4px 容差)
   bool _inMiniMap(Offset globalPos) {
     final ctx = _miniMapKey.currentContext;
@@ -920,7 +931,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     if (box is! RenderBox || !box.hasSize) return false;
     final local = box.globalToLocal(globalPosition);
     if (!(Offset.zero & box.size).contains(local)) return false;
-    var flow = _toFlow(local) - const Offset(30, 20);
+    // 指示环中心(指针位置)= 入场动画的生长锚点
+    final pointerFlow = _toFlow(local);
+    var flow = pointerFlow - const Offset(30, 20);
     if (SettingsStore.instance.snapNodePlacement) {
       const step = 20.0;
       flow = Offset(
@@ -929,6 +942,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       );
     }
     final id = store.addNode(configId, flow);
+    // 入场动画的锚点 = 松手时指示环所在的位置
+    _nodeSpawnOrigins[id] = pointerFlow;
     final node = store.nodeOf(id);
     if (node != null) {
       final size = nodeSize(node, store.edges, result: store.results[id]);
@@ -963,7 +978,15 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     final box = context.findRenderObject();
     if (box is! RenderBox || !box.hasSize) return;
     final center = _toFlow(box.size.center(Offset.zero));
+    final before = {for (final n in store.nodes) n.id};
     store.instantiatePackage(template, center - const Offset(130, 55));
+    _markSpawnOrigins(
+      [
+        for (final n in store.nodes)
+          if (!before.contains(n.id)) n.id,
+      ],
+      center,
+    );
     _focusNode.requestFocus();
   }
 
@@ -1164,11 +1187,15 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   bool _pointInAnyNode(Offset flow) {
     for (final n in store.nodes) {
       if (_nodeHiddenByCollapsedPackage(n.id)) continue;
-      final r = n.position & nodeSize(n, store.edges);
+      final r = n.position & _nodeVisualSize(n);
       if (r.contains(flow)) return true;
     }
     return false;
   }
+
+  /// 节点卡片实际占位尺寸(含执行错误时底部的红色区域)
+  Size _nodeVisualSize(GraphNode n) =>
+      nodeSize(n, store.edges, result: store.results[n.id]);
 
   bool _nodeHiddenByCollapsedPackage(String nodeId) => store.groups.any(
     (group) =>
@@ -1269,7 +1296,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   // ---------------- Package 几何与命中 ----------------
 
   /// 分组包围盒:成员矩形 + 组内连线断点 + 14px/zoom 内边距(世界坐标;
-  /// 与 _EdgesPainter._paintGroupFrames 一致)
+  /// 与 _EdgesPainter._paintGroupFrames 一致)。
+  /// 成员尺寸取卡片实际占位(含执行错误底部红条),否则节点报错后
+  /// 边框会小于内容,无法随节点大小调整。
   Rect? _groupRect(NodeGroup g, {bool expandedGeometry = false}) {
     final proxy = expandedGeometry
         ? null
@@ -1279,7 +1308,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     for (final id in g.nodeIds) {
       for (final n in store.nodes) {
         if (n.id == id) {
-          final r = n.position & nodeSize(n, store.edges);
+          final r = n.position & _nodeVisualSize(n);
           box = box == null ? r : box.expandToInclude(r);
           break;
         }
@@ -1313,7 +1342,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     for (final node in store.nodes) {
       if (!group.nodeIds.contains(node.id)) continue;
       final position = _conversionLayoutTargets[node.id] ?? node.position;
-      final rect = position & nodeSize(node, store.edges);
+      final rect = position & _nodeVisualSize(node);
       box = box == null ? rect : box.expandToInclude(rect);
     }
     if (box == null) return null;
@@ -2011,7 +2040,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // (与渲染顺序一致)。主体内按下仅完成选中,不拖动节点。
     for (final n in store.nodes.reversed) {
       if (_nodeHiddenByCollapsedPackage(n.id)) continue;
-      final size = nodeSize(n, store.edges);
+      final size = _nodeVisualSize(n);
       final r = n.position & size;
       if (r.contains(flow)) {
         if (_shift) {
@@ -2289,7 +2318,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     final sel = <String>[];
     for (final n in store.nodes) {
       if (_nodeHiddenByCollapsedPackage(n.id)) continue;
-      final r = n.position & nodeSize(n, store.edges);
+      final r = n.position & _nodeVisualSize(n);
       if (rect.overlaps(r)) sel.add(n.id);
     }
     for (final group in store.groups) {
@@ -2386,14 +2415,18 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // 菜单弹出瞬间可能仍有残余 pan 手势在竞技场中,此处一并忽略(防反复重建)
     if (_menuPos != null) return;
     final flow = _toFlow(d.localPosition);
+    // 按下落在 Package 上:折叠态整张代理卡片、展开态区域空白处(边框/标签/
+    // 节点间隙)都可以整包拖动 —— 展开态按在成员节点上时仍优先拖节点
     for (final group in store.groups) {
-      if (!group.isPackage || !group.collapsed) continue;
-      final proxy = packageProxyRect(group, store.nodes, store.edges);
-      if (proxy != null && proxy.contains(flow)) {
-        _startPackageDrag(group);
-        _panFromNode = true;
-        return;
-      }
+      if (!group.isPackage) continue;
+      final region = group.collapsed
+          ? packageProxyRect(group, store.nodes, store.edges)
+          : _groupRect(group, expandedGeometry: true);
+      if (region == null || !region.contains(flow)) continue;
+      if (!group.collapsed && _pointInAnyNode(flow)) continue;
+      _startPackageDrag(group);
+      _panFromNode = true;
+      return;
     }
     // 记录起点是否落在节点内部:节点内部拖动不移动背景
     // (端口连线手势在节点卡内部,此处只处理冒泡到背景的 pan)
@@ -2490,7 +2523,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     }
     if (!_radialVisible) return;
     if (_radialLockedItem != null) {
-      if (delta.distance < radialDeadRadius) {
+      // 撤回区域 = 圆环外圈以内:圆点被拖回到圆环范围内即取消本次锁定,
+      // 松开右键不会创建节点(此前需拖回内圈才撤回)
+      if (delta.distance < radialCancelRadius) {
         _radialLockedItem = null;
         _radialDetachAnchor = null;
         _radialSection = null;
@@ -2542,9 +2577,18 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             .where((entry) => '${entry['id']}' == item.id)
             .firstOrNull;
         if (value != null) {
+          final before = {for (final n in store.nodes) n.id};
           store.instantiatePackage(
             value,
             _toFlow(localPosition) - const Offset(130, 55),
+          );
+          // 整个 Package 从圆球位置长出来
+          _markSpawnOrigins(
+            [
+              for (final n in store.nodes)
+                if (!before.contains(n.id)) n.id,
+            ],
+            _toFlow(localPosition),
           );
         }
       } else {
@@ -2720,6 +2764,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
     store.addNode(configId, initPos);
     final newNodeId = store.selectedId;
+    if (newNodeId != null) _nodeSpawnOrigins[newNodeId] = flowPos;
 
     final pc = _pendingConn;
     if (pc != null && newNodeId != null) {
@@ -2792,6 +2837,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         ? 'tsv'
         : 'csv';
     final id = store.addNode('table_input', flow);
+    _nodeSpawnOrigins[id] = flow;
     // updateNodeParams 在自动执行开启时会自动重算
     store.updateNodeParams(id, {
       'mode': 'manual',
@@ -2981,16 +3027,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               reverseDuration: MotionTokens.quick(context),
               switchInCurve: MotionTokens.emphasized,
               switchOutCurve: MotionTokens.exit,
-              transitionBuilder: (child, animation) => AnimatedBuilder(
-                animation: animation,
-                child: child,
-                builder: (context, child) => Opacity(
-                  opacity: animation.status == AnimationStatus.reverse
-                      ? animation.value
-                      : 1,
-                  child: child,
-                ),
-              ),
               child: !_radialVisible || _rightPressScreen == null
                   ? const SizedBox.shrink(
                       key: ValueKey('radial-node-menu-empty'),
@@ -3266,13 +3302,20 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             tween: Tween(begin: 0.0, end: 1.0),
             duration: MotionTokens.spatial(context),
             curve: MotionTokens.emphasized,
-            builder: (context, value, child) => BlurScaleTransition(
-              animation: AlwaysStoppedAnimation(value),
-              alignment: Alignment.topLeft,
-              beginScale: .72,
-              maxBlur: 16,
-              child: child!,
-            ),
+            onEnd: () => _nodeSpawnOrigins.remove(n.id),
+            builder: (context, value, child) {
+              // 新节点从"出生点"生长:锚点取拖出指示环/右键圆球所在的位置,
+              // 视觉上像是圆环里长出一个完整节点
+              final spawn = _nodeSpawnOrigins[n.id];
+              final origin = spawn == null ? null : spawn - n.position;
+              return BlurScaleTransition(
+                animation: AlwaysStoppedAnimation(value),
+                alignment: Alignment.topLeft,
+                origin: origin,
+                beginScale: spawn == null ? .9 : .08,
+                child: child!,
+              );
+            },
             child: NodeCard(nodeId: n.id, callbacks: _cardCallbacks),
           ),
         ),
@@ -3301,7 +3344,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             child: Opacity(
               opacity: value,
               child: Transform.scale(
-                scale: .94 + .06 * value,
+                scale: .86 + .14 * value,
                 alignment: Alignment.topLeft,
                 child: positionedChild,
               ),
@@ -3316,7 +3359,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   Widget _buildPackageBackgroundLayer(NodeGroup group, SyphonTheme t) {
     return AnimatedBuilder(
       key: ValueKey('package-region-layout-${group.id}'),
-      animation: store.layoutRevision,
+      // 同时监听 store:节点报错(底部红条)/参数变化会改变卡片高度,
+      // 只监听 layoutRevision 时边框不会跟着变
+      animation: Listenable.merge([store, store.layoutRevision]),
       builder: (context, _) {
         final current = store.groups
             .where((item) => item.id == group.id)
@@ -3343,7 +3388,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               duration: MotionTokens.spatial(context),
               curve: MotionTokens.emphasized,
               child: AnimatedScale(
-                scale: current.collapsed ? .97 : 1,
+                scale: current.collapsed ? .93 : 1,
                 duration: MotionTokens.spatial(context),
                 curve: MotionTokens.emphasized,
                 child: Stack(
@@ -3391,7 +3436,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   Widget _buildExpandedPackageToggle(NodeGroup group, SyphonTheme t) {
     return AnimatedBuilder(
       key: ValueKey('package-expanded-control-layout-${group.id}'),
-      animation: store.layoutRevision,
+      // 同区域层:节点尺寸变化(报错红条等)后按钮要跟到新的右上角
+      animation: Listenable.merge([store, store.layoutRevision]),
       builder: (context, _) {
         final current = store.groups
             .where((item) => item.id == group.id)
@@ -3481,7 +3527,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               duration: MotionTokens.spatial(context),
               curve: MotionTokens.emphasized,
               child: AnimatedScale(
-                scale: current.collapsed ? 1 : .92,
+                scale: current.collapsed ? 1 : .84,
                 duration: MotionTokens.spatial(context),
                 curve: MotionTokens.emphasized,
                 alignment: Alignment.topLeft,
@@ -3765,6 +3811,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           key: _miniMapKey,
           nodes: store.nodes,
           edges: store.edges,
+          // 折叠的 Package 在迷你图中画成灰色代理,成员节点随之隐藏
+          groups: store.groups,
           zoom: _zoom,
           pan: _pan,
           // 画布视口尺寸:画布层 LayoutBuilder 捕获(紧约束,保证有限);
@@ -3840,9 +3888,19 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         }
       }
       if (g != null && g.isPackage) {
+        final target = g;
         menu = PackageContextMenu(
           position: _menuPos!,
-          onSave: () => _savePackageToLibrary(g!.id),
+          collapsed: target.collapsed,
+          onToggleCollapsed: () {
+            if (target.collapsed) {
+              _expandPackage(target);
+            } else {
+              _collapsePackage(target);
+            }
+            _closeMenu();
+          },
+          onSave: () => _savePackageToLibrary(target.id),
           onDissolve: _dissolvePackageFromMenu,
         );
       }

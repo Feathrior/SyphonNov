@@ -1,11 +1,12 @@
 library;
 
 import 'dart:async';
-import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerDownEvent, PointerEvent, kSecondaryMouseButton;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart'
+    show SchedulerBinding, SchedulerPhase;
 import 'package:flutter/services.dart';
 
 import '../i18n.dart';
@@ -69,14 +70,7 @@ class _NodeShelfState extends State<NodeShelf> {
     _closing = false;
     _category = category;
     _packageMode = false;
-    if (_entry == null) {
-      _entry = OverlayEntry(builder: _buildOverlay);
-      Overlay.of(context).insert(_entry!);
-      HardwareKeyboard.instance.addHandler(_handleGlobalKey);
-      _keyHandlerInstalled = true;
-    } else {
-      _entry!.markNeedsBuild();
-    }
+    _ensureOverlay();
     if (mounted) setState(() {});
   }
 
@@ -84,15 +78,50 @@ class _NodeShelfState extends State<NodeShelf> {
     _leaveTimer?.cancel();
     _closing = false;
     _packageMode = true;
+    _ensureOverlay();
+    if (mounted) setState(() {});
+  }
+
+  /// 建立/刷新弹层。
+  ///
+  /// 关键点:任何会改动 Overlay 的操作都不能落在帧的构建/布局阶段,
+  /// 否则会抛 "setState() or markNeedsBuild() called during build",
+  /// 整屏短暂变成红色报错页。这里统一推迟到帧后执行。
+  void _ensureOverlay() {
+    if (!mounted) return;
     if (_entry == null) {
-      _entry = OverlayEntry(builder: _buildOverlay);
-      Overlay.of(context).insert(_entry!);
+      if (_inFrame) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _ensureOverlay();
+        });
+        return;
+      }
+      final entry = OverlayEntry(builder: _buildOverlay);
+      _entry = entry;
+      Overlay.of(context).insert(entry);
       HardwareKeyboard.instance.addHandler(_handleGlobalKey);
       _keyHandlerInstalled = true;
-    } else {
-      _entry!.markNeedsBuild();
+      return;
     }
-    if (mounted) setState(() {});
+    _markOverlay();
+  }
+
+  /// 帧的构建/布局/绘制阶段内不能直接 setState / markNeedsBuild
+  static bool get _inFrame =>
+      SchedulerBinding.instance.schedulerPhase != SchedulerPhase.idle &&
+      SchedulerBinding.instance.schedulerPhase !=
+          SchedulerPhase.postFrameCallbacks;
+
+  void _markOverlay() {
+    final entry = _entry;
+    if (entry == null || !mounted) return;
+    if (_inFrame) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _markOverlay();
+      });
+      return;
+    }
+    entry.markNeedsBuild();
   }
 
   void _scheduleClose() {
@@ -104,12 +133,25 @@ class _NodeShelfState extends State<NodeShelf> {
   void _beginClose() {
     if (_entry == null || _dragging || !mounted) return;
     _closing = true;
-    _entry!.markNeedsBuild();
+    _markOverlay();
     _leaveTimer = Timer(MotionTokens.standard(context), _removeOverlay);
   }
 
   void _removeOverlay() {
     _leaveTimer?.cancel();
+    if (!mounted) {
+      _detachOverlay();
+      return;
+    }
+    // 同样避免在帧内移除 OverlayEntry(会打断正在构建的子树)
+    if (_inFrame) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _detachOverlay());
+      return;
+    }
+    _detachOverlay();
+  }
+
+  void _detachOverlay() {
     _entry?.remove();
     _entry = null;
     _closing = false;
@@ -184,17 +226,6 @@ class _NodeShelfState extends State<NodeShelf> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
             child: Row(
               children: [
-                Icon(
-                  Icons.add_circle_outline_rounded,
-                  size: 15,
-                  color: t.textFaint,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  L.t('拖出节点'),
-                  style: TextStyle(fontSize: 11, color: t.textFaint),
-                ),
-                const SizedBox(width: 12),
                 for (final category in kAllCategories) ...[
                   _CategoryPill(
                     category: category,
@@ -225,6 +256,9 @@ class _NodeShelfState extends State<NodeShelf> {
   }
 
   Widget _buildOverlay(BuildContext overlayContext) {
+    // 弹层可能在被移除的同一帧内仍收到一次重建请求:此时宿主已销毁,
+    // 继续查询 MediaQuery 等祖先会抛"deactivated widget's ancestor"并整屏报错
+    if (!mounted) return const SizedBox.shrink();
     final screen = MediaQuery.sizeOf(overlayContext);
     final count = _packageMode
         ? SettingsStore.instance.packageLibrary.length
@@ -264,16 +298,10 @@ class _NodeShelfState extends State<NodeShelf> {
                   ),
                   transitionBuilder: (child, animation) => FadeTransition(
                     opacity: animation,
-                    child: SlideTransition(
-                      position: Tween(
-                        begin: const Offset(.035, 0),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: ScaleTransition(
-                        scale: Tween(begin: .96, end: 1.0).animate(animation),
-                        alignment: Alignment.topLeft,
-                        child: child,
-                      ),
+                    child: ScaleTransition(
+                      scale: Tween(begin: .94, end: 1.0).animate(animation),
+                      alignment: Alignment.topLeft,
+                      child: child,
                     ),
                   ),
                   child: KeyedSubtree(
@@ -290,14 +318,14 @@ class _NodeShelfState extends State<NodeShelf> {
                             },
                             onDelete: (id) {
                               SettingsStore.instance.deletePackage(id);
-                              _entry?.markNeedsBuild();
+                              _markOverlay();
                             },
                           )
                         : _NodeLibrary(
                             width: width,
                             visible: !_closing,
                             category: _category,
-                            onLibraryChanged: () => _entry?.markNeedsBuild(),
+                            onLibraryChanged: _markOverlay,
                             onPick: (id) {
                               SettingsStore.instance.recordNodeUse(id);
                               widget.onCreateNode(id);
@@ -337,7 +365,7 @@ class _NodeShelfState extends State<NodeShelf> {
                                 SettingsStore.instance.recordNodeUse(cfg.id);
                                 _removeOverlay();
                               } else {
-                                _entry?.markNeedsBuild();
+                                _markOverlay();
                               }
                             },
                             onDragCancel: () {
@@ -361,32 +389,6 @@ class _NodeShelfState extends State<NodeShelf> {
       ),
     );
   }
-}
-
-class _HoverLift extends StatelessWidget {
-  final bool active;
-  final double distance;
-  final double scale;
-  final Widget child;
-
-  const _HoverLift({
-    required this.active,
-    required this.distance,
-    required this.scale,
-    required this.child,
-  });
-
-  @override
-  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
-    tween: Tween(end: active ? 1 : 0),
-    duration: MotionTokens.standard(context),
-    curve: Curves.easeOutBack,
-    builder: (context, motion, child) => Transform.translate(
-      offset: Offset(0, -distance * motion),
-      child: Transform.scale(scale: 1 + (scale - 1) * motion, child: child),
-    ),
-    child: child,
-  );
 }
 
 class _CategoryPill extends StatefulWidget {
@@ -417,60 +419,55 @@ class _CategoryPillState extends State<_CategoryPill> {
     final info = kCategoryInfo[widget.category]!;
     final color = parseColor(info.color);
     final active = _hover || widget.active;
-    return _HoverLift(
-      active: active,
-      distance: 1.5,
-      scale: 1.025,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) {
-          setState(() => _hover = true);
-          widget.onEnter();
-        },
-        onExit: (_) {
-          setState(() => _hover = false);
-          widget.onExit();
-        },
-        child: Semantics(
-          button: true,
-          label: L.t(info.label),
-          child: InkWell(
-            onTap: widget.onTap,
-            mouseCursor: SystemMouseCursors.click,
-            borderRadius: BorderRadius.circular(10),
-            splashColor: Colors.transparent,
-            hoverColor: Colors.transparent,
-            focusColor: color.withValues(alpha: .08),
-            child: AnimatedContainer(
-              key: ValueKey('node-category-${widget.category.name}'),
-              duration: MotionTokens.standard(context),
-              curve: MotionTokens.enter,
-              padding: EdgeInsets.symmetric(
-                horizontal: active ? 13 : 10,
-                vertical: 6,
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        setState(() => _hover = true);
+        widget.onEnter();
+      },
+      onExit: (_) {
+        setState(() => _hover = false);
+        widget.onExit();
+      },
+      child: Semantics(
+        button: true,
+        label: L.t(info.label),
+        child: InkWell(
+          onTap: widget.onTap,
+          mouseCursor: SystemMouseCursors.click,
+          borderRadius: BorderRadius.circular(10),
+          splashColor: Colors.transparent,
+          hoverColor: Colors.transparent,
+          focusColor: color.withValues(alpha: .08),
+          child: AnimatedContainer(
+            key: ValueKey('node-category-${widget.category.name}'),
+            duration: MotionTokens.standard(context),
+            curve: MotionTokens.enter,
+            padding: EdgeInsets.symmetric(
+              horizontal: active ? 13 : 10,
+              vertical: 6,
+            ),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: active ? 0.14 : 0.07),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: color.withValues(alpha: active ? 0.38 : 0.14),
               ),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: active ? 0.14 : 0.07),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: color.withValues(alpha: active ? 0.38 : 0.14),
-                ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(info.icon, style: TextStyle(fontSize: 11, color: color)),
-                  const SizedBox(width: 6),
-                  Text(
-                    L.t(info.label),
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: t.text,
-                    ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(info.icon, style: TextStyle(fontSize: 11, color: color)),
+                const SizedBox(width: 6),
+                Text(
+                  L.t(info.label),
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: t.text,
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
@@ -504,52 +501,47 @@ class _PackagePillState extends State<_PackagePill> {
     final t = SyphonTheme.of(context);
     final active = _hover || widget.active;
     const color = Color(0xFF8A9099);
-    return _HoverLift(
-      active: active,
-      distance: 1.5,
-      scale: 1.025,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) {
-          setState(() => _hover = true);
-          widget.onEnter();
-        },
-        onExit: (_) {
-          setState(() => _hover = false);
-          widget.onExit();
-        },
-        child: InkWell(
-          onTap: widget.onTap,
-          borderRadius: BorderRadius.circular(10),
-          child: AnimatedContainer(
-            key: const Key('node-category-package'),
-            duration: MotionTokens.standard(context),
-            padding: EdgeInsets.symmetric(
-              horizontal: active ? 13 : 10,
-              vertical: 6,
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        setState(() => _hover = true);
+        widget.onEnter();
+      },
+      onExit: (_) {
+        setState(() => _hover = false);
+        widget.onExit();
+      },
+      child: InkWell(
+        onTap: widget.onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: AnimatedContainer(
+          key: const Key('node-category-package'),
+          duration: MotionTokens.standard(context),
+          padding: EdgeInsets.symmetric(
+            horizontal: active ? 13 : 10,
+            vertical: 6,
+          ),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: active ? .18 : .08),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: color.withValues(alpha: active ? .5 : .2),
             ),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: active ? .18 : .08),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: color.withValues(alpha: active ? .5 : .2),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.inventory_2_outlined, size: 13, color: color),
-                const SizedBox(width: 6),
-                Text(
-                  'Package',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: t.text,
-                  ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.inventory_2_outlined, size: 13, color: color),
+              const SizedBox(width: 6),
+              Text(
+                'Package',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: t.text,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -580,20 +572,14 @@ class _PackageLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) {
-          final eased = Curves.easeOutBack.transform(value);
-          return Opacity(
-            opacity: Curves.easeOutCubic.transform(value),
-            child: Transform.translate(
-              offset: Offset(0, -10 * (1 - value)),
-              child: Transform.scale(
-                scale: .92 + .08 * eased,
-                alignment: Alignment.topLeft,
-                child: child,
-              ),
-            ),
-          );
-        },
+        builder: (context, value, child) => Opacity(
+          opacity: value,
+          child: Transform.scale(
+            scale: .93 + .07 * value,
+            alignment: Alignment.topLeft,
+            child: child,
+          ),
+        ),
         child: RepaintBoundary(
           child: Container(
             key: const Key('package-library-overlay'),
@@ -725,20 +711,14 @@ class _NodeLibrary extends StatelessWidget {
         tween: Tween(begin: 0, end: visible ? 1 : 0),
         duration: MotionTokens.standard(context),
         curve: MotionTokens.emphasized,
-        builder: (context, value, child) {
-          final eased = Curves.easeOutBack.transform(value);
-          return Opacity(
-            opacity: Curves.easeOutCubic.transform(value),
-            child: Transform.translate(
-              offset: Offset(0, -10 * (1 - value)),
-              child: Transform.scale(
-                scale: .92 + .08 * eased,
-                alignment: Alignment.topLeft,
-                child: child,
-              ),
-            ),
-          );
-        },
+        builder: (context, value, child) => Opacity(
+          opacity: value,
+          child: Transform.scale(
+            scale: .93 + .07 * value,
+            alignment: Alignment.topLeft,
+            child: child,
+          ),
+        ),
         child: RepaintBoundary(
           child: Container(
             key: const Key('node-library-overlay'),
@@ -834,7 +814,7 @@ class _NodeTileState extends State<_NodeTile> {
     final tile = AnimatedContainer(
       key: ValueKey('node-spine-${widget.cfg.id}'),
       duration: MotionTokens.standard(context),
-      curve: Curves.easeOutBack,
+      curve: MotionTokens.enter,
       width: _hover ? 64 : 48,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 10),
       decoration: BoxDecoration(
@@ -880,34 +860,32 @@ class _NodeTileState extends State<_NodeTile> {
       ),
     );
 
-    return _HoverLift(
-      active: _hover,
-      distance: 4,
-      scale: 1.035,
-      child: Tooltip(
-        message: L.t(widget.cfg.description),
-        waitDuration: const Duration(milliseconds: 500),
-        child: MouseRegion(
-          cursor: SystemMouseCursors.grab,
-          onEnter: (_) => setState(() => _hover = true),
-          onExit: (_) => setState(() => _hover = false),
-          child: Draggable<String>(
-            data: widget.cfg.id,
-            dragAnchorStrategy: pointerDragAnchorStrategy,
-            feedback: _DragDot(color: color, icon: info.icon),
-            childWhenDragging: Opacity(opacity: .45, child: tile),
-            onDragStarted: widget.onDragStarted,
-            onDragUpdate: (details) =>
-                widget.onDragUpdate(details.globalPosition),
-            onDragEnd: (_) => widget.onDragEnd(),
-            onDraggableCanceled: (_, _) => widget.onDragCancel(),
-            child: InkWell(
-              onTap: widget.onPick,
-              borderRadius: BorderRadius.circular(12),
-              splashColor: Colors.transparent,
-              hoverColor: Colors.transparent,
-              child: tile,
-            ),
+    return Tooltip(
+      message: L.t(widget.cfg.description),
+      waitDuration: const Duration(milliseconds: 500),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: Draggable<String>(
+          data: widget.cfg.id,
+          // 指示环以指针为中心(与右键圆环拖出的圆球一致),
+          // 因此锚点取反馈框中心而不是左上角
+          dragAnchorStrategy: (_, _, _) =>
+              const Offset(_kDragRingExtent / 2, _kDragRingExtent / 2),
+          feedback: _DragRing(color: color),
+          childWhenDragging: Opacity(opacity: .45, child: tile),
+          onDragStarted: widget.onDragStarted,
+          onDragUpdate: (details) =>
+              widget.onDragUpdate(details.globalPosition),
+          onDragEnd: (_) => widget.onDragEnd(),
+          onDraggableCanceled: (_, _) => widget.onDragCancel(),
+          child: InkWell(
+            onTap: widget.onPick,
+            borderRadius: BorderRadius.circular(12),
+            splashColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            child: tile,
           ),
         ),
       ),
@@ -941,35 +919,29 @@ class _VerticalSpineLabel extends StatelessWidget {
   }
 }
 
-class _DragDot extends StatefulWidget {
+/// 拖拽指示环的反馈框尺寸(环本身 19px,其余留白给"从条形长出来"的形变)
+const double _kDragRingExtent = 52;
+
+/// 从顶部书脊拖出节点时的跟随指示环。
+///
+/// 起始形状是分类胶囊那样的横条,随后"长"成与右键圆环拖出的圆球同尺寸的
+/// 空心圆环:环内不再发光,描边加粗到 3px,以 30% 透明度 + 叠加(变亮)
+/// 混合绘制 —— 与画布/节点重叠时只提亮,不遮挡下层内容。
+class _DragRing extends StatefulWidget {
   final Color color;
-  final String icon;
-  const _DragDot({required this.color, required this.icon});
+
+  const _DragRing({required this.color});
 
   @override
-  State<_DragDot> createState() => _DragDotState();
+  State<_DragRing> createState() => _DragRingState();
 }
 
-class _DragDotState extends State<_DragDot>
+class _DragRingState extends State<_DragRing>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  bool _started = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(vsync: this);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _controller.duration = MotionTokens.standard(context);
-    if (!_started) {
-      _started = true;
-      _controller.forward();
-    }
-  }
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+  )..forward();
 
   @override
   void dispose() {
@@ -978,59 +950,58 @@ class _DragDotState extends State<_DragDot>
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _controller,
-    builder: (context, child) {
-      final frame = popMotionFrame(
-        _controller.value,
-        beginScale: .18,
-        maxBlur: 16,
-      );
-      return ImageFiltered(
-        imageFilter: ui.ImageFilter.blur(
-          sigmaX: frame.blur,
-          sigmaY: frame.blur,
-        ),
-        child: Opacity(
-          opacity: frame.opacity,
-          child: Transform.rotate(
-            angle:
-                -.16 * (1 - Curves.easeOutCubic.transform(_controller.value)),
-            child: Transform.scale(scale: frame.scale, child: child),
-          ),
-        ),
-      );
-    },
-    child: IgnorePointer(
-      child: Container(
+  Widget build(BuildContext context) => IgnorePointer(
+    child: AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) => CustomPaint(
         key: const Key('node-drag-dot'),
-        width: 34,
-        height: 34,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
+        size: const Size(_kDragRingExtent, _kDragRingExtent),
+        painter: _DragRingPainter(
           color: widget.color,
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: Colors.white.withValues(alpha: .9),
-            width: 2,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: widget.color.withValues(alpha: .48),
-              blurRadius: 18,
-              spreadRadius: 4,
-            ),
-          ],
-        ),
-        child: Text(
-          widget.icon,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 14,
-            decoration: TextDecoration.none,
-          ),
+          progress: _controller.value,
         ),
       ),
     ),
   );
+}
+
+class _DragRingPainter extends CustomPainter {
+  /// 与右键圆环拖出的圆点同尺寸(radial_node_menu 中半径为 9.5)
+  static const double _ringDiameter = 19;
+  static const double _ringStroke = 3;
+  static const double _barWidth = 44;
+  static const double _barHeight = 13;
+
+  final Color color;
+  final double progress;
+
+  const _DragRingPainter({required this.color, required this.progress});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final clamped = progress.clamp(0.0, 1.0);
+    // 轻微过冲:条形先缩到略小于圆环,再回弹到圆环尺寸
+    final morph = Curves.easeOutBack.transform(clamped);
+    final width = _barWidth + (_ringDiameter - _barWidth) * morph;
+    final height = _barHeight + (_ringDiameter - _barHeight) * morph;
+    final rect = Rect.fromCenter(
+      center: size.center(Offset.zero),
+      width: width,
+      height: height,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, Radius.circular(height / 2)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _ringStroke
+        ..color = color.withValues(
+          alpha: .3 * Curves.easeOut.transform(clamped),
+        )
+        ..blendMode = BlendMode.plus,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _DragRingPainter old) =>
+      old.color != color || old.progress != progress;
 }

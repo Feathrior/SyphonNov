@@ -12,6 +12,7 @@ import '../models/exec_engine.dart';
 import '../models/registry.dart';
 import '../store/graph_store.dart';
 import 'canvas_geometry.dart';
+import 'motion.dart';
 import 'principled.dart';
 import 'theme.dart';
 import 'viewer.dart';
@@ -124,7 +125,9 @@ class NodeCard extends StatelessWidget {
                         child: Padding(
                           padding: _bodyPadding(node),
                           child: AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 160),
+                            duration: MotionTokens.scaled(
+                              const Duration(milliseconds: 160),
+                            ),
                             switchInCurve: Curves.easeOut,
                             switchOutCurve: Curves.easeIn,
                             layoutBuilder: (currentChild, previousChildren) =>
@@ -348,7 +351,7 @@ class NodeCard extends StatelessWidget {
     ExecResult? result, {
     double contentOpacity = 1.0,
   }) {
-    const fade = Duration(milliseconds: 160);
+    final fade = MotionTokens.scaled(const Duration(milliseconds: 160));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -689,7 +692,7 @@ class NodeCard extends StatelessWidget {
           // 名称/类型文字:缩放隐藏时淡出(只留 handle),布局不变
           AnimatedOpacity(
             opacity: labelOpacity,
-            duration: const Duration(milliseconds: 160),
+            duration: MotionTokens.scaled(const Duration(milliseconds: 160)),
             curve: Curves.easeOut,
             child: textRow,
           ),
@@ -812,7 +815,7 @@ class _SocketHandleState extends State<_SocketHandle>
     final radius = BorderRadius.circular(widget.isExposed ? 5.5 : 2);
     return AnimatedScale(
       scale: active ? 1.5 : ((hovered || hoverConv) ? 1.28 : 1.0),
-      duration: const Duration(milliseconds: 180),
+      duration: MotionTokens.scaled(const Duration(milliseconds: 180)),
       curve: Curves.easeOutBack,
       child: Stack(
         alignment: Alignment.center,
@@ -838,7 +841,7 @@ class _SocketHandleState extends State<_SocketHandle>
               ),
             ),
           AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
+            duration: MotionTokens.scaled(const Duration(milliseconds: 180)),
             curve: Curves.easeOut,
             width: 11,
             height: widget.hh,

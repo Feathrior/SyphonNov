@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../i18n.dart';
 import 'context_menu.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 // ==================== 节点右键菜单(多选后) ====================
@@ -94,12 +95,16 @@ class NodeContextMenu extends StatelessWidget {
 
 class PackageContextMenu extends StatelessWidget {
   final Offset position;
+  final bool collapsed;
+  final VoidCallback onToggleCollapsed;
   final VoidCallback onSave;
   final VoidCallback onDissolve;
 
   const PackageContextMenu({
     super.key,
     required this.position,
+    required this.collapsed,
+    required this.onToggleCollapsed,
     required this.onSave,
     required this.onDissolve,
   });
@@ -127,6 +132,14 @@ class PackageContextMenu extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // 收起/展开:不依赖区域右上角小按钮的位置,是可靠的折叠入口
+            CtxMenuItem(
+              icon: collapsed
+                  ? Icons.unfold_more_rounded
+                  : Icons.unfold_less_rounded,
+              label: collapsed ? '展开 Package' : '收起 Package',
+              onTap: onToggleCollapsed,
+            ),
             CtxMenuItem(
               icon: Icons.save_outlined,
               label: '保存到 Package 库',
@@ -180,7 +193,7 @@ class _CtxMenuItemState extends State<CtxMenuItem> {
       child: GestureDetector(
         onTap: widget.enabled ? widget.onTap : null,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
+          duration: MotionTokens.scaled(const Duration(milliseconds: 120)),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
           decoration: BoxDecoration(
             // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑

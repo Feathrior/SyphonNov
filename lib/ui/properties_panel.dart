@@ -340,9 +340,8 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure>
                     child: BlurScaleTransition(
                       animation: animation,
                       alignment: Alignment.topCenter,
-                      beginScale: .99,
+                      beginScale: .94,
                       maxBlur: 4,
-                      elastic: false,
                       child: child!,
                     ),
                   );
@@ -1619,7 +1618,7 @@ class _SmButtonState extends State<_SmButton> {
           child: AnimatedContainer(
             width: widget.fullWidth ? double.infinity : null,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-            duration: const Duration(milliseconds: 120),
+            duration: MotionTokens.scaled(const Duration(milliseconds: 120)),
             decoration: BoxDecoration(
               // 同色 alpha=0,避免 transparent(黑 RGB)插值先变黑
               color: _hover ? t.bgFloat : t.bgFloat.withValues(alpha: 0),
@@ -1839,9 +1838,8 @@ class PropertiesPanel extends StatelessWidget {
       transitionBuilder: (child, animation) => BlurScaleTransition(
         animation: animation,
         alignment: Alignment.centerRight,
-        beginScale: 0.985,
+        beginScale: 0.94,
         maxBlur: 6,
-        elastic: false,
         child: child,
       ),
       child: KeyedSubtree(key: key, child: child),

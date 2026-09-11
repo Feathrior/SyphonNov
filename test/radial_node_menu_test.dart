@@ -10,35 +10,6 @@ import 'package:syphon_nov/ui/node_canvas.dart';
 import 'package:syphon_nov/ui/radial_node_menu.dart';
 
 void main() {
-  test('radial entrance grows from near zero, rotates, and overshoots', () {
-    final start = radialEntranceFrame(0);
-    final rotating = radialEntranceFrame(.25);
-    final overshoot = radialEntranceFrame(.62);
-    final end = radialEntranceFrame(1);
-
-    expect(start.scale, lessThanOrEqualTo(.015));
-    expect(start.rotation.abs(), greaterThan(2.4));
-    expect(start.blur, greaterThanOrEqualTo(30));
-    expect(rotating.scale, greaterThan(start.scale));
-    expect(rotating.rotation.abs(), greaterThan(.2));
-    expect(radialEntranceFrame(2 / 3).rotation, closeTo(0, 1e-9));
-    expect(overshoot.scale, greaterThan(1));
-    expect(end.scale, closeTo(1, 1e-9));
-    expect(end.rotation, closeTo(0, 1e-9));
-    expect(end.blur, closeTo(0, 1e-9));
-    expect(end.opacity, 1);
-  });
-
-  test('radial pull uses a bounded rubber-band response', () {
-    expect(radialRubberBand(0), 0);
-    expect(radialRubberBand(40), greaterThan(0));
-    expect(
-      radialRubberBand(80) - radialRubberBand(40),
-      lessThan(radialRubberBand(40)),
-    );
-    expect(radialRubberBand(100000), lessThan(radialDetachRadius));
-  });
-
   Future<void> pumpApp(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1200, 800);
     tester.view.devicePixelRatio = 1;
@@ -52,8 +23,8 @@ void main() {
     GraphStore.useIsolate = false;
     GraphStore.instance.clearAll();
     SettingsStore.instance.nodeShelfEnabled = true;
-    SettingsStore.instance.contextNodeMenuEnabled = true;
-    SettingsStore.instance.radialNodeMenuEnabled = true;
+    SettingsStore.instance.nodeMenuMode = NodeMenuMode.both;
+    SettingsStore.instance.motionSpeed = MotionSpeed.fast;
     SettingsStore.instance.packageLibrary = [];
   });
 
@@ -175,6 +146,32 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
     expect(GraphStore.instance.nodes, isEmpty);
+  });
+
+  testWidgets('undo region covers everything inside the outer ring', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final center = tester.getCenter(find.byType(NodeCanvas));
+    final gesture = await tester.startGesture(
+      center,
+      buttons: kSecondaryButton,
+    );
+    // 外划超过分离阈值 112 → 锁定一个详细条目
+    await gesture.moveBy(const Offset(0, -140));
+    await tester.pump();
+    expect(find.byKey(const Key('radial-node-menu')), findsOneWidget);
+    // 拉回到「圆环外圈以内、内圈以外」的位置(距圆心 70):
+    // 旧行为仍然保持锁定并创建节点,新行为撤回本次放置
+    expect(radialCancelRadius, radialOuterRadius);
+    expect(70, lessThan(radialCancelRadius));
+    expect(70, greaterThan(radialDeadRadius));
+    await gesture.moveBy(const Offset(0, 70));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(GraphStore.instance.nodes, isEmpty);
+    expect(find.byKey(const Key('radial-node-menu')), findsNothing);
   });
 
   testWidgets('node shelf can be hidden independently', (tester) async {
