@@ -78,13 +78,25 @@ class MotionTokens {
   static Duration dismissPanel(BuildContext context) =>
       _duration(context, 230, 170, times: brisk);
 
-  /// 右键圆环的呼出回弹与圆球分离/收束:比全局节奏再快一倍
+  /// 右键圆环的呼出回弹与圆球分离/收束:比全局节奏快(约 240ms)
   static Duration radialBounce(BuildContext context) =>
-      _duration(context, 320, 250, times: brisk);
+      _duration(context, 320, 250, times: brisk * .75);
 
-  /// 新节点入场(生长 + 回弹):比全局节奏再快一倍
+  /// 新节点入场(生长 + 回弹):比全局节奏快(约 240ms)
   static Duration nodeEntry(BuildContext context) =>
-      _duration(context, 320, 250, times: brisk);
+      _duration(context, 320, 250, times: brisk * .75);
+
+  /// "生长出现"共用参数:新节点生成、右键菜单与顶栏次级菜单呼出都用这一套,
+  /// 于是三者的出现轨迹完全一致(从一点长出来 + 由模糊转清晰 + 弹性回弹)。
+  ///
+  /// - [growBeginScale] 起始缩放(0.08 = 从一点长出来)
+  /// - [growMaxBlur] 起始模糊;显形阶段线性消退,幅度克制
+  /// - [growReveal] 透明度在前 40% 完成,之后专做缩放回弹
+  /// - [growBlurUntil] 模糊在前 40% 消退完 —— 生长到原尺寸时基本已经清晰
+  static const double growBeginScale = .08;
+  static const double growMaxBlur = 14;
+  static const double growReveal = .4;
+  static const double growBlurUntil = .4;
 
   /// 三档动效幅度与系统“减少动态效果”共用同一语义。完整保留全部位移、
   /// 缩放、旋转和模糊；简化只保留 42%；关闭直接落在最终静态状态。

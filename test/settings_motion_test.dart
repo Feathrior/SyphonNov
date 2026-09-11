@@ -61,18 +61,22 @@ void main() {
     );
     expect(popMotionFrame(1, beginScale: nodeBegin, reveal: .4).scale, 1);
 
-    // 节点入场的模糊:整段线性消退,后半程仍明显
-    const nodeBlur = 24.0;
-    expect(popMotionFrame(0, maxBlur: nodeBlur, blurUntil: 1).blur, nodeBlur);
+    // 节点入场的模糊:起点克制,前 40% 线性消退完 —— 长到原尺寸时已基本清晰
+    const nodeBlur = 14.0;
+    expect(popMotionFrame(0, maxBlur: nodeBlur, blurUntil: .4).blur, nodeBlur);
     expect(
-      popMotionFrame(.5, maxBlur: nodeBlur, blurUntil: 1).blur,
+      popMotionFrame(.4, maxBlur: nodeBlur, blurUntil: .4).blur,
+      0,
+      reason: '放大到原尺寸时模糊已消失',
+    );
+    expect(
+      popMotionFrame(.2, maxBlur: nodeBlur, blurUntil: .4).blur,
       closeTo(nodeBlur * .5, .01),
     );
-    expect(popMotionFrame(1, maxBlur: nodeBlur, blurUntil: 1).blur, 0);
     // 旧的默认节奏不变:早期就基本不模糊了
     expect(
       popMotionFrame(.2, maxBlur: nodeBlur).blur,
-      lessThan(popMotionFrame(.2, maxBlur: nodeBlur, blurUntil: 1).blur),
+      lessThan(popMotionFrame(.2, maxBlur: nodeBlur, blurUntil: .4).blur),
     );
   });
 
@@ -94,6 +98,15 @@ void main() {
     );
     // 零时长(关闭动效)不会被放大
     expect(MotionTokens.scaled(Duration.zero), Duration.zero);
+  });
+
+  testWidgets('node entry and radial bounce run at 0.75x of the brisk tier', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final context = tester.element(find.byKey(const Key('node-shelf')));
+    expect(MotionTokens.nodeEntry(context), const Duration(milliseconds: 240));
+    expect(MotionTokens.radialBounce(context), const Duration(milliseconds: 240));
   });
 
   testWidgets('motion tokens follow the speed setting', (tester) async {

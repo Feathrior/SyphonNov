@@ -3048,9 +3048,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           ),
           Positioned.fill(
             child: AnimatedSwitcher(
-              duration: MotionTokens.standard(context),
+              // 右键菜单与节点生成共用同一套"生长出现"节奏;入场曲线走线性,
+              // 形状由 BlurScaleTransition 统一塑形(否则会被前置曲线压成闪一下)
+              duration: MotionTokens.nodeEntry(context),
               reverseDuration: MotionTokens.dismiss(context),
-              switchInCurve: MotionTokens.emphasized,
+              switchInCurve: Curves.linear,
               switchOutCurve: MotionTokens.exit,
               transitionBuilder: (child, animation) =>
                   PopupMotionScope(animation: animation, child: child),
@@ -3318,13 +3320,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 animation: AlwaysStoppedAnimation(value),
                 alignment: Alignment.topLeft,
                 origin: origin,
-                beginScale: spawn == null ? .9 : .08,
-                // 起始模糊加大,并在整段动画里线性消退:节点"由模糊转清晰"
-                // 的过程才看得出来(旧节奏下模糊在节点还小又透明时就归零了)
-                maxBlur: 24,
-                blurUntil: 1,
+                beginScale: spawn == null ? .9 : MotionTokens.growBeginScale,
+                // 起始模糊克制,且在前 40% 就消退完:节点长到原尺寸时基本已清晰
+                maxBlur: MotionTokens.growMaxBlur,
+                blurUntil: MotionTokens.growBlurUntil,
                 // 前 40% 就完全显形,剩下的时间专门用来展示"从小变大"的回弹
-                reveal: .4,
+                reveal: MotionTokens.growReveal,
                 child: child!,
               );
             },

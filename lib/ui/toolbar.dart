@@ -525,17 +525,23 @@ class _MenuButtonState extends State<_MenuButton> {
         dismissOnPointerMoveAway: true,
         placementMode: fluent.FlyoutPlacementMode.bottomLeft,
         additionalOffset: 2,
-        transitionDuration: MotionTokens.standard(context),
+        // 与节点生成同一套"生长出现"节奏;路线本身走线性曲线,
+        // 形状交给 BlurScaleTransition(否则前置曲线会把生长压成"闪一下")
+        transitionDuration: MotionTokens.nodeEntry(context),
         reverseTransitionDuration: MotionTokens.dismiss(context),
-        transitionCurve: MotionTokens.emphasized,
+        transitionCurve: Curves.linear,
         transitionBuilder: (context, animation, placement, child) =>
             BlurScaleTransition(
               animation: CurvedAnimation(
                 parent: animation,
-                curve: MotionTokens.emphasized,
+                curve: Curves.linear,
                 reverseCurve: MotionTokens.exit,
               ),
               alignment: Alignment.topLeft,
+              beginScale: MotionTokens.growBeginScale,
+              maxBlur: MotionTokens.growMaxBlur,
+              blurUntil: MotionTokens.growBlurUntil,
+              reveal: MotionTokens.growReveal,
               child: child,
             ),
         builder: (context) => fluent.MenuFlyout(items: _closeableItems()),

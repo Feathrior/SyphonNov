@@ -92,14 +92,20 @@ class _ViewportAwareMenuState extends State<ViewportAwareMenu> {
   Widget build(BuildContext context) {
     final pos = _pos ?? _offscreen;
     final animation = PopupMotionScope.maybeOf(context);
+    // 与节点生成同一套"生长出现":从光标所在的那个角长出来
+    // (菜单向右下弹出时是左上角,翻转时对应换成右上/左下/右下角)
+    final fromRight = pos.dx < widget.mouse.dx;
+    final fromBottom = pos.dy < widget.mouse.dy;
     final content = animation == null
         ? widget.child
         : BlurScaleTransition(
             animation: animation,
-            alignment: Alignment.topLeft,
-            beginScale: .78,
-            maxBlur: 18,
-            beginOffset: const Offset(0, -8),
+            alignment: Alignment(fromRight ? -1 : 1, fromBottom ? -1 : 1),
+            beginScale: MotionTokens.growBeginScale,
+            maxBlur: MotionTokens.growMaxBlur,
+            blurUntil: MotionTokens.growBlurUntil,
+            reveal: MotionTokens.growReveal,
+            beginOffset: Offset(0, fromBottom ? -8 : 8),
             child: widget.child,
           );
     return Positioned(

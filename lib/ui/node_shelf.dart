@@ -866,8 +866,10 @@ class _NodeTileState extends State<_NodeTile> {
     final color = parseColor(info.color);
     final tile = AnimatedContainer(
       key: ValueKey('node-spine-${widget.cfg.id}'),
-      duration: MotionTokens.standard(context),
-      curve: Curves.easeOutBack,
+      // 与弹层尺寸过渡同一条曲线与时长:横向扫过书脊时,书脊位移与背景矩形
+      // 边缘同步推进(此前 easeOutBack 过冲 + 时长不一致,看起来会"跳变")
+      duration: MotionTokens.quick(context),
+      curve: MotionTokens.emphasized,
       width: _hover ? _kNodeTileHoverWidth : _kNodeTileWidth,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 10),
       decoration: BoxDecoration(
