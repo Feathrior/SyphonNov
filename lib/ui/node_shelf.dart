@@ -49,7 +49,16 @@ class NodeShelf extends StatefulWidget {
 }
 
 class _NodeShelfState extends State<NodeShelf> {
-  final LayerLink _link = LayerLink();
+  /// 锚点:上边栏自身的渲染框。弹层直接按它的屏幕矩形定位。
+  ///
+  /// 这里刻意**不用** `CompositedTransformTarget/Follower`:弹层内部每个书脊都带
+  /// Tooltip,而 Tooltip 需要计算锚点的 paint transform;当锚点位于 follower 层
+  /// 内、且该层变换尚未建立时,会抛
+  /// "The paint transform cannot be reliably computed because of RenderFollowerLayer(s)"。
+  /// 该异常会打断错误恢复流程(子树被 deactivate、InheritedWidget 依赖登记错乱),
+  /// 随后连续触发 `_dependents.isEmpty` / "check that it really is our descendant"
+  /// 两条框架断言,表现为整屏红色报错。
+  final GlobalKey _anchorKey = GlobalKey();
   OverlayEntry? _entry;
   Timer? _leaveTimer;
   Category _category = Category.input;
@@ -209,51 +218,49 @@ class _NodeShelfState extends State<NodeShelf> {
     final t = SyphonTheme.of(context);
     return Material(
       type: MaterialType.transparency,
-      child: CompositedTransformTarget(
-        link: _link,
-        child: RepaintBoundary(
-          child: Container(
-            key: const Key('node-shelf'),
-            height: SyphonDims.nodeShelfH,
-            decoration: BoxDecoration(
-              color: t.bgToolbar.withValues(alpha: 0.96),
-              border: Border(bottom: BorderSide(color: t.stroke)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(
-                    alpha: t.isDark ? 0.12 : 0.035,
-                  ),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+      child: RepaintBoundary(
+        key: _anchorKey,
+        child: Container(
+          key: const Key('node-shelf'),
+          height: SyphonDims.nodeShelfH,
+          decoration: BoxDecoration(
+            color: t.bgToolbar.withValues(alpha: 0.96),
+            border: Border(bottom: BorderSide(color: t.stroke)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(
+                  alpha: t.isDark ? 0.12 : 0.035,
                 ),
-              ],
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: Row(
-              children: [
-                for (final category in kAllCategories) ...[
-                  _CategoryPill(
-                    category: category,
-                    active: _entry != null && _category == category,
-                    onEnter: () => _open(category),
-                    onExit: _scheduleClose,
-                    onTap: () => _open(category),
-                  ),
-                  const SizedBox(width: 6),
-                ],
-                _PackagePill(
-                  active: _entry != null && _packageMode,
-                  onEnter: _openPackages,
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          child: Row(
+            children: [
+              for (final category in kAllCategories) ...[
+                _CategoryPill(
+                  category: category,
+                  active: _entry != null && _category == category,
+                  onEnter: () => _open(category),
                   onExit: _scheduleClose,
-                  onTap: _openPackages,
+                  onTap: () => _open(category),
                 ),
-                const Spacer(),
-                Text(
-                  L.t('悬停展开 · 拖拽创建'),
-                  style: TextStyle(fontSize: 10, color: t.textFaint),
-                ),
+                const SizedBox(width: 6),
               ],
-            ),
+              _PackagePill(
+                active: _entry != null && _packageMode,
+                onEnter: _openPackages,
+                onExit: _scheduleClose,
+                onTap: _openPackages,
+              ),
+              const Spacer(),
+              Text(
+                L.t('悬停展开 · 拖拽创建'),
+                style: TextStyle(fontSize: 10, color: t.textFaint),
+              ),
+            ],
           ),
         ),
       ),
@@ -264,6 +271,16 @@ class _NodeShelfState extends State<NodeShelf> {
     // 弹层可能在被移除的同一帧内仍收到一次重建请求:此时宿主已销毁,
     // 继续查询 MediaQuery 等祖先会抛"deactivated widget's ancestor"并整屏报错
     if (!mounted) return const SizedBox.shrink();
+    final overlayBox = Overlay.of(overlayContext).context.findRenderObject();
+    final anchorBox = _anchorKey.currentContext?.findRenderObject();
+    if (overlayBox is! RenderBox || anchorBox is! RenderBox) {
+      return const SizedBox.shrink();
+    }
+    // 上边栏左下角 + 16/8 偏移(与旧 CompositedTransformFollower 的锚点一致),
+    // 换算到 Overlay 坐标系;窗口尺寸变化时 MediaQuery 会驱动本弹层重建并重算
+    final anchor = overlayBox.globalToLocal(anchorBox.localToGlobal(Offset.zero));
+    final origin = Offset(anchor.dx + 16, anchor.dy + anchorBox.size.height + 8);
+
     final screen = MediaQuery.sizeOf(overlayContext);
     final count = _packageMode
         ? SettingsStore.instance.packageLibrary.length
@@ -277,12 +294,9 @@ class _NodeShelfState extends State<NodeShelf> {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          CompositedTransformFollower(
-            link: _link,
-            showWhenUnlinked: false,
-            targetAnchor: Alignment.bottomLeft,
-            followerAnchor: Alignment.topLeft,
-            offset: const Offset(16, 8),
+          Positioned(
+            left: origin.dx,
+            top: origin.dy,
             child: MouseRegion(
               onEnter: (_) => _leaveTimer?.cancel(),
               onExit: (_) => _scheduleClose(),
