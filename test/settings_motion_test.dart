@@ -41,6 +41,28 @@ void main() {
     expect(MotionSpeed.slow.durationFactor, closeTo(1 / 0.6, 1e-9));
   });
 
+  test('pop motion can finish revealing early and keep bouncing', () {
+    const nodeBegin = .08;
+    // reveal = .4:进度 40% 时透明度与清晰度都已完工
+    expect(popMotionFrame(.4, reveal: .4).opacity, 1);
+    expect(popMotionFrame(.4, reveal: .4).blur, lessThan(.05));
+    // 默认 reveal = 1:40% 时还没显形完(保持旧行为)
+    expect(popMotionFrame(.4).opacity, lessThan(1));
+    expect(popMotionFrame(1).opacity, 1);
+    // 显形提前后,回弹阶段仍然完整保留
+    expect(
+      popMotionFrame(.1, beginScale: nodeBegin, reveal: .4).scale,
+      lessThan(.9),
+      reason: '10% 时仍在生长',
+    );
+    expect(
+      popMotionFrame(.4, beginScale: nodeBegin, reveal: .4).scale,
+      greaterThan(1),
+      reason: '40% 时已进入过冲回弹',
+    );
+    expect(popMotionFrame(1, beginScale: nodeBegin, reveal: .4).scale, 1);
+  });
+
   test('animation speed scales hard-coded durations', () {
     const base = Duration(milliseconds: 230);
     const pacing = MotionTokens.pacing;

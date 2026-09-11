@@ -21,17 +21,24 @@ class PopMotionFrame {
 
 /// 浮层与新节点共用的弹性出现轨迹。打开时允许轻微越过终点，关闭时保持
 /// 单调，避免菜单收起时反向弹跳。
+///
+/// [reveal] 控制"显形"（透明度与去模糊）占整段动画的比例:小于 1 表示在
+/// 前 [reveal] 段就完全显形,剩下的时间专门留给缩放回弹 —— 这样"从小变大"
+/// 的过程是在完全不透明的状态下发生的,才会被看到。默认 1 表示与整体同步。
 PopMotionFrame popMotionFrame(
   double progress, {
   double beginScale = .9,
   double maxBlur = 14,
   bool opening = true,
+  double reveal = 1,
 }) {
   final t = progress.clamp(0.0, 1.0);
   final scaleProgress = opening
       ? Curves.easeOutBack.transform(t)
       : Curves.easeOutCubic.transform(t);
-  final clarity = Curves.easeOutCubic.transform(t);
+  final clarity = Curves.easeOutCubic.transform(
+    reveal <= 0 ? 1.0 : (t / reveal).clamp(0.0, 1.0),
+  );
   return PopMotionFrame(
     scale: beginScale + (1 - beginScale) * scaleProgress,
     opacity: clarity,
@@ -125,6 +132,10 @@ class MotionTokens {
 ///
 /// [origin] 可指定缩放的锚点(相对左下角对齐点的偏移),让内容"从某个位置
 /// 长出来"——例如新节点从上边栏拖出的圆环位置生长。
+///
+/// [reveal] 指定"显形"(透明度/去模糊)占整段动画的比例(默认 1 = 与整体同步)。
+/// 节点入场用 .4:前 40% 就完全显形,后面的时间专门展示缩放回弹,于是
+/// "从小变大"是在不透明状态下发生的,看得见。
 class BlurScaleTransition extends AnimatedWidget {
   final Widget child;
   final Alignment alignment;
@@ -133,6 +144,7 @@ class BlurScaleTransition extends AnimatedWidget {
   final double maxBlur;
   final Offset beginOffset;
   final bool elastic;
+  final double reveal;
 
   const BlurScaleTransition({
     super.key,
@@ -144,6 +156,7 @@ class BlurScaleTransition extends AnimatedWidget {
     this.maxBlur = 14,
     this.beginOffset = Offset.zero,
     this.elastic = true,
+    this.reveal = 1,
   }) : super(listenable: animation);
 
   Animation<double> get animation => listenable as Animation<double>;
@@ -154,17 +167,21 @@ class BlurScaleTransition extends AnimatedWidget {
     final amplitude = MotionTokens.amplitude(context);
     final effectiveBeginScale = 1 - (1 - beginScale) * amplitude;
     final effectiveBlur = maxBlur * amplitude;
+    // 显形进度:在前 reveal 段内完成(reveal = 1 时就是整体进度)
+    final revealed = reveal <= 0 ? 1.0 : (value / reveal).clamp(0.0, 1.0);
     final frame = elastic
         ? popMotionFrame(
             value,
             beginScale: effectiveBeginScale,
             maxBlur: effectiveBlur,
             opening: animation.status != AnimationStatus.reverse,
+            reveal: reveal,
           )
         : PopMotionFrame(
             scale: effectiveBeginScale + (1 - effectiveBeginScale) * value,
-            opacity: value,
-            blur: effectiveBlur * (1 - value),
+            // 线性分支保持线性节奏,reveal 只压缩显形区间(1 时与旧行为一致)
+            opacity: revealed,
+            blur: effectiveBlur * (1 - revealed),
           );
     final content = Transform.translate(
       offset:

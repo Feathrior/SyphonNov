@@ -3304,7 +3304,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             key: ValueKey('node-entry-${n.id}'),
             tween: Tween(begin: 0.0, end: 1.0),
             duration: MotionTokens.spatial(context),
-            curve: MotionTokens.emphasized,
+            // 线性推进:生长与回弹的形状交给 BlurScaleTransition 的弹性轨迹,
+            // 整段时长上都能看到缩放(此前曲线前置 + easeOutBack 叠加,
+            // "从小变大"被压在前几个百分点里,只剩回弹可见)
+            curve: Curves.linear,
             onEnd: () => _nodeSpawnOrigins.remove(n.id),
             builder: (context, value, child) {
               // 新节点从"出生点"生长:锚点取拖出指示环/右键圆球所在的位置,
@@ -3316,6 +3319,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 alignment: Alignment.topLeft,
                 origin: origin,
                 beginScale: spawn == null ? .9 : .08,
+                // 前 40% 就完全显形,剩下的时间专门用来展示"从小变大"的回弹
+                reveal: .4,
                 child: child!,
               );
             },
