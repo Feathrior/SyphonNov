@@ -148,7 +148,7 @@ void main() {
       expect(middleWidth, lessThan(finalWidth));
       expect(
         tester.widget<AnimatedContainer>(sizeTransition).duration,
-        const Duration(milliseconds: 320),
+        const Duration(milliseconds: 640),
       );
       expect(
         tester
@@ -156,7 +156,7 @@ void main() {
               find.byKey(const Key('node-library-content-transition')),
             )
             .duration,
-        const Duration(milliseconds: 230),
+        const Duration(milliseconds: 460),
       );
     },
   );
@@ -195,9 +195,11 @@ void main() {
   ) async {
     await pumpApp(tester);
     final shelf = tester.element(find.byKey(const Key('node-shelf')));
-    expect(MotionTokens.quick(shelf), const Duration(milliseconds: 110));
-    expect(MotionTokens.standard(shelf), const Duration(milliseconds: 230));
-    expect(MotionTokens.spatial(shelf), const Duration(milliseconds: 320));
+    // 基础节奏 110/230/320,再乘以全局节奏倍率(回弹整体放慢一倍)
+    expect(MotionTokens.pacing, 2);
+    expect(MotionTokens.quick(shelf), const Duration(milliseconds: 220));
+    expect(MotionTokens.standard(shelf), const Duration(milliseconds: 460));
+    expect(MotionTokens.spatial(shelf), const Duration(milliseconds: 640));
   });
 
   for (final scale in [1.0, 1.25, 1.5]) {

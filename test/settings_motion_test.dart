@@ -43,18 +43,19 @@ void main() {
 
   test('animation speed scales hard-coded durations', () {
     const base = Duration(milliseconds: 230);
-    expect(MotionTokens.scaled(base), base);
+    const pacing = MotionTokens.pacing;
+    expect(MotionTokens.scaled(base), const Duration(milliseconds: 460));
 
     SettingsStore.instance.motionSpeed = MotionSpeed.medium;
     expect(
       MotionTokens.scaled(base),
-      Duration(microseconds: (base.inMicroseconds / 0.75).round()),
+      Duration(microseconds: (base.inMicroseconds / 0.75 * pacing).round()),
     );
 
     SettingsStore.instance.motionSpeed = MotionSpeed.slow;
     expect(
       MotionTokens.scaled(base),
-      Duration(microseconds: (base.inMicroseconds / 0.6).round()),
+      Duration(microseconds: (base.inMicroseconds / 0.6 * pacing).round()),
     );
     // 零时长(关闭动效)不会被放大
     expect(MotionTokens.scaled(Duration.zero), Duration.zero);
@@ -63,22 +64,22 @@ void main() {
   testWidgets('motion tokens follow the speed setting', (tester) async {
     await pumpApp(tester);
     final context = tester.element(find.byKey(const Key('node-shelf')));
-    expect(MotionTokens.standard(context), const Duration(milliseconds: 230));
+    expect(MotionTokens.standard(context), const Duration(milliseconds: 460));
 
     SettingsStore.instance.motionSpeed = MotionSpeed.medium;
     expect(
       MotionTokens.standard(context),
-      Duration(microseconds: (230000 / 0.75).round()),
+      Duration(microseconds: (230000 / 0.75 * MotionTokens.pacing).round()),
     );
 
     SettingsStore.instance.motionSpeed = MotionSpeed.slow;
     expect(
       MotionTokens.spatial(context),
-      Duration(microseconds: (320000 / 0.6).round()),
+      Duration(microseconds: (320000 / 0.6 * MotionTokens.pacing).round()),
     );
     expect(
       MotionTokens.quick(context),
-      Duration(microseconds: (110000 / 0.6).round()),
+      Duration(microseconds: (110000 / 0.6 * MotionTokens.pacing).round()),
     );
 
     // 关闭动效:速度设置不再生效,一律零时长

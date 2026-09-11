@@ -65,11 +65,18 @@ class MotionTokens {
     return 1;
   }
 
+  /// 全局节奏倍率:所有动画时长统一 ×该系数。
+  ///
+  /// 面板/标签页等切换的弹性回弹在最慢档位下仍然偏快,这里整体放慢一倍
+  /// (时长 ×2 = 速度 ×0.5)。它与设置里的"动画速度"相乘,所以快速/适中/慢速
+  /// 三档会一起变慢;想回调只需改这一个数。
+  static const double pacing = 2;
+
   /// 按设置中的动画速度倍率缩放任意动画时长(1.0× 时原样返回)。
   /// 速度越慢,时长越长:适中 0.75× 速度 → 时长 ×1.33,慢速 0.6× → ×1.67。
   static Duration scaled(Duration base) {
     if (base <= Duration.zero) return Duration.zero;
-    final factor = SettingsStore.instance.motionSpeed.durationFactor;
+    final factor = SettingsStore.instance.motionSpeed.durationFactor * pacing;
     if (factor == 1) return base;
     return Duration(microseconds: (base.inMicroseconds * factor).round());
   }
