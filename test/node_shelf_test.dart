@@ -146,17 +146,19 @@ void main() {
       final finalWidth = tester.getSize(sizeTransition).width;
       expect(middleWidth, greaterThan(initialWidth));
       expect(middleWidth, lessThan(finalWidth));
+      // 背景矩形用"利落"档扩缩(quick × 全局节奏)
       expect(
         tester.widget<AnimatedContainer>(sizeTransition).duration,
-        const Duration(milliseconds: 640),
+        const Duration(milliseconds: 220),
       );
+      // 内容切换不再有退/入场动画:时长归零,直接替换
       expect(
         tester
             .widget<AnimatedSwitcher>(
               find.byKey(const Key('node-library-content-transition')),
             )
             .duration,
-        const Duration(milliseconds: 460),
+        Duration.zero,
       );
     },
   );

@@ -177,4 +177,43 @@ void main() {
     expect(spineOf(Category.input), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('category switch swaps content instantly (no exit/enter pass)', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final pointer = TestPointer(93, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      pointer.hover(
+        tester.getCenter(
+          find.byKey(ValueKey('node-category-${Category.compute.name}')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(spineOf(Category.compute), findsWidgets);
+
+    // 切到另一个分类:当帧就应换成新内容,不保留旧内容做退场
+    await tester.sendEventToBinding(
+      pointer.hover(
+        tester.getCenter(
+          find.byKey(ValueKey('node-category-${Category.visualize.name}')),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(spineOf(Category.visualize), findsWidgets, reason: '内容直接替换');
+    expect(spineOf(Category.compute), findsNothing, reason: '不应保留旧内容退场');
+
+    // 尺寸过渡仍在:背景矩形按"利落"档扩缩
+    expect(
+      tester
+          .widget<AnimatedContainer>(
+            find.byKey(const Key('node-library-size-transition')),
+          )
+          .duration,
+      const Duration(milliseconds: 220),
+    );
+    expect(tester.takeException(), isNull);
+  });
 }

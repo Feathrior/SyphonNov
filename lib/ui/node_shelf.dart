@@ -327,26 +327,15 @@ class _NodeShelfState extends State<NodeShelf> {
               child: AnimatedContainer(
                 key: const Key('node-library-size-transition'),
                 width: width,
-                duration: MotionTokens.spatial(overlayContext),
+                // 只让背景矩形扩缩到新内容所需的尺寸;时长取"利落"档,
+                // 切换分类时看起来就是矩形直接变宽/变窄
+                duration: MotionTokens.quick(overlayContext),
                 curve: MotionTokens.emphasized,
                 child: AnimatedSwitcher(
                   key: const Key('node-library-content-transition'),
-                  duration: MotionTokens.standard(overlayContext),
-                  reverseDuration: MotionTokens.dismiss(overlayContext),
-                  switchInCurve: MotionTokens.enter,
-                  switchOutCurve: MotionTokens.exit,
-                  layoutBuilder: (current, previous) => Stack(
-                    alignment: Alignment.topLeft,
-                    children: [...previous, ?current],
-                  ),
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: ScaleTransition(
-                      scale: Tween(begin: .94, end: 1.0).animate(animation),
-                      alignment: Alignment.topLeft,
-                      child: child,
-                    ),
-                  ),
+                  // 不同分类之间切换不做"退场→入场"两段动画:时长归零,
+                  // 内容直接替换,尺寸过渡交给上面的 AnimatedContainer
+                  duration: Duration.zero,
                   child: KeyedSubtree(
                     key: ValueKey(
                       _packageMode ? 'package-library' : _category.name,
