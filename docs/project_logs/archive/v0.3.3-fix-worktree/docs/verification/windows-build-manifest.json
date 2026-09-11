@@ -1,0 +1,55 @@
+{
+  "recordedAtUtc": "2026-09-06T05:34:44.6421416Z",
+  "project": "SyphonNov",
+  "source": {
+    "origin": "https://github.com/Feathrior/SyphonNov.git",
+    "baselineCommit": "0f76367618181ee5bcc407ba84ca8ea30b3d2d54",
+    "branch": "fix/scientific-correctness",
+    "includesUncommittedRepairs": true,
+    "auditDate": "2026-09-06"
+  },
+  "toolchain": {
+    "flutter": "3.47.2",
+    "dart": "3.13.2",
+    "visualStudioBuildTools": "2022 17.14.31",
+    "msvcToolsDirectory": "14.44.35207",
+    "cmake": "3.31.6-msvc6",
+    "windowsSdk": "10.0.26100.0",
+    "componentConfiguration": ".vsconfig",
+    "installerExitCode": 0,
+    "rebootRequired": false,
+    "vswhereComponentCheckPassed": true,
+    "flutterDoctorWindowsCheckPassed": true,
+    "flutterDoctorVisualStudioCheckPassed": true
+  },
+  "build": {
+    "command": "flutter --no-version-check --suppress-analytics build windows --release --no-pub",
+    "exitCode": 0,
+    "reportedCompilationSeconds": 63.4,
+    "configuration": "Release",
+    "platform": "windows-x64",
+    "log": "docs/verification/windows-build-2026-09-06.txt"
+  },
+  "artifacts": [
+    {
+      "path": "dist/windows-x64-2026-09-06/syphon_nov.exe",
+      "bytes": 136192,
+      "sha256": "ED71EC3E6F9394B2AC45E7DB2BE674780F71FE86CAEB8D212D3A7F62A5359DBC"
+    },
+    {
+      "path": "dist/SyphonNov-windows-x64-2026-09-06.zip",
+      "bytes": 13463531,
+      "sha256": "9BACDABB29BCFDB8970B759973F1F4F7309F8ABA9CDE2BC450EA6C45A3FD2881"
+    }
+  ],
+  "verificationScope": {
+    "nativeBuildPassed": true,
+    "actualGuiStartupVerified": false,
+    "guiInteractionVerified": false,
+    "guiToolError": "Windows Computer Use Sky runtime is unavailable",
+    "cleanMachineExecutionVerified": false,
+    "installerPackageCreated": false,
+    "remoteCiExecuted": false,
+    "limitation": "Release directory archive; keep executable, DLLs and data together. Capability audit reports open defects."
+  }
+}

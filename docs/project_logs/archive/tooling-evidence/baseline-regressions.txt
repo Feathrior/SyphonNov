@@ -1,0 +1,47 @@
+00:00 +0: loading C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/.syphon-tools/baseline/test/review_regressions_test.dart
+00:00 +0: review: exponentiation precedes multiplication
+00:00 +0 -1: review: exponentiation precedes multiplication [E]
+  Expected: <18>
+    Actual: <36.0>
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  test\review_regressions_test.dart 9:5               main.<fn>
+  
+00:00 +0 -1: review: generated small values survive downstream data
+00:00 +0 -2: review: generated small values survive downstream data [E]
+  Expected: a numeric value within <1e-20> of <1e-7>
+    Actual: <0.0>
+     Which:  differs by <1e-7>
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  test\review_regressions_test.dart 19:5              main.<fn>
+  
+00:00 +0 -2: review: derivative of a quadratic on an uneven grid
+00:00 +0 -3: review: derivative of a quadratic on an uneven grid [E]
+  Expected: a numeric value within <1e-12> of <2>
+    Actual: <3.0>
+     Which:  differs by <1.0>
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  test\review_regressions_test.dart 25:5              main.<fn>
+  
+00:00 +0 -3: review: repeated abscissas cannot silently become a derivative
+00:00 +0 -4: review: repeated abscissas cannot silently become a derivative [E]
+  Expected: throws <Instance of 'ArgumentError'>
+    Actual: <Closure: () => List<XY>>
+     Which: returned [Instance of 'XY', Instance of 'XY']
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  test\review_regressions_test.dart 29:5              main.<fn>
+  
+00:00 +0 -4: Some tests failed.
+
+Failing tests:
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/.syphon-tools/baseline/test/review_regressions_test.dart: review: derivative of a quadratic on an uneven grid
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/.syphon-tools/baseline/test/review_regressions_test.dart: review: exponentiation precedes multiplication
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/.syphon-tools/baseline/test/review_regressions_test.dart: review: generated small values survive downstream data
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/.syphon-tools/baseline/test/review_regressions_test.dart: review: repeated abscissas cannot silently become a derivative

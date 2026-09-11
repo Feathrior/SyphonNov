@@ -1,0 +1,316 @@
+00:00 +0: loading C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/SyphonNov/examples/audit/data_workflow_probe.dart
+00:00 +0: audit: quoted multiline CSV survives export and import
+00:00 +0 -1: audit: quoted multiline CSV survives export and import [E]
+  Expected: [
+              [
+                'A\n'
+                  'B',
+                'C'
+              ],
+              [1, 2]
+            ]
+    Actual: [['A', 'B,1', 'C'], [null, null, 2]]
+     Which: at location [0][0] is 'A' instead of 'A\n'
+              'B'
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  examples\audit\data_workflow_probe.dart 60:5        main.<fn>
+  
+00:00 +0 -1: audit: XLSX missing trailing header cells do not crash import
+00:00 +0 -2: audit: XLSX missing trailing header cells do not crash import [E]
+  RangeError (length): Invalid value: Only valid value is 0: 1
+  dart:core                                      _Array.[]
+  package:syphon_nov/models/csv.dart 190:29      xlsxBytesToColumns
+  examples\audit\data_workflow_probe.dart 67:21  main.<fn>
+  
+00:00 +0 -2: audit control: manual data survives workflow roundtrip
+00:00 +1 -2: audit: saved random preset preserves the data used for a figure
+00:00 +1 -3: audit: saved random preset preserves the data used for a figure [E]
+  Expected: [
+              [
+                '基因1',
+                '基因2',
+                '基因3',
+                '基因4',
+                '基因5',
+                '基因6',
+                '基因7',
+                '基因8',
+                '基因9',
+                '基因10',
+                '基因11',
+                '基因12',
+                '基因13',
+                '基因14',
+                '基因15',
+                '基因16',
+                '基因17',
+                '基因18',
+                '基因19',
+                '基因20',
+                '基因21',
+                '基因22',
+                '基因23',
+                '基因24',
+                ...
+              ],
+              [
+                -0.12,
+                1.4,
+                0.864,
+                0.196,
+                0.46,
+                1.451,
+                0.331,
+                -0.258,
+                0.024,
+                1.354,
+                -0.909,
+                2.081,
+                0.087,
+                1.646,
+                -0.183,
+                -1.4,
+                2.576,
+                1.638,
+                1.676,
+                -2.242,
+                1.544,
+                -0.686,
+                1.685,
+                2.997,
+                ...
+              ],
+              [
+                0.04173,
+                0.32286,
+                0.02936,
+                0.66688,
+                0.65128,
+                0.10728,
+                0.05289,
+                0.03346,
+                0.10451,
+                0.01563,
+                0.01457,
+                0.77411,
+                0.17881,
+                0.30001,
+                0.98999,
+                0.00485,
+                0.01144,
+                0.10871,
+                0.09043,
+                0.99902,
+                0.26221,
+                0.22567,
+                0.05765,
+                0.40918,
+                ...
+              ],
+              [
+                48.94,
+                57.02,
+                57.71,
+                49.79,
+                56.3,
+                54.31,
+                53.17,
+                40.07,
+                50.45,
+                58.68,
+                43.48,
+                65.71,
+                51.23,
+                59.37,
+                50.53,
+                50.26,
+                64.18,
+                60.77,
+                57.51,
+                33.28,
+                57.92,
+                40.93,
+                66.03,
+                63.73,
+                ...
+              ],
+              [
+                52.14,
+                56.23,
+                61.81,
+                51.28,
+                50.46,
+                54.37,
+                54.5,
+                40.37,
+                50.6,
+                55.16,
+                38.11,
+                59.21,
+                51.19,
+                55.75,
+                49.61,
+                45.01,
+                69.75,
+                58.26,
+                61.01,
+                31.23,
+                58.53,
+                44.37,
+                62.63,
+                64.41,
+                ...
+              ]
+            ]
+    Actual: [
+              [
+                '基因1',
+                '基因2',
+                '基因3',
+                '基因4',
+                '基因5',
+                '基因6',
+                '基因7',
+                '基因8',
+                '基因9',
+                '基因10',
+                '基因11',
+                '基因12',
+                '基因13',
+                '基因14',
+                '基因15',
+                '基因16',
+                '基因17',
+                '基因18',
+                '基因19',
+                '基因20',
+                '基因21',
+                '基因22',
+                '基因23',
+                '基因24',
+                ...
+              ],
+              [
+                0.334,
+                0.165,
+                0.076,
+                1.088,
+                0.327,
+                -0.467,
+                -1.953,
+                2.727,
+                0.308,
+                0.741,
+                -1.805,
+                1.031,
+                -1.054,
+                1.17,
+                -1.51,
+                1.851,
+                0.371,
+                -0.209,
+                -2.071,
+                -0.3,
+                -0.042,
+                0.329,
+                1.353,
+                -1.162,
+                ...
+              ],
+              [
+                0.03068,
+                0.02987,
+                0.00135,
+                0.06938,
+                0.04346,
+                0.67839,
+                0.00122,
+                0.07173,
+                0.92225,
+                0.46944,
+                0.00362,
+                0.0008,
+                0.00715,
+                0.00161,
+                0.10953,
+                0.32612,
+                0.0316,
+                0.0387,
+                0.20113,
+                0.10084,
+                0.00066,
+                0.24727,
+                0.62855,
+                0.04462,
+                ...
+              ],
+              [
+                54.23,
+                51.31,
+                46.69,
+                57.33,
+                55.13,
+                45.58,
+                36.39,
+                71.44,
+                51.13,
+                58.3,
+                43.01,
+                60.01,
+                42.98,
+                60.53,
+                38.88,
+                65.2,
+                43.94,
+                43.75,
+                35.1,
+                52.52,
+                49.88,
+                46.24,
+                59.45,
+                44.61,
+                ...
+              ],
+              [
+                51.78,
+                51.34,
+                46.67,
+                48.74,
+                52.07,
+                49.75,
+                39.64,
+                65.17,
+                51.38,
+                53.23,
+                43.74,
+                62.94,
+                34.94,
+                48.44,
+                44.85,
+                55.8,
+                52.63,
+                56.51,
+                37.93,
+                59.95,
+                46.91,
+                53.52,
+                55.83,
+                37.92,
+                ...
+              ]
+            ]
+     Which: at location [1][0] is <0.334> instead of <-0.12>
+  A saved workflow needs a realized data snapshot or reproducible generator state.
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  examples\audit\data_workflow_probe.dart 90:5        main.<fn>
+  
+00:00 +1 -3: Some tests failed.
+
+Failing tests:
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/SyphonNov/examples/audit/data_workflow_probe.dart: audit: XLSX missing trailing header cells do not crash import
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/SyphonNov/examples/audit/data_workflow_probe.dart: audit: quoted multiline CSV survives export and import
+  C:/Users/wsqq2/Documents/ChatGPT/Obsidian++/SyphonNov/examples/audit/data_workflow_probe.dart: audit: saved random preset preserves the data used for a figure
