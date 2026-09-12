@@ -42,7 +42,14 @@ class NodeShelf extends StatefulWidget {
   final ValueChanged<String> onCreateNode;
   final ValueChanged<Map<String, dynamic>> onCreatePackage;
   final NodeDropCallback onDropNode;
+
+  /// 从 Package 库拖出并松手:返回 true 表示画布接收(节点条随即收起)
+  final bool Function(Map<String, dynamic> value, Offset globalPosition)
+  onDropPackage;
   final NodeDragCallback onDragUpdate;
+
+  /// Package 库拖动中:刷新画布上的落点预览
+  final ValueChanged<Offset> onPackageDragUpdate;
   final VoidCallback onDragCancel;
 
   const NodeShelf({
@@ -50,7 +57,9 @@ class NodeShelf extends StatefulWidget {
     required this.onCreateNode,
     required this.onCreatePackage,
     required this.onDropNode,
+    required this.onDropPackage,
     required this.onDragUpdate,
+    required this.onPackageDragUpdate,
     required this.onDragCancel,
   });
 
@@ -235,6 +244,30 @@ class _NodeShelfState extends State<NodeShelf> {
     _pointerRouteInstalled = true;
   }
 
+  /// 开始从节点条往外拖(书脊或 Package 卡片):拖拽期间不收起弹层,
+  /// 并挂上全局指针/按键监听(右键或 Esc 取消)
+  void _beginDrag() {
+    _dragging = true;
+    _dragCanceled = false;
+    _lastDragGlobal = null;
+    _leaveTimer?.cancel();
+    _installPointerRoute();
+  }
+
+  /// 结束拖拽:清标志与全局监听,并通知画布撤掉落点预览
+  void _endDrag() {
+    _dragging = false;
+    _dragCanceled = false;
+    _lastDragGlobal = null;
+    if (_pointerRouteInstalled) {
+      GestureBinding.instance.pointerRouter.removeGlobalRoute(
+        _handleGlobalPointer,
+      );
+      _pointerRouteInstalled = false;
+    }
+    widget.onDragCancel();
+  }
+
   void _removeGlobalHandlers() {
     if (_keyHandlerInstalled) {
       HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
@@ -392,6 +425,25 @@ class _NodeShelfState extends State<NodeShelf> {
                                 SettingsStore.instance.deletePackage(id);
                                 _markOverlay();
                               },
+                              onDragStarted: _beginDrag,
+                              onDragUpdate: (position) {
+                                _lastDragGlobal = position;
+                                widget.onPackageDragUpdate(position);
+                              },
+                              onDragEnd: (value) {
+                                final position = _lastDragGlobal;
+                                final accepted =
+                                    !_dragCanceled &&
+                                    position != null &&
+                                    widget.onDropPackage(value, position);
+                                _endDrag();
+                                if (accepted) {
+                                  _removeOverlay();
+                                } else {
+                                  _markOverlay();
+                                }
+                              },
+                              onDragCancel: _endDrag,
                             )
                           : _NodeLibrary(
                               category: _category,
@@ -402,13 +454,7 @@ class _NodeShelfState extends State<NodeShelf> {
                                 widget.onCreateNode(id);
                                 _removeOverlay();
                               },
-                              onDragStarted: () {
-                                _dragging = true;
-                                _dragCanceled = false;
-                                _lastDragGlobal = null;
-                                _leaveTimer?.cancel();
-                                _installPointerRoute();
-                              },
+                              onDragStarted: _beginDrag,
                               onDragUpdate: (cfg, position) {
                                 _lastDragGlobal = position;
                                 widget.onDragUpdate(
@@ -422,35 +468,17 @@ class _NodeShelfState extends State<NodeShelf> {
                                 final accepted =
                                     !_dragCanceled &&
                                     position != null &&
-                                  widget.onDropNode(cfg.id, position);
-                              _dragging = false;
-                              _dragCanceled = false;
-                              _lastDragGlobal = null;
-                              if (_pointerRouteInstalled) {
-                                GestureBinding.instance.pointerRouter
-                                    .removeGlobalRoute(_handleGlobalPointer);
-                                _pointerRouteInstalled = false;
-                              }
-                              widget.onDragCancel();
-                              if (accepted) {
-                                SettingsStore.instance.recordNodeUse(cfg.id);
-                                _removeOverlay();
-                              } else {
-                                _markOverlay();
-                              }
-                            },
-                            onDragCancel: () {
-                              _dragging = false;
-                              _dragCanceled = false;
-                              _lastDragGlobal = null;
-                              if (_pointerRouteInstalled) {
-                                GestureBinding.instance.pointerRouter
-                                    .removeGlobalRoute(_handleGlobalPointer);
-                                _pointerRouteInstalled = false;
-                              }
-                              widget.onDragCancel();
-                            },
-                          ),
+                                    widget.onDropNode(cfg.id, position);
+                                _endDrag();
+                                if (accepted) {
+                                  SettingsStore.instance.recordNodeUse(cfg.id);
+                                  _removeOverlay();
+                                } else {
+                                  _markOverlay();
+                                }
+                              },
+                              onDragCancel: _endDrag,
+                            ),
                       ),
                     ),
                   ),
@@ -688,8 +716,22 @@ class _LibraryPanel extends StatelessWidget {
 class _PackageLibrary extends StatelessWidget {
   final ValueChanged<Map<String, dynamic>> onPick;
   final ValueChanged<String> onDelete;
+  final VoidCallback onDragStarted;
+  final ValueChanged<Offset> onDragUpdate;
+  final ValueChanged<Map<String, dynamic>> onDragEnd;
+  final VoidCallback onDragCancel;
 
-  const _PackageLibrary({required this.onPick, required this.onDelete});
+  const _PackageLibrary({
+    required this.onPick,
+    required this.onDelete,
+    required this.onDragStarted,
+    required this.onDragUpdate,
+    required this.onDragEnd,
+    required this.onDragCancel,
+  });
+
+  /// Package 卡片统一用中性灰(与画布上 Package 代理同色)
+  static const Color _tint = Color(0xFF8A9099);
 
   @override
   Widget build(BuildContext context) {
@@ -703,55 +745,77 @@ class _PackageLibrary extends StatelessWidget {
             )
           : ListView.separated(
               scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(2, 2, 2, 4),
               itemCount: items.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 7),
+              separatorBuilder: (_, _) => const SizedBox(width: _kNodeTileGap),
               itemBuilder: (context, index) {
                 final item = items[index];
                 final name = '${item['name'] ?? 'Package'}';
-                return InkWell(
-                  key: ValueKey('package-spine-${item['id']}'),
-                  onTap: () => onPick(item),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Container(
-                    width: 48,
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 10,
-                      horizontal: 7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF8A9099).withValues(alpha: .14),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: const Color(0xFF8A9099).withValues(alpha: .42),
+                final tile = Container(
+                  width: _kNodeTileWidth,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 10,
+                    horizontal: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _tint.withValues(alpha: .14),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _tint.withValues(alpha: .42)),
+                  ),
+                  child: Column(
+                    children: [
+                      const Icon(
+                        Icons.inventory_2_outlined,
+                        size: 16,
+                        color: _tint,
                       ),
-                    ),
-                    child: Column(
-                      children: [
-                        const Icon(
-                          Icons.inventory_2_outlined,
-                          size: 16,
-                          color: Color(0xFF8A9099),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: _VerticalSpineLabel(name, color: t.text),
+                      ),
+                      IconButton(
+                        key: ValueKey('delete-package-${item['id']}'),
+                        tooltip: '从 Package 库删除',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: 24,
+                          height: 24,
                         ),
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: _VerticalSpineLabel(name, color: t.text),
+                        icon: Icon(
+                          Icons.delete_outline,
+                          size: 15,
+                          color: t.textFaint,
                         ),
-                        IconButton(
-                          key: ValueKey('delete-package-${item['id']}'),
-                          tooltip: '从 Package 库删除',
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints.tightFor(
-                            width: 24,
-                            height: 24,
-                          ),
-                          icon: Icon(
-                            Icons.delete_outline,
-                            size: 15,
-                            color: t.textFaint,
-                          ),
-                          onPressed: () => onDelete('${item['id']}'),
-                        ),
-                      ],
+                        onPressed: () => onDelete('${item['id']}'),
+                      ),
+                    ],
+                  ),
+                );
+                // 与节点书脊一致:可拖到画布落位,也可单击直接创建
+                return Tooltip(
+                  message: name,
+                  waitDuration: const Duration(milliseconds: 500),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.grab,
+                    child: Draggable<Map<String, dynamic>>(
+                      key: ValueKey('package-spine-${item['id']}'),
+                      data: item,
+                      dragAnchorStrategy: (_, _, _) => const Offset(
+                        _kDragRingExtent / 2,
+                        _kDragRingExtent / 2,
+                      ),
+                      feedback: const _DragRing(color: _tint),
+                      childWhenDragging: Opacity(opacity: .45, child: tile),
+                      onDragStarted: onDragStarted,
+                      onDragUpdate: (details) =>
+                          onDragUpdate(details.globalPosition),
+                      onDragEnd: (_) => onDragEnd(item),
+                      onDraggableCanceled: (_, _) => onDragCancel(),
+                      child: InkWell(
+                        onTap: () => onPick(item),
+                        borderRadius: BorderRadius.circular(8),
+                        child: tile,
+                      ),
                     ),
                   ),
                 );
@@ -986,9 +1050,9 @@ const double _kDragRingExtent = 52;
 
 /// 从顶部书脊拖出节点时的跟随指示环。
 ///
-/// 起始形状是分类胶囊那样的横条,随后"长"成与右键圆环拖出的圆球同尺寸的
-/// 空心圆环:环内不再发光,描边加粗到 3px,以 30% 透明度 + 叠加(变亮)
-/// 混合绘制 —— 与画布/节点重叠时只提亮,不遮挡下层内容。
+/// 起始形状是分类胶囊那样的横条,随后很快(与节点入场同节奏)"长"成与右键
+/// 圆环拖出的圆球同尺寸的圆环:环体是几乎纯白的亮色(只留一点分类底色),
+/// 外面套一层同色发光阴影,不再额外描一圈细线。
 class _DragRing extends StatefulWidget {
   final Color color;
 
@@ -1012,7 +1076,8 @@ class _DragRingState extends State<_DragRing>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _controller.duration = MotionTokens.standard(context);
+    // 与节点入场同节奏:条形变圆环要利落,不能拖成"慢动作"
+    _controller.duration = MotionTokens.nodeEntry(context);
     if (!_started) {
       _started = true;
       _controller.forward();
@@ -1073,7 +1138,7 @@ class _DragRingState extends State<_DragRing>
 class _DragRingPainter extends CustomPainter {
   /// 与右键圆环拖出的圆点同尺寸(radial_node_menu 中半径为 9.5)
   static const double _ringDiameter = 19;
-  static const double _ringStroke = 3;
+  static const double _ringStroke = 3.8;
   static const double _barWidth = 44;
   static const double _barHeight = 13;
 
@@ -1089,20 +1154,33 @@ class _DragRingPainter extends CustomPainter {
     final morph = Curves.easeOutBack.transform(clamped);
     final width = _barWidth + (_ringDiameter - _barWidth) * morph;
     final height = _barHeight + (_ringDiameter - _barHeight) * morph;
-    final rect = Rect.fromCenter(
-      center: size.center(Offset.zero),
-      width: width,
-      height: height,
+    final rrect = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: size.center(Offset.zero),
+        width: width,
+        height: height,
+      ),
+      Radius.circular(height / 2),
     );
+    final appear = Curves.easeOut.transform(clamped);
+    // 环体接近纯白,只留一点分类底色 —— 在任何背景上都"跳"出来
+    final bright = Color.lerp(color, Colors.white, .86)!;
+    // 1) 分类色的发光阴影(柔和的模糊,不产生硬边)
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, Radius.circular(height / 2)),
+      rrect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _ringStroke * 3
+        ..color = color.withValues(alpha: .62 * appear)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+    );
+    // 2) 环体本身:粗一点、亮一点;不再额外描一圈细线
+    canvas.drawRRect(
+      rrect,
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = _ringStroke
-        ..color = color.withValues(
-          alpha: .3 * Curves.easeOut.transform(clamped),
-        )
-        ..blendMode = BlendMode.plus,
+        ..color = bright.withValues(alpha: .96 * appear),
     );
   }
 

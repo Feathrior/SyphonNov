@@ -1,8 +1,9 @@
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/foundation.dart' show ValueKey;
-import 'package:flutter/gestures.dart' show kSecondaryButton;
+import 'package:flutter/gestures.dart'
+    show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart'
-    show AlertDialog, DecoratedBox, IgnorePointer;
+    show AlertDialog, DecoratedBox, IgnorePointer, Key;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -13,7 +14,6 @@ import 'package:syphon_nov/ui/canvas_geometry.dart';
 import 'package:syphon_nov/ui/context_menu.dart';
 import 'package:syphon_nov/ui/node_canvas.dart';
 import 'package:syphon_nov/ui/node_card.dart';
-
 void main() {
   setUp(() {
     GraphStore.useIsolate = false;
@@ -380,6 +380,195 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
     expect(tester.getTopLeft(proxy), during);
+  });
+
+  testWidgets('saved Package can be dragged out of the shelf onto the canvas', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeShelfEnabled = true;
+    final store = GraphStore.instance;
+    final first = store.addNode(
+      'table_input',
+      const Offset(120, 90),
+      triggerRun: false,
+    );
+    final second = store.addNode(
+      'table_to_scatter',
+      const Offset(440, 90),
+      triggerRun: false,
+    );
+    final packaged = store.createPackage([first, second], '拖拽包');
+    final template = store.packageTemplate(packaged!)!;
+    store.clearAll();
+    SettingsStore.instance.packageLibrary = [template];
+
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+    expect(store.nodes, isEmpty);
+
+    // 悬停 Package 胶囊打开库
+    final pointer = TestPointer(77, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      pointer.hover(
+        tester.getCenter(find.byKey(const Key('node-category-package'))),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final tile = find.byKey(ValueKey('package-spine-${template['id']}'));
+    expect(tile, findsOneWidget);
+
+    // 从节点条拖到画布中央:拖动中有跟随的指示环,松手后落地成折叠 Package
+    final canvasRect = tester.getRect(find.byType(NodeCanvas));
+    final drop = canvasRect.center;
+    final start = tester.getCenter(tile);
+    final gesture = await tester.startGesture(
+      start,
+      kind: PointerDeviceKind.mouse,
+    );
+    // 分几步移动:真实拖拽会持续上报指针位置
+    await gesture.moveTo(start + const Offset(0, 60));
+    await tester.pump();
+    await gesture.moveTo(drop);
+    await tester.pump();
+    await gesture.moveTo(drop + const Offset(1, 1));
+    await tester.pump();
+    expect(find.byKey(const Key('node-drag-dot')), findsOneWidget);
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(store.groups.where((g) => g.name == '拖拽包'), hasLength(1));
+    final created = store.groups.first;
+    expect(created.collapsed, isTrue);
+    expect(created.nodeIds, hasLength(2));
+    expect(store.nodes, hasLength(2));
+    // 落点即指针位置:折叠代理中心贴在松手处附近
+    final proxy = find.byKey(ValueKey('package-node-${created.id}'));
+    expect(
+      (tester.getCenter(proxy) - drop).distance,
+      lessThan(40),
+      reason: 'Package 应落在指针松手的位置',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('nodes created inside an expanded Package join it', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeShelfEnabled = false;
+    SettingsStore.instance.nodeMenuMode = NodeMenuMode.menu;
+    final store = GraphStore.instance;
+    final first = store.addNode(
+      'table_input',
+      const Offset(80, 60),
+      triggerRun: false,
+    );
+    final second = store.addNode(
+      'table_to_scatter',
+      const Offset(340, 60),
+      triggerRun: false,
+    );
+    final packageId = store.createPackage([first, second], '包内新建')!;
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+    // 展开
+    await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+    await tester.pumpAndSettle();
+
+    final region = tester.getRect(
+      find.byKey(ValueKey('package-region-$packageId')),
+    );
+    // 区域内部空白(避开成员节点与边框带):右键呼出新建节点菜单
+    final inside = Offset(region.center.dx, region.top + 40);
+    await tester.tapAt(inside, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.text('分组'), findsNothing);
+    expect(find.text('收起 Package'), findsNothing, reason: '包内空白不是 Package 菜单');
+    final menu = find.byType(NodeMenu);
+    expect(menu, findsOneWidget, reason: '包内应能呼出新建节点菜单');
+
+    final before = store.nodes.length;
+    await tester.tap(find.text('表格输入').last);
+    await tester.pumpAndSettle();
+    expect(store.nodes.length, before + 1);
+    final created = store.selectedId!;
+    final group = store.groups.singleWhere((g) => g.id == packageId);
+    expect(
+      group.nodeIds,
+      contains(created),
+      reason: '在 Package 内部新建的节点应并入该 Package',
+    );
+
+    // 边框带上的右键仍然是 Package 菜单(折叠/保存/解散)
+    final grown = tester.getRect(
+      find.byKey(ValueKey('package-region-$packageId')),
+    );
+    await tester.tapAt(
+      Offset(grown.center.dx, grown.bottom - 6),
+      buttons: kSecondaryButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('收起 Package'), findsOneWidget);
+    await tester.tapAt(const Offset(4, 400));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('a node dragged from the shelf into an expanded Package joins it', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeShelfEnabled = true;
+    final store = GraphStore.instance;
+    final first = store.addNode(
+      'table_input',
+      const Offset(80, 60),
+      triggerRun: false,
+    );
+    final second = store.addNode(
+      'table_to_scatter',
+      const Offset(340, 60),
+      triggerRun: false,
+    );
+    final packageId = store.createPackage([first, second], '拖入')!;
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+    await tester.pumpAndSettle();
+
+    final region = tester.getRect(
+      find.byKey(ValueKey('package-region-$packageId')),
+    );
+    final dropInside = Offset(region.center.dx, region.top + 60);
+    final state = tester.state<NodeCanvasState>(find.byType(NodeCanvas));
+    final before = store.nodes.length;
+    // 上方栏拖出的光点落进 Package:新节点并入该 Package
+    expect(state.addNodeFromGlobal('axis_input', dropInside), isTrue);
+    await tester.pumpAndSettle();
+    expect(store.nodes.length, before + 1);
+    final created = store.selectedId!;
+    expect(
+      store.groups.singleWhere((g) => g.id == packageId).nodeIds,
+      contains(created),
+    );
+
+    // 落在 Package 外面的节点不并入
+    final outside = Offset(region.right + 60, region.bottom + 60);
+    expect(state.addNodeFromGlobal('axis_input', outside), isTrue);
+    await tester.pumpAndSettle();
+    expect(
+      store.groups.singleWhere((g) => g.id == packageId).nodeIds,
+      isNot(contains(store.selectedId)),
+    );
   });
 
   testWidgets('physical Delete remains available after rebinding deletion', (

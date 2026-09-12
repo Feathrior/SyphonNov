@@ -465,9 +465,17 @@ class _AppShellState extends State<_AppShell> {
                         position,
                       ) ??
                       false,
+                  onDropPackage: (value, position) =>
+                      _canvasKey.currentState?.addPackageFromGlobal(
+                        value,
+                        position,
+                      ) ??
+                      false,
                   onDragUpdate: (id, category, position) => _canvasKey
                       .currentState
                       ?.updateExternalNodeDrag(id, category, position),
+                  onPackageDragUpdate: (position) => _canvasKey.currentState
+                      ?.updateExternalPackageDrag(position),
                   onDragCancel: () =>
                       _canvasKey.currentState?.cancelExternalNodeDrag(),
                 ),

@@ -831,8 +831,37 @@ class GraphStore extends ChangeNotifier {
     return group.id;
   }
 
-  void setPackageCollapsed(String groupId, bool collapsed) {
-    final target = groups.where((group) => group.id == groupId).firstOrNull;
+  /// 把节点并入已有 Package(在 Package 内部新建节点时使用)。
+  ///
+  /// 一个节点只能属于一个 Package:若它原本在别的 Package 里,会先被移出;
+  /// 原 Package 因此变空时一并移除。
+  void addNodesToPackage(String groupId, Iterable<String> ids) {
+    final target = groups
+        .where((g) => g.id == groupId && g.isPackage)
+        .firstOrNull;
+    if (target == null) return;
+    final add = ids
+        .where((id) => nodes.any((node) => node.id == id))
+        .toSet()
+        .difference(target.nodeIds.toSet());
+    if (add.isEmpty) return;
+    snapshotNow();
+    final next = [
+      for (final group in groups)
+        group.id == groupId
+            ? group.copyWith(nodeIds: [...group.nodeIds, ...add])
+            : group.copyWith(
+                nodeIds: group.nodeIds
+                    .where((id) => !add.contains(id))
+                    .toList(),
+              ),
+    ]..removeWhere((group) => group.nodeIds.isEmpty);
+    groups = next;
+    structureVersion++;
+    notifyListeners();
+  }
+
+  void setPackageCollapsed(String groupId, bool collapsed) {    final target = groups.where((group) => group.id == groupId).firstOrNull;
     if (target == null || !target.isPackage || target.collapsed == collapsed) {
       return;
     }

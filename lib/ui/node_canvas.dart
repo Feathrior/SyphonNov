@@ -32,6 +32,10 @@ import 'node_context_menus.dart';
 import 'radial_node_menu.dart';
 import 'theme.dart';
 
+/// 展开 Package 的"边框带"宽度:右键落在边框这一圈上算点击 Package 本体
+/// (呼出折叠/保存/解散菜单),落在内部空白则是在包内新建节点。
+const double _kPackageFrameBand = 18;
+
 // ==================== 背景网格 ====================
 
 class _BgPainter extends CustomPainter {
@@ -90,7 +94,16 @@ class _PackageRegionPainter extends CustomPainter {
   final Color color;
   final double zoom;
 
-  const _PackageRegionPainter({required this.color, required this.zoom});
+  /// 填充与虚线框分开绘制:填充留在节点之下,虚线框浮到节点之上
+  final bool fill;
+  final bool frame;
+
+  const _PackageRegionPainter({
+    required this.color,
+    required this.zoom,
+    this.fill = true,
+    this.frame = true,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -98,7 +111,10 @@ class _PackageRegionPainter extends CustomPainter {
     final radius = Radius.circular(10 / zoom);
     final rect = Offset.zero & size;
     final rrect = RRect.fromRectAndRadius(rect, radius);
-    canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: .105));
+    if (fill) {
+      canvas.drawRRect(rrect, Paint()..color = color.withValues(alpha: .105));
+    }
+    if (!frame) return;
     final path = Path()..addRRect(rrect);
     final paint = Paint()
       ..color = color.withValues(alpha: .78)
@@ -123,7 +139,10 @@ class _PackageRegionPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _PackageRegionPainter oldDelegate) =>
-      oldDelegate.color != color || oldDelegate.zoom != zoom;
+      oldDelegate.color != color ||
+      oldDelegate.zoom != zoom ||
+      oldDelegate.fill != fill ||
+      oldDelegate.frame != frame;
 }
 
 class _PackageOverviewPainter extends CustomPainter {
@@ -1033,6 +1052,43 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   void cancelExternalNodeDrag() => _dropPreview.value = null;
 
+  /// Package 库拖出时刷新落点预览(中性灰,与 Package 代理同色)
+  void updateExternalPackageDrag(Offset globalPosition) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final local = box.globalToLocal(globalPosition);
+    final accepted = (Offset.zero & box.size).contains(local);
+    _dropPreview.value = (
+      local: local,
+      color: const Color(0xFF8A9099),
+      accepted: accepted,
+    );
+  }
+
+  /// 用全局指针坐标放置 Package(从上方栏 Package 库拖出)。
+  /// 返回 false 表示画布外松手,画布不变。
+  bool addPackageFromGlobal(
+    Map<String, dynamic> template,
+    Offset globalPosition,
+  ) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return false;
+    final local = box.globalToLocal(globalPosition);
+    if (!(Offset.zero & box.size).contains(local)) return false;
+    // 指示环中心(指针位置)= 入场动画的生长锚点
+    final pointerFlow = _toFlow(local);
+    final before = {for (final n in store.nodes) n.id};
+    // 折叠代理卡片约 260x100:以指针为中心落下
+    store.instantiatePackage(template, pointerFlow - const Offset(130, 50));
+    _markSpawnOrigins([
+      for (final n in store.nodes)
+        if (!before.contains(n.id)) n.id,
+    ], pointerFlow);
+    cancelExternalNodeDrag();
+    _focusNode.requestFocus();
+    return true;
+  }
+
   /// 用全局指针坐标放置节点。返回 false 表示画布外取消，工作流不变化。
   bool addNodeFromGlobal(String configId, Offset globalPosition) {
     final box = context.findRenderObject();
@@ -1052,6 +1108,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     final id = store.addNode(configId, flow);
     // 入场动画的锚点 = 松手时指示环所在的位置
     _nodeSpawnOrigins[id] = pointerFlow;
+    // 落在 Package 内部(展开区域或折叠代理上)就并入该 Package
+    _joinPackageAt(id, pointerFlow);
     final node = store.nodeOf(id);
     if (node != null) {
       final size = nodeSize(node, store.edges, result: store.results[id]);
@@ -1470,6 +1528,27 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       if (r != null && r.contains(flow)) return g.id;
     }
     return null;
+  }
+
+  /// 右键落点是否应打开 Package 菜单(而不是在 Package 内部新建节点)。
+  ///
+  /// 折叠的 Package 代理卡片整张都算"卡片",菜单随处可呼出;展开的 Package
+  /// 只有边框一圈是 Package 自身(折叠/保存/解散),中间区域留给"在包内
+  /// 新建节点"——否则包内一旦变空就再也放不进新节点。
+  bool _packageMenuWantedAt(Offset flow, String groupId) {
+    final group = store.groups.where((g) => g.id == groupId).firstOrNull;
+    if (group == null || group.collapsed) return true;
+    final rect = _groupRect(group);
+    if (rect == null) return true;
+    return !rect.deflate(_kPackageFrameBand / _zoom).contains(flow);
+  }
+
+  /// 在 Package 内部新建的节点自动并入该 Package(展开区域内或折叠代理上)
+  void _joinPackageAt(String? nodeId, Offset flow) {
+    if (nodeId == null) return;
+    final gid = _groupAt(flow);
+    if (gid == null) return;
+    store.addNodesToPackage(gid, [nodeId]);
   }
 
   void _updateInsertPreview(String draggedId) {
@@ -2118,7 +2197,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     if (e.buttons & kSecondaryMouseButton != 0) {
       if (_pointInAnyNode(flow)) return; // 节点上右键走卡片折叠
       final gid = _groupAt(flow);
-      if (gid != null) {
+      if (gid != null && _packageMenuWantedAt(flow, gid)) {
         _menuPos = e.localPosition;
         _groupMenuFor = gid;
         _nodeMenuFor = null;
@@ -2126,6 +2205,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         _bump();
         return;
       }
+      // 展开 Package 内部空白:走新建节点菜单/圆环,新建的节点自动并入该 Package
       final settings = SettingsStore.instance;
       if (settings.radialNodeMenuEnabled) {
         _beginRadialGesture(e.localPosition);
@@ -2939,6 +3019,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     store.addNode(configId, initPos);
     final newNodeId = store.selectedId;
     if (newNodeId != null) _nodeSpawnOrigins[newNodeId] = flowPos;
+    // 在 Package 内部呼出菜单创建:新节点并入该 Package
+    _joinPackageAt(newNodeId, flowPos);
 
     final pc = _pendingConn;
     if (pc != null && newNodeId != null) {
@@ -3012,6 +3094,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         : 'csv';
     final id = store.addNode('table_input', flow);
     _nodeSpawnOrigins[id] = flow;
+    _joinPackageAt(id, flow);
     // updateNodeParams 在自动执行开启时会自动重算
     store.updateNodeParams(id, {
       'mode': 'manual',
@@ -3373,6 +3456,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 // the whole card, including its expand button, remains hittable.
                 for (final group in store.groups)
                   if (group.isPackage) _buildPackageLayer(group, t),
+                // 展开 Package 的虚线框与名称也放在节点之上:
+                // 任何一个单节点压上去都不该挡住"这块区域属于哪个 Package"
+                for (final group in store.groups)
+                  if (group.isPackage) _buildPackageRegionForeground(group, t),
                 for (final group in store.groups)
                   if (group.isPackage) _buildExpandedPackageToggle(group, t),
               ],
@@ -3543,6 +3630,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
+  /// 展开 Package 的区域层。底色填充与"虚线框 + 名称"分成两层渲染:
+  /// 填充留在节点之下(压上去会把节点内容糊掉),虚线框与名称浮到节点之上
+  /// (被任何一个单节点盖住都看不出这块区域属于哪个 Package)。
   Widget _buildPackageBackgroundLayer(NodeGroup group, SyphonTheme t) {
     return AnimatedBuilder(
       key: ValueKey('package-region-layout-${group.id}'),
@@ -3554,14 +3644,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             .where((item) => item.id == group.id)
             .firstOrNull;
         if (current == null) return const SizedBox.shrink();
-        final isExpanding =
-            _conversionLayoutController.isAnimating &&
-            _conversionLayoutTargets.keys.any(current.nodeIds.contains);
-        // During repulsive expansion the nodes move every frame. Anchor the
-        // control to the final frame so it cannot slide out from under a click.
-        final rect = isExpanding
-            ? _packageTargetRect(current)
-            : _groupRect(current, expandedGeometry: true);
+        final rect = _packageRegionRect(current);
         if (rect == null) return const SizedBox.shrink();
         return Positioned(
           left: rect.left,
@@ -3578,6 +3661,49 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 scale: current.collapsed ? .93 : 1,
                 duration: MotionTokens.spatial(context),
                 curve: MotionTokens.emphasized,
+                child: CustomPaint(
+                  painter: _PackageRegionPainter(
+                    color: const Color(0xFF8A9099),
+                    zoom: _zoom,
+                    fill: true,
+                    frame: false,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 展开 Package 的虚线框与名称标签:画在所有节点之上
+  Widget _buildPackageRegionForeground(NodeGroup group, SyphonTheme t) {
+    return AnimatedBuilder(
+      key: ValueKey('package-region-foreground-layout-${group.id}'),
+      animation: Listenable.merge([store, store.layoutRevision]),
+      builder: (context, _) {
+        final current = store.groups
+            .where((item) => item.id == group.id)
+            .firstOrNull;
+        if (current == null) return const SizedBox.shrink();
+        final rect = _packageRegionRect(current);
+        if (rect == null) return const SizedBox.shrink();
+        return Positioned(
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              key: ValueKey('package-region-frame-${current.id}'),
+              opacity: current.collapsed ? 0 : 1,
+              duration: MotionTokens.spatial(context),
+              curve: MotionTokens.emphasized,
+              child: AnimatedScale(
+                scale: current.collapsed ? .93 : 1,
+                duration: MotionTokens.spatial(context),
+                curve: MotionTokens.emphasized,
                 child: Stack(
                   children: [
                     Positioned.fill(
@@ -3585,6 +3711,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                         painter: _PackageRegionPainter(
                           color: const Color(0xFF8A9099),
                           zoom: _zoom,
+                          fill: false,
+                          frame: true,
                         ),
                       ),
                     ),
@@ -3592,6 +3720,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                       left: 7 / _zoom,
                       top: 5 / _zoom,
                       child: Container(
+                        key: ValueKey('package-region-name-${current.id}'),
                         padding: EdgeInsets.symmetric(
                           horizontal: 6 / _zoom,
                           vertical: 2 / _zoom,
@@ -3618,6 +3747,17 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         );
       },
     );
+  }
+
+  /// 展开 Package 区域的外框矩形;回弹展开过程中节点每帧都在动,
+  /// 因此以"最终帧"为锚点,避免控制区从点击位置滑走。
+  Rect? _packageRegionRect(NodeGroup group) {
+    final isExpanding =
+        _conversionLayoutController.isAnimating &&
+        _conversionLayoutTargets.keys.any(group.nodeIds.contains);
+    return isExpanding
+        ? _packageTargetRect(group)
+        : _groupRect(group, expandedGeometry: true);
   }
 
   Widget _buildExpandedPackageToggle(NodeGroup group, SyphonTheme t) {
