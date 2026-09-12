@@ -269,15 +269,18 @@ class _ParticleBurst {
   final List<_Particle> particles;
   final double g; // 重力加速度(flow 单位/秒²,向下为正)
   final DateTime at;
-  /// 烟团:粒子逐渐膨胀并带柔化模糊(火花粒子则是缩小淡出)
-  final bool smoke;
+  /// 膨胀:烟团/果汁是越散越大;火花则是缩小淡出
+  final bool grow;
+  /// 柔化模糊半径(0 = 硬边火花;火光/烟雾用一点点柔光更好看)
+  final double blur;
 
   const _ParticleBurst({
     required this.origin,
     required this.particles,
     required this.g,
     required this.at,
-    this.smoke = false,
+    this.grow = false,
+    this.blur = 0,
   });
 }
 
@@ -661,18 +664,26 @@ class _EdgesPainter extends CustomPainter {
       final t = lb.progress.clamp(0.0, 1.0).toDouble();
       // 前 14% 完全不透明,之后线性淡出到 0(比原曲线更显眼)
       final fade = t < 0.14 ? 1.0 : ((1 - t) / 0.86).clamp(0.0, 1.0);
-      final smoke = lb.burst.smoke;
-      paint.maskFilter = smoke
-          ? MaskFilter.blur(BlurStyle.normal, 3 + 9 * t)
-          : null;
+      final grow = lb.burst.grow;
+      final softness = lb.burst.blur;
+      paint.maskFilter = softness <= 0
+          ? null
+          : MaskFilter.blur(
+              BlurStyle.normal,
+              grow ? softness * (0.4 + t) : softness,
+            );
       for (final p in lb.burst.particles) {
         final pos =
             lb.burst.origin +
             camera +
             p.vel * t +
             Offset(0, 0.5 * lb.burst.g * t * t); // 重力:½gt² 向下
-        paint.color = p.color.withValues(alpha: smoke ? fade * .85 : fade);
-        canvas.drawCircle(pos, smoke ? p.size * (1 + 1.6 * t) : p.size * (1 - 0.4 * t), paint);
+        paint.color = p.color.withValues(alpha: grow ? fade * .85 : fade);
+        canvas.drawCircle(
+          pos,
+          grow ? p.size * (1 + 1.6 * t) : p.size * (1 - 0.4 * t),
+          paint,
+        );
       }
     }
   }
@@ -916,6 +927,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   int _lastNinjaSmoke = 0;
   /// 忍者模式的摄像机偏移(子弹时间把画面拉到榴莲附近)
   Offset _ninjaCamera = Offset.zero;
+  /// 画布晃动强度(炸弹爆炸时 1 → 衰减到 0)
+  double _ninjaShake = 0;
+  double _ninjaShakePhase = 0;
+  /// 摄像机 = 聚焦偏移 + 晃动偏移
+  Offset _ninjaRenderOffset = Offset.zero;
 
   /// 是否处于水果忍者模式(供外部按键彩蛋查询)
   bool get ninjaActive => _ninjaMode;
@@ -939,6 +955,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _zoomNotifier.value = 1;
     _ninja.reset();
     _ninjaCamera = Offset.zero;
+    _ninjaRenderOffset = Offset.zero;
+    _ninjaShake = 0;
     _ninjaMode = true;
     _ninjaTickAt = DateTime.now();
     _ninjaTicker ??= createTicker(_onNinjaTick);
@@ -954,6 +972,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _ninjaMode = false;
     _ninja.reset();
     _ninjaCamera = Offset.zero;
+    _ninjaRenderOffset = Offset.zero;
+    _ninjaShake = 0;
     final saved = _ninjaSavedGraph;
     _ninjaSavedGraph = null;
     if (saved != null) {
@@ -976,7 +996,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       ..height = _canvasSize.height;
     _ninja.update(dt);
     _updateNinjaCamera(dt);
-    // 榴莲累计切够 15 颗:剧烈爆炸 → 在爆心周围炸出一大片粒子
+    // 榴莲挨够刀数:剧烈爆炸 → 爆心周围炸出一大片粒子 + 七彩果汁
     if (_ninja.explosionSerial != _lastNinjaExplosion) {
       _lastNinjaExplosion = _ninja.explosionSerial;
       final at = _ninja.explosionAt;
@@ -984,30 +1004,33 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       for (var i = 0; i < 8; i++) {
         final dir = Offset.fromDirection(rand.nextDouble() * 2 * math.pi, i * 26);
         _bursts.add(
-          _makeBurst(at + dir, _ninjaExplosionColor(i), _swipeVel, scale: 3),
+          _makeBurst(at + dir, _ninjaExplosionColor(i), Offset.zero, scale: 3),
         );
       }
+      // 果汁同样从节点中心出来,与鼠标瞬时速度无关
+      _bursts.add(_makeJuiceBurst(at));
       while (_bursts.length > 16) {
         _bursts.removeAt(0);
       }
       if (!_cutTicker.isActive) _cutTicker.start();
       _focusNode.requestFocus();
     }
-    // 切到炸弹:冒烟爆炸(烟团 + 一点火星)
+    // 切到炸弹:火光 + 烟雾两段爆炸,并让画布晃一下
     if (_ninja.smokeSerial != _lastNinjaSmoke) {
       _lastNinjaSmoke = _ninja.smokeSerial;
       final at = _ninja.smokeAt;
+      _bursts.add(_makeFireBurst(at));
       _bursts.add(_makeSmokeBurst(at));
-      _bursts.add(_makeBurst(at, const Color(0xFFFF7043), _swipeVel, scale: 1.6));
       while (_bursts.length > 16) {
         _bursts.removeAt(0);
       }
       if (!_cutTicker.isActive) _cutTicker.start();
+      _ninjaShake = math.max(_ninjaShake, 1);
     }
   }
 
-  /// 忍者模式的摄像机:子弹时间把被砍的榴莲平滑拉到画面中心,
-  /// 结束后缓缓归位
+  /// 忍者模式的摄像机:子弹时间把被砍的榴莲平滑拉到画面中心,结束后缓缓归位;
+  /// 炸弹爆炸时叠加一段衰减的晃动
   void _updateNinjaCamera(double dt) {
     final focus = _ninja.bulletFocus;
     final target = focus == null
@@ -1019,11 +1042,66 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     const follow = 5.5; // 跟随速度(每秒)
     final k = (dt * follow).clamp(0.0, 1.0);
     final next = _ninjaCamera + (target - _ninjaCamera) * k;
-    if ((next - _ninjaCamera).distance < .05) return;
-    setState(() => _ninjaCamera = next);
+    var cameraChanged = false;
+    if ((next - _ninjaCamera).distance >= .05) {
+      _ninjaCamera = next;
+      cameraChanged = true;
+    }
+    // 晃动:高频抖动 + 指数衰减
+    Offset shake = Offset.zero;
+    if (_ninjaShake > 0.001) {
+      _ninjaShakePhase += dt * 46;
+      final amp = 16 * _ninjaShake;
+      shake = Offset(
+        math.sin(_ninjaShakePhase) * amp,
+        math.cos(_ninjaShakePhase * 1.7) * amp * .8,
+      );
+      _ninjaShake = math.max(0, _ninjaShake - dt * 2.4);
+      cameraChanged = true;
+    } else if (_ninjaShake != 0) {
+      _ninjaShake = 0;
+      cameraChanged = true;
+    }
+    final render = _ninjaCamera + shake;
+    if (render != _ninjaRenderOffset) {
+      _ninjaRenderOffset = render;
+      cameraChanged = true;
+    }
+    if (cameraChanged) setState(() {});
   }
 
-  /// 冒烟爆炸的烟团:灰白粒子、上浮、逐渐膨胀(与火花粒子区分渲染)
+  /// 火光:明亮橙黄的火焰粒子,向上窜、很快散开
+  _ParticleBurst _makeFireBurst(Offset p) {
+    final rand = math.Random();
+    const palette = [
+      Color(0xFFFFF59D),
+      Color(0xFFFFC107),
+      Color(0xFFFF7043),
+      Color(0xFFE53935),
+    ];
+    return _ParticleBurst(
+      origin: p,
+      at: DateTime.now(),
+      // 火苗往上窜
+      g: -320 / _zoom,
+      blur: 2.5,
+      particles: [
+        for (var i = 0; i < 26; i++)
+          _Particle(
+            vel:
+                Offset.fromDirection(
+                  rand.nextDouble() * 2 * math.pi,
+                  (60 + rand.nextDouble() * 190) / _zoom,
+                ) +
+                Offset(0, -70 / _zoom),
+            size: (6 + rand.nextDouble() * 9) / _zoom,
+            color: palette[rand.nextInt(palette.length)],
+          ),
+      ],
+    );
+  }
+
+  /// 烟雾:灰白粒子、上浮、逐渐膨胀(与火光区分渲染)
   _ParticleBurst _makeSmokeBurst(Offset p) {
     final rand = math.Random();
     const palette = [
@@ -1036,8 +1114,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       origin: p,
       at: DateTime.now(),
       // 负重力 = 往上飘
-      g: -150,
-      smoke: true,
+      g: -150 / _zoom,
+      grow: true,
+      blur: 3.5,
       particles: [
         for (var i = 0; i < 26; i++)
           _Particle(
@@ -1067,7 +1146,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       child: IgnorePointer(
         child: CustomPaint(
           key: const Key('ninja-layer'),
-          painter: NinjaPainter(game: _ninja, theme: t, camera: _ninjaCamera),
+          painter: NinjaPainter(
+            game: _ninja,
+            theme: t,
+            camera: _ninjaRenderOffset,
+          ),
         ),
       ),
     );
@@ -1077,7 +1160,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   /// 命中目标是节点中间穿过的连线(与 Ctrl 切断连线同源:刀光/粒子一并复用)。
   void _sliceNinja(Offset screenLocal) {
     // 指针在屏幕坐标,游戏对象在"摄像机之前的坐标":减掉摄像机偏移
-    final local = screenLocal - _ninjaCamera;
+    final local = screenLocal - _ninjaRenderOffset;
     final from = _lastNinjaPos ?? local;
     _lastNinjaPos = local;
     _slashTrail.add(local);
@@ -1095,8 +1178,18 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     final cuts = _ninja.slice(from, local);
     if (cuts.isEmpty) return;
     for (final c in cuts) {
+      final fruit = c.fruit;
+      if (fruit != null && fruit.isDurian) {
+        // 切开坐标系(大榴莲):普通火花 + 七彩爆炸果汁,都从节点中心出来,
+        // 且与鼠标瞬时速度无关(所以速度项直接给 0)
+        _bursts.add(_makeBurst(c.point, c.color, Offset.zero, scale: 1.8));
+        if (_bursts.length > 16) _bursts.removeAt(0);
+        _bursts.add(_makeJuiceBurst(c.point));
+        if (_bursts.length > 16) _bursts.removeAt(0);
+        continue;
+      }
       // 切中节点:炸出一大团粒子(更大更多,像爆炸开);切断连线:普通爆裂
-      final big = c.fruit != null;
+      final big = fruit != null;
       _bursts.add(
         _makeBurst(c.point, c.color, _swipeVel, scale: big ? 2.6 : 1),
       );
@@ -1119,6 +1212,36 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         }
       }
     }
+  }
+
+  /// 爆炸果汁:七彩色、大块大块的粒子团,从节点中心向四周炸开。
+  /// 初速度只由随机方向与速度决定,不含鼠标瞬时速度(果汁与挥刀快慢无关)。
+  _ParticleBurst _makeJuiceBurst(Offset p) {
+    final rand = math.Random();
+    const hues = 7;
+    return _ParticleBurst(
+      origin: p,
+      at: DateTime.now(),
+      // 果汁有重量:受重力往下落
+      g: 1050 / _zoom,
+      particles: [
+        for (var i = 0; i < 30; i++)
+          _Particle(
+            vel: Offset.fromDirection(
+              rand.nextDouble() * 2 * math.pi,
+              (70 + rand.nextDouble() * 210) / _zoom,
+            ),
+            // 大块大块的果汁
+            size: (7.5 + rand.nextDouble() * 11) / _zoom,
+            color: HSVColor.fromAHSV(
+              1,
+              (i % hues) * 360 / hues + rand.nextDouble() * 14,
+              .85,
+              .98,
+            ).toColor(),
+          ),
+      ],
+    );
   }
   // 鼠标划过速度(flow 单位/秒):由最近几次移动采样测得,作为粒子初速度
   final List<({Offset pos, DateTime t})> _motionSamples = [];
@@ -2291,7 +2414,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     if (_ninjaMode) {
       _downButtons = e.buttons;
       // 刀锋起点同样要减掉摄像机偏移(与 _sliceNinja 保持一致)
-      _lastNinjaPos = e.localPosition - _ninjaCamera;
+      _lastNinjaPos = e.localPosition - _ninjaRenderOffset;
       _slashTrail.clear();
       _focusNode.requestFocus();
       return;
@@ -3701,7 +3824,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       zoom: _zoom,
       slashTrail: _slashTrail,
       slashTrailProgress: slashProg,
-      camera: _ninjaCamera,
+      camera: _ninjaRenderOffset,
     );
   }
 

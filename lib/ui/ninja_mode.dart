@@ -595,7 +595,7 @@ class NinjaGame extends ChangeNotifier {
     }
   }
 
-  /// 切到炸弹:扣分 + 冒烟爆炸(不延长连击,也不扣心)
+  /// 切到炸弹:扣分 + 扣一颗心 + 冒烟爆炸(不延长连击)
   void _hitBomb(Offset at) {
     score = math.max(0, score - bombPenalty);
     combo = 0;
@@ -610,6 +610,8 @@ class NinjaGame extends ChangeNotifier {
     if (pops.length > 12) pops.removeAt(0);
     smokeSerial++;
     smokeAt = at;
+    // 炸到自己也要掉一颗心
+    _loseLife();
   }
 
   void _cutWire(NinjaWire wire, List<Offset> path, int index, [Offset? at]) {

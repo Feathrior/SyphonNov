@@ -446,9 +446,15 @@ void main() {
       );
       game.fruits.add(bomb);
       game.score = 50;
+      final livesBefore = game.lives;
       game.slice(const Offset(400, 240), const Offset(400, 360));
       expect(game.score, 50 - NinjaGame.bombPenalty, reason: '切到炸弹扣分');
-      expect(game.smokeSerial, 1, reason: '炸弹要冒烟爆炸');
+      expect(
+        game.lives,
+        livesBefore - 1,
+        reason: '切到炸弹还要扣一颗心',
+      );
+      expect(game.smokeSerial, 1, reason: '炸弹要火光+烟雾爆炸(画布据此炸粒子并晃屏)');
       expect(game.fruits, isNot(contains(bomb)));
 
       // 漏掉炸弹不扣心(只跑半秒:此时还没有普通节点落回画面外)
