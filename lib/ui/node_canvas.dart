@@ -3852,13 +3852,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       key: ValueKey('node-ghost-${ghost.node.id}'),
       animation: ghost.controller,
       builder: (context, child) {
-        // ease-out:缩小 + 淡出 + 变模糊
+        // ease-out:缩小 + 淡出 + 变模糊。绕自身几何中心缩小(不是左上角)
         final t = Curves.easeOutCubic.transform(ghost.controller.value);
         final content = Opacity(
           opacity: (1 - t).clamp(0.0, 1.0),
           child: Transform.scale(
             scale: 1 - .28 * t,
-            alignment: Alignment.topLeft,
+            alignment: Alignment.center,
             child: child,
           ),
         );
