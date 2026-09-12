@@ -104,7 +104,8 @@ class _PackageRegionPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (size.isEmpty) return;
-    final radius = Radius.circular(10 / zoom);
+    // 圆角与节点卡片一致(8),缩放时按 zoom 折算保持屏幕像素一致
+    final radius = Radius.circular(8 / zoom);
     final rect = Offset.zero & size;
     final rrect = RRect.fromRectAndRadius(rect, radius);
     if (fill) {
@@ -2000,6 +2001,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     const hw = 11.0; // handle 宽
     final m = 5.0 / _zoom; // 屏幕恒定 5px 命中边距
     for (final group in store.groups.reversed) {
+      // 只有折叠的 Package 代理卡片上有可见接口;展开后用的是成员节点自己的接口
+      if (!group.collapsed) continue;
       final rect = packageProxyRect(group, store.nodes, store.edges);
       if (rect == null) continue;
       final inputs = packageInputPorts(group, store.nodes, store.edges);
@@ -2223,10 +2226,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       }
     }
     // 命中节点本体:拖动只从顶部着色层(标题栏 headerH 高)发起(画布层 Listener
-    // 统一管理,绕开手势竞技场)。逆序遍历:后绘制的节点在图层上方,应优先命中
-    // (与渲染顺序一致)。主体内按下仅完成选中,不拖动节点。
-    for (final n in store.nodes.reversed) {
+    // 统一管理,绕开手势竞技场)。按绘制顺序的逆序命中:压在上面的先响应。
+    // 主体内按下仅完成选中,不拖动节点。
+    final underPackage = _underExpandedPackage(flow);
+    for (final n in _nodesTopFirst()) {
       if (_nodeHiddenByCollapsedPackage(n.id)) continue;
+      // 展开 Package 盖在这个节点上(它不是成员):让位给 Package(拖整包)
+      if (underPackage && !_nodeInExpandedPackage(n.id)) continue;
       final size = _nodeVisualSize(n);
       final r = n.position & size;
       if (r.contains(flow)) {
@@ -2668,23 +2674,38 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // Package 的展开/收起按钮上不启动整包拖动:按钮用 onTapDown 触发,
     // 若这里同时开始拖包,点击会连带把整包拖走(看起来就是"按钮没反应还乱动")
     if (_packageToggleAt(_toFlow(d.localPosition))) return;
+    // 端口(节点接口或 Package 接口)上按下后拖拽 = 连线:此时既不平移画布,
+    // 也绝不能拖动整个 Package(接口优先于包体)
+    if (_connecting != null) {
+      _panFromNode = true;
+      return;
+    }
     final flow = _toFlow(d.localPosition);
-    // 按下落在 Package 上:折叠态整张代理卡片、展开态区域空白处(边框/标签/
-    // 节点间隙)都可以整包拖动 —— 展开态按在成员节点上时仍优先拖节点
+    // 拖拽目标同样按"画在上面的先响应":
+    // 1) 折叠 Package 代理卡片(在所有节点之上)
     for (final group in store.groups) {
-      if (!group.isPackage) continue;
-      final region = group.collapsed
-          ? packageProxyRect(group, store.nodes, store.edges)
-          : _groupRect(group, expandedGeometry: true);
+      if (!group.isPackage || !group.collapsed) continue;
+      final region = packageProxyRect(group, store.nodes, store.edges);
       if (region == null || !region.contains(flow)) continue;
-      if (!group.collapsed && _pointInAnyNode(flow)) continue;
       _startPackageDrag(group);
       _panFromNode = true;
       return;
     }
+    // 2) 展开 Package 的成员节点(画在包底板之上,且已经在按下时开始拖节点):
+    //    按在成员身上时不拖整包
+    for (final group in store.groups) {
+      if (!group.isPackage || group.collapsed) continue;
+      final region = _groupRect(group, expandedGeometry: true);
+      if (region == null || !region.contains(flow)) continue;
+      if (_pointInGroupNodes(flow, group.nodeIds)) continue;
+      _startPackageDrag(group);
+      _panFromNode = true;
+      return;
+    }
+    // 3) 其余情况交给节点/框选逻辑(展开 Package 之外的节点)
     // 记录起点是否落在节点内部:节点内部拖动不移动背景
     // (端口连线手势在节点卡内部,此处只处理冒泡到背景的 pan)
-    _panFromNode = _pointInAnyNode(_toFlow(d.localPosition));
+    _panFromNode = _pointInAnyNode(flow);
     // 节点/多选/分组拖动中(分组标签在节点外,无法靠 _pointInAnyNode 命中):绝不平移、不框选
     if (_draggingId != null || _draggingPackageId != null) {
       _panFromNode = true;
@@ -3732,6 +3753,46 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     return false;
   }
 
+  /// 节点命中顺序:与绘制顺序相反 —— 画在上面的先响应。
+  ///
+  /// 绘制顺序是「展开 Package 的成员 → 普通节点」,组内被选中的节点画在最上;
+  /// 因此命中检测也按这个顺序来,鼠标同时压住两个元素时先响应上面那个。
+  List<GraphNode> _nodesTopFirst() {
+    final selected = store.selectedId;
+    final outside = <GraphNode>[];
+    final members = <GraphNode>[];
+    for (final n in store.nodes) {
+      (_nodeInExpandedPackage(n.id) ? members : outside).add(n);
+    }
+    List<GraphNode> paintOrder(List<GraphNode> src) => selected == null
+        ? src
+        : [
+            ...src.where((n) => n.id != selected),
+            ...src.where((n) => n.id == selected),
+          ];
+    return [...paintOrder(members).reversed, ...paintOrder(outside).reversed];
+  }
+
+  /// flow 点是否落在指定节点集合(某 Package 的成员)的矩形内
+  bool _pointInGroupNodes(Offset flow, Iterable<String> nodeIds) {
+    for (final n in store.nodes) {
+      if (!nodeIds.contains(n.id)) continue;
+      if ((n.position & _nodeVisualSize(n)).contains(flow)) return true;
+    }
+    return false;
+  }
+
+  /// flow 点是否被某个"展开 Package"的区域盖住(该包整体画在普通节点之上,
+  /// 所以被它压住的普通节点要让位给 Package)
+  bool _underExpandedPackage(Offset flow) {
+    for (final group in store.groups) {
+      if (!group.isPackage || group.collapsed) continue;
+      final rect = _groupRect(group, expandedGeometry: true);
+      if (rect != null && rect.contains(flow)) return true;
+    }
+    return false;
+  }
+
   /// 展开 Package 区域的外框矩形;回弹展开过程中节点每帧都在动,
   /// 因此以"最终帧"为锚点,避免控制区从点击位置滑开。
   Rect? _packageRegionRect(NodeGroup group) {
@@ -3886,7 +3947,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                       duration: MotionTokens.standard(context),
                       decoration: BoxDecoration(
                         color: const Color(0xFF8A9099).withValues(alpha: .12),
-                        borderRadius: BorderRadius.circular(12),
+                        // 圆角与节点卡片一致(8)
+                        borderRadius: BorderRadius.circular(8),
                         border: Border.all(
                           color: selected ? t.accent : const Color(0xFF8A9099),
                           width: selected ? 2 : 1.2,
@@ -3900,7 +3962,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                         ],
                       ),
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(11),
+                        borderRadius: BorderRadius.circular(7),
                         child: BackdropFilter(
                           filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
                           child: Stack(
@@ -4087,14 +4149,15 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     required bool isSource,
     required SyphonTheme theme,
   }) {
-    final dot = Container(
-      width: 11,
-      height: 11,
-      decoration: BoxDecoration(
-        color: socketColor(port.type),
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: theme.bgSurface, width: 1),
-      ),
+    // 直接复用节点卡片的端口接口方块:同色、同尺寸、同样的悬停/连线脉冲反馈
+    final handle = SocketHandle(
+      nodeId: port.nodeId,
+      socketId: port.socketId,
+      isSource: isSource,
+      color: socketColor(port.type),
+      hh: handleH(portCount(port.nodeId, port.socketId, store.edges)),
+      t: theme,
+      zoom: _zoom,
     );
     final label = Flexible(
       child: Text(
@@ -4119,8 +4182,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               ? MainAxisAlignment.end
               : MainAxisAlignment.start,
           children: isSource
-              ? [label, const SizedBox(width: 5), dot]
-              : [dot, const SizedBox(width: 5), label],
+              ? [label, const SizedBox(width: 5), handle]
+              : [handle, const SizedBox(width: 5), label],
         ),
       ),
     );

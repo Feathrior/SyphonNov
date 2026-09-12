@@ -745,6 +745,78 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('dragging a package port starts a connection, not a package move', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeShelfEnabled = false;
+    final store = GraphStore.instance;
+    final first = store.addNode(
+      'table_input',
+      const Offset(120, 120),
+      triggerRun: false,
+    );
+    final second = store.addNode(
+      'table_to_scatter',
+      const Offset(420, 120),
+      triggerRun: false,
+    );
+    final packageId = store.createPackage([first, second], '端口拖拽')!;
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+
+    // 1) 展开后:成员节点画在包底板之上,拖成员只动它自己
+    await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+    await tester.pumpAndSettle();
+    store.setMultiSelected({});
+    await tester.pumpAndSettle();
+    final memberCard = find.byWidgetPredicate(
+      (widget) => widget is NodeCard && widget.nodeId == first,
+    );
+    var beforeMember = store.nodeOf(first)!.position;
+    var beforeOther = store.nodeOf(second)!.position;
+    var grab = tester.getRect(memberCard).topCenter + const Offset(0, 8);
+    var drag = await tester.startGesture(grab, kind: PointerDeviceKind.mouse);
+    await drag.moveBy(const Offset(0, 40));
+    await tester.pump();
+    await drag.moveBy(const Offset(0, 40));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(
+      (store.nodeOf(first)!.position - beforeMember).dy,
+      greaterThan(20),
+      reason: '成员节点画在 Package 之上,拖的是它自己',
+    );
+    expect(store.nodeOf(second)!.position, beforeOther);
+
+    // 2) 折回折叠态,从 Package 接口拖拽:应该是接线,整包不能移动
+    await tester.tap(find.byKey(ValueKey('package-toggle-expanded-$packageId')));
+    await tester.pumpAndSettle();
+    final port = find.byKey(ValueKey('package-output-$second-out0'));
+    expect(port, findsOneWidget, reason: 'Package 端口要复用节点接口方块');
+    final portPoint = tester.getRect(port).centerRight - const Offset(5, 0);
+    beforeMember = store.nodeOf(first)!.position;
+    beforeOther = store.nodeOf(second)!.position;
+    drag = await tester.startGesture(portPoint, kind: PointerDeviceKind.mouse);
+    await drag.moveBy(const Offset(60, 0));
+    await tester.pump();
+    await drag.moveBy(const Offset(60, 0));
+    await tester.pump();
+    await drag.up();
+    await tester.pumpAndSettle();
+    expect(
+      store.nodeOf(first)!.position,
+      beforeMember,
+      reason: '从 Package 接口拖拽时整包不能移动',
+    );
+    expect(store.nodeOf(second)!.position, beforeOther);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('physical Delete remains available after rebinding deletion', (
     tester,
   ) async {

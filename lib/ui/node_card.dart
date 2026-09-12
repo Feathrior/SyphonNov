@@ -142,18 +142,17 @@ class NodeCard extends StatelessWidget {
                             switchOutCurve: Curves.easeIn,
                             layoutBuilder: (currentChild, previousChildren) =>
                                 // 折叠切换时新旧内容共存:退场的整体比折叠后的卡片高,
-                                // 直接按当前高度约束会触发 RenderFlex overflow(调试期黄黑条)。
-                                // 只让"退场"的那份按自然高度布局,并整体裁掉超出部分;
-                                // 当前内容保持正常约束(内部表格等滚动区依赖有限高度)。
-                                ClipRect(
-                                  child: Stack(
-                                    alignment: Alignment.topLeft,
-                                    children: <Widget>[
-                                      for (final child in previousChildren)
-                                        _unboundedSwitchChild(child),
-                                      ?currentChild,
-                                    ],
-                                  ),
+                                // 直接按当前高度约束会触发 RenderFlex overflow(调试期黄黑条),
+                                // 所以退场的那份按自然高度布局。这里**不能**加 ClipRect:
+                                // 输入/输出接口本来就故意溢出卡片边缘,裁掉就全看不见了。
+                                Stack(
+                                  alignment: Alignment.topLeft,
+                                  clipBehavior: Clip.none,
+                                  children: <Widget>[
+                                    for (final child in previousChildren)
+                                      _unboundedSwitchChild(child),
+                                    ?currentChild,
+                                  ],
                                 ),
                             child: collapsed
                                 ? KeyedSubtree(
@@ -603,7 +602,7 @@ class NodeCard extends StatelessWidget {
         left: isSource ? null : -(NodeGeom.bodyPadLeft + 7),
         right: isSource ? -(NodeGeom.bodyPadRight + 7) : null,
         top: (s.y - NodeGeom.headerH - start) + (s.h - hh) / 2,
-        child: _SocketHandle(
+        child: SocketHandle(
           nodeId: node.id,
           socketId: s.id,
           isSource: isSource,
@@ -674,7 +673,7 @@ class NodeCard extends StatelessWidget {
     // handle 高度:单连线 11px,多连线动态延长(React handleH(portCount))
     final hh = handleH(portCount(node.id, g.id, edges));
 
-    final handle = _SocketHandle(
+    final handle = SocketHandle(
       nodeId: node.id,
       socketId: g.id,
       isSource: isSource,
@@ -761,7 +760,11 @@ class NodeCard extends StatelessWidget {
 /// 悬停/激活状态由画布层命中检测后经 CanvasSockets 广播
 /// (handle 溢出节点边缘,Padding/Column 等各层命中测试会裁剪越界子级,
 /// 卡片内挂 MouseRegion/Listener 均收不到事件,必须在画布层处理)
-class _SocketHandle extends StatefulWidget {
+/// 端口接口方块(节点卡片与 Package 代理共用)。
+///
+/// 悬停/连线中的强调动画来自 CanvasSockets 广播:节点与 Package 的端口都用
+/// 所在节点的 id + 端口 id 匹配,所以两者外观与反馈完全一致。
+class SocketHandle extends StatefulWidget {
   final String nodeId;
   final String socketId;
   final bool isSource;
@@ -771,7 +774,8 @@ class _SocketHandle extends StatefulWidget {
   final SyphonTheme t;
   final double zoom;
 
-  const _SocketHandle({
+  const SocketHandle({
+    super.key,
     required this.nodeId,
     required this.socketId,
     required this.isSource,
@@ -783,10 +787,10 @@ class _SocketHandle extends StatefulWidget {
   });
 
   @override
-  State<_SocketHandle> createState() => _SocketHandleState();
+  State<SocketHandle> createState() => _SocketHandleState();
 }
 
-class _SocketHandleState extends State<_SocketHandle>
+class _SocketHandleState extends State<SocketHandle>
     with SingleTickerProviderStateMixin {
   bool _dragging = false; // 该端口为连线拖拽起点
   late final AnimationController _pulse;
