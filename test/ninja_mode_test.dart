@@ -428,6 +428,36 @@ void main() {
       expect(slowMoved.abs(), lessThan(fastMoved.abs()));
     });
 
+    test('漏掉大榴莲扣两颗心', () {
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 600;
+      final durian = NinjaFruit(
+        configId: 'axis_input',
+        label: '坐标系输入',
+        icon: '▦',
+        color: const Color(0xFF22C55E),
+        position: const Offset(400, 700),
+        velocity: const Offset(0, 400),
+        angle: 0,
+        spin: 0,
+        size: const Size(210, 120),
+        isDurian: true,
+        hitsToExplode: 15,
+      );
+      game.fruits.add(durian);
+      final lives = game.lives;
+      for (var i = 0; i < 60 && game.fruits.contains(durian); i++) {
+        game.update(1 / 60);
+      }
+      expect(game.fruits, isNot(contains(durian)));
+      expect(
+        game.lives,
+        lives - 2,
+        reason: '重点目标漏掉要扣两颗心',
+      );
+    });
+
     test('炸弹:切到扣分并冒烟,漏掉不扣心', () {
       final game = NinjaGame()
         ..width = 800

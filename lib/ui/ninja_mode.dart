@@ -261,8 +261,11 @@ class NinjaGame extends ChangeNotifier {
       if (f.hitCooldown > 0) f.hitCooldown = math.max(0, f.hitCooldown - dt);
       if (f.hitFlash > 0) f.hitFlash = math.max(0, f.hitFlash - dt * 4);
       if (f.position.dy - f.size.height > height + 80) {
-        // 掉出画面 = 漏掉了 → 扣一颗心;炸弹是"该躲的",掉了不扣
-        if (!f.isBomb) _loseLife();
+        // 掉出画面 = 漏掉了 → 扣心;炸弹是"该躲的",掉了不扣。
+        // 大榴莲是重点目标:漏掉直接扣两颗
+        if (!f.isBomb) {
+          _loseLife(f.isDurian ? 2 : 1);
+        }
         continue;
       }
       alive.add(f);
@@ -285,9 +288,9 @@ class NinjaGame extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _loseLife() {
+  void _loseLife([int count = 1]) {
     if (gameOver) return;
-    lives = math.max(0, lives - 1);
+    lives = math.max(0, lives - count);
     livesFlash = 1;
     combo = 0;
     comboLeft = 0;
@@ -687,16 +690,23 @@ class NinjaPainter extends CustomPainter {
   final NinjaGame game;
   final SyphonTheme theme;
 
-  /// 摄像机偏移(子弹时间把画面拉到榴莲附近);HUD 不受它影响
+  /// 摄像机偏移与缩放(子弹时间把画面放大并拉到榴莲附近);HUD 不受影响
   final Offset camera;
+  final double cameraScale;
 
-  NinjaPainter({required this.game, required this.theme, this.camera = Offset.zero})
-    : super(repaint: game);
+  NinjaPainter({
+    required this.game,
+    required this.theme,
+    this.camera = Offset.zero,
+    this.cameraScale = 1,
+  }) : super(repaint: game);
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.save();
+    // screen = world * scale + camera
     canvas.translate(camera.dx, camera.dy);
+    canvas.scale(cameraScale);
     // 先画连线(在节点下层,像真实连线一样从卡片边缘接出),再画节点卡片
     for (final wire in game.wires) {
       _paintWire(canvas, game.wirePath(wire), wire);
@@ -1250,5 +1260,8 @@ class NinjaPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant NinjaPainter old) =>
-      old.game != game || old.theme != theme || old.camera != camera;
+      old.game != game ||
+      old.theme != theme ||
+      old.camera != camera ||
+      old.cameraScale != cameraScale;
 }
