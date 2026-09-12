@@ -1007,10 +1007,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       ..height = _canvasSize.height;
     _ninja.update(dt);
     _updateNinjaCamera(dt);
-    // 榴莲挨够刀数:剧烈爆炸 → 火光 + 烟雾(与炸弹一致)+ 五彩色散开粒子
+    // 榴莲挨够刀数:剧烈爆炸 → 闪光 + 火光 + 烟雾(与炸弹同款)+ 五彩色散开粒子
     if (_ninja.explosionSerial != _lastNinjaExplosion) {
       _lastNinjaExplosion = _ninja.explosionSerial;
       final at = _ninja.explosionAt;
+      _bursts.add(_makeFlashBurst(at));
       _bursts.add(_makeFireBurst(at));
       _bursts.add(_makeSmokeBurst(at));
       _bursts.add(_makeRainbowBurst(at));
@@ -1021,10 +1022,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _ninjaShake = math.max(_ninjaShake, 1);
       _focusNode.requestFocus();
     }
-    // 切到炸弹:火光 + 烟雾两段爆炸,并让画布晃一下
+    // 切到炸弹:火光 + 烟雾 + 闪光,并让画布晃一下
     if (_ninja.smokeSerial != _lastNinjaSmoke) {
       _lastNinjaSmoke = _ninja.smokeSerial;
       final at = _ninja.smokeAt;
+      _bursts.add(_makeFlashBurst(at));
       _bursts.add(_makeFireBurst(at));
       _bursts.add(_makeSmokeBurst(at));
       while (_bursts.length > 16) {
@@ -1098,7 +1100,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  /// 火光:明亮橙黄的火焰粒子,向上窜、很快散开
+  /// 火光:明亮橙黄的火焰粒子,向上窜、很快散开(爆炸用的大号版本)
   _ParticleBurst _makeFireBurst(Offset p) {
     final rand = math.Random();
     const palette = [
@@ -1112,24 +1114,24 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       at: DateTime.now(),
       // 火苗往上窜
       g: -320 / _zoom,
-      blur: 2.5,
+      blur: 3,
       particles: [
-        for (var i = 0; i < 26; i++)
+        for (var i = 0; i < 70; i++)
           _Particle(
             vel:
                 Offset.fromDirection(
                   rand.nextDouble() * 2 * math.pi,
-                  (60 + rand.nextDouble() * 190) / _zoom,
+                  (90 + rand.nextDouble() * 380) / _zoom,
                 ) +
-                Offset(0, -70 / _zoom),
-            size: (6 + rand.nextDouble() * 9) / _zoom,
+                Offset(0, -90 / _zoom),
+            size: (12 + rand.nextDouble() * 24) / _zoom,
             color: palette[rand.nextInt(palette.length)],
           ),
       ],
     );
   }
 
-  /// 烟雾:灰白粒子、上浮、逐渐膨胀(与火光区分渲染)
+  /// 烟雾:灰白粒子、上浮、逐渐膨胀(比火光更慢更散)
   _ParticleBurst _makeSmokeBurst(Offset p) {
     final rand = math.Random();
     const palette = [
@@ -1144,17 +1146,17 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       // 负重力 = 往上飘
       g: -150 / _zoom,
       grow: true,
-      blur: 3.5,
+      blur: 5,
       particles: [
-        for (var i = 0; i < 26; i++)
+        for (var i = 0; i < 52; i++)
           _Particle(
             vel:
                 Offset.fromDirection(
                   rand.nextDouble() * 2 * math.pi,
-                  (18 + rand.nextDouble() * 70) / _zoom,
+                  (24 + rand.nextDouble() * 140) / _zoom,
                 ) +
-                Offset(0, -30 / _zoom),
-            size: (7.0 + rand.nextDouble() * 9) / _zoom,
+                Offset(0, -40 / _zoom),
+            size: (16.0 + rand.nextDouble() * 26) / _zoom,
             color: palette[rand.nextInt(palette.length)],
           ),
       ],
@@ -1228,7 +1230,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   /// 五彩色散开粒子:只用在"砍爆"的瞬间,不受重力影响(直线向外飞散)。
-  /// 初速度只由随机方向与速度决定,不含鼠标瞬时速度。
+  /// 数量多、个头小、散得开;初速度不含鼠标瞬时速度。
   _ParticleBurst _makeRainbowBurst(Offset p) {
     final rand = math.Random();
     const hues = 7;
@@ -1238,20 +1240,49 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       // 不受重力:直线散开
       g: 0,
       particles: [
-        for (var i = 0; i < 34; i++)
+        for (var i = 0; i < 140; i++)
           _Particle(
             vel: Offset.fromDirection(
               rand.nextDouble() * 2 * math.pi,
-              (80 + rand.nextDouble() * 260) / _zoom,
+              (180 + rand.nextDouble() * 620) / _zoom,
             ),
-            // 大块大块的彩色粒子
-            size: (7.5 + rand.nextDouble() * 11) / _zoom,
+            // 小而密,散得很开
+            size: (2.6 + rand.nextDouble() * 6.4) / _zoom,
             color: HSVColor.fromAHSV(
               1,
               (i % hues) * 360 / hues + rand.nextDouble() * 14,
-              .88,
-              .98,
+              .9,
+              .99,
             ).toColor(),
+          ),
+      ],
+    );
+  }
+
+  /// 爆炸闪光:几团又大又亮的柔光,瞬间撑开整个爆心
+  _ParticleBurst _makeFlashBurst(Offset p) {
+    final rand = math.Random();
+    const palette = [
+      Color(0xFFFFFDE7),
+      Color(0xFFFFF176),
+      Color(0xFFFFB300),
+      Color(0xFFFF8A65),
+    ];
+    return _ParticleBurst(
+      origin: p,
+      at: DateTime.now(),
+      g: 0,
+      grow: true,
+      blur: 10,
+      particles: [
+        for (var i = 0; i < 14; i++)
+          _Particle(
+            vel: Offset.fromDirection(
+              rand.nextDouble() * 2 * math.pi,
+              (30 + rand.nextDouble() * 130) / _zoom,
+            ),
+            size: (46 + rand.nextDouble() * 74) / _zoom,
+            color: palette[rand.nextInt(palette.length)],
           ),
       ],
     );
