@@ -527,7 +527,7 @@ class _ShelfBar extends StatelessWidget {
       onExit: (_) => onExit(),
       child: Container(
         key: const Key('node-shelf-bar'),
-        height: 34,
+        height: 40,
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
           color: t.bgRaise,
@@ -615,7 +615,7 @@ class _ShelfSegmentState extends State<_ShelfSegment> {
           margin: const EdgeInsets.symmetric(horizontal: 1),
           // 内边距恒定:hover 只加粗内描边/提亮文字,胶囊尺寸不变——
           // 尺寸变化会让后续胶囊整体位移,弹层"居中于胶囊"的定位就会差几像素。
-          // 上下留 3px:胶囊够高,中文标签不会被内描边切掉上下沿
+          // 上下留 4px:文字行高(含回退字形)完全落在胶囊内,不会被切掉下半截
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           decoration: BoxDecoration(
             // 低饱和填充 + 彩色内描边;无发光

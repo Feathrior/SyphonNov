@@ -182,7 +182,7 @@ class SyphonTheme {
 // ==================== 尺寸常量 ====================
 class SyphonDims {
   static const toolbarH = 48.0;
-  static const nodeShelfH = 44.0;
+  static const nodeShelfH = 48.0;
   static const statusH = 26.0;
   static const inspectorH = 190.0;
   static const propsW = 300.0;

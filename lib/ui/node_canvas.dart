@@ -3333,6 +3333,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             final preview = _dropPreview.value;
             if (preview == null) return const SizedBox.shrink();
             final color = preview.accepted ? preview.color : t.textFaint;
+            // 与拖拽指示环同一套外观:亮色粗环 + 同色发光,不再有细细的外圈
+            // (之前那圈 1.5px 描边拖到画布上后格外显眼)
+            final bright = Color.lerp(color, Colors.white, .7)!;
+            final strong = preview.accepted ? 1.0 : .45;
             return Stack(
               children: [
                 Positioned(
@@ -3344,15 +3348,21 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                     height: 50,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: color.withValues(alpha: .09),
+                      color: color.withValues(alpha: .07 * strong),
                       border: Border.all(
-                        color: color.withValues(alpha: .72),
-                        width: 1.5,
+                        color: bright.withValues(alpha: .9 * strong),
+                        width: 3.5,
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: color.withValues(alpha: .24),
-                          blurRadius: 20,
+                          color: color.withValues(alpha: .42 * strong),
+                          blurRadius: 16,
+                          spreadRadius: 1,
+                        ),
+                        BoxShadow(
+                          color: color.withValues(alpha: .22 * strong),
+                          blurRadius: 34,
+                          spreadRadius: 4,
                         ),
                       ],
                     ),

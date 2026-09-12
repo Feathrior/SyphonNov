@@ -356,15 +356,7 @@ class NinjaPainter extends CustomPainter {
     for (final p in pts.skip(1)) {
       path.lineTo(p.dx, p.dy);
     }
-    // 深色描边:连线压在背景/卡片上时依然清晰
-    canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..strokeWidth = 7
-        ..color = Colors.black.withValues(alpha: .38 * alpha),
-    );
+    // 不加深色描边:连线本身就是"要切的目标",描边只会让画面显脏
     canvas.drawPath(
       path,
       Paint()

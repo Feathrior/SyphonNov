@@ -37,8 +37,15 @@ void main() {
     await tester.pump();
   }
 
-  Finder spineOf(Category category) {
-    final ids = kNodeConfigs
+  String labelOf(Category category) => switch (category) {
+    Category.input => '组输入',
+    Category.clean => '数据初步',
+    Category.compute => '数据运算',
+    Category.transform => '数据转化',
+    Category.visualize => '数据可视化',
+  };
+
+  Finder spineOf(Category category) {    final ids = kNodeConfigs
         .where((cfg) => cfg.category == category)
         .map((cfg) => cfg.id)
         .toSet();
@@ -66,9 +73,8 @@ void main() {
 
     for (final category in kAllCategories) {
       // tileKey 就在分段自身的 AnimatedContainer 上(便于按分类定位胶囊)
-      final container = tester.widget<AnimatedContainer>(
-        find.byKey(ValueKey('node-category-${category.name}')),
-      );
+      final pillKey = ValueKey('node-category-${category.name}');
+      final container = tester.widget<AnimatedContainer>(find.byKey(pillKey));
       final decoration = container.decoration! as BoxDecoration;
       // 未呼出:低饱和填充 + 彩色内描边
       expect(
@@ -81,6 +87,18 @@ void main() {
       expect(border.top.color.a, greaterThan(0.2), reason: '描边应带分类色');
       // 不再发光(阴影列表必须为空,否则 hover 时会插值出负模糊半径)
       expect(decoration.boxShadow, isNull, reason: '不做发光 hover');
+
+      // 纵向留白必须显著大于文字行高:胶囊槽位若只比文字高一点点,
+      // 真实字体(中文/回退字形行高更高)的下半截就会被裁掉
+      final barInner =
+          tester.getSize(find.byKey(const Key('node-shelf-bar'))).height - 6;
+      final textHeight = tester.getRect(find.text(labelOf(category))).height;
+      expect(
+        barInner - textHeight,
+        greaterThan(14),
+        reason: '${category.name} 胶囊纵向余量不足,文字会被切掉',
+      );
+      expect(tester.getRect(find.text(labelOf(category))).height, textHeight);
     }
 
     // 呼出后:描边加粗、填充加深(仍是内描边,不是整块纯色)
