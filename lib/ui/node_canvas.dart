@@ -2664,6 +2664,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // 菜单打开期间:pan 手势与 Listener 指针事件是两条独立路径,
     // 菜单弹出瞬间可能仍有残余 pan 手势在竞技场中,此处一并忽略(防反复重建)
     if (_menuPos != null) return;
+    // Package 的展开/收起按钮上不启动整包拖动:按钮用 onTapDown 触发,
+    // 若这里同时开始拖包,点击会连带把整包拖走(看起来就是"按钮没反应还乱动")
+    if (_packageToggleAt(_toFlow(d.localPosition))) return;
     final flow = _toFlow(d.localPosition);
     // 按下落在 Package 上:折叠态整张代理卡片、展开态区域空白处(边框/标签/
     // 节点间隙)都可以整包拖动 —— 展开态按在成员节点上时仍优先拖节点
@@ -3720,6 +3723,36 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         : _groupRect(group, expandedGeometry: true);
   }
 
+  /// flow 点是否落在某个 Package 的展开/收起按钮上(与按钮的绘制位置一致)
+  bool _packageToggleAt(Offset flow) {
+    for (final group in store.groups) {
+      if (!group.isPackage) continue;
+      if (group.collapsed) {
+        final rect = packageProxyRect(group, store.nodes, store.edges);
+        if (rect == null) continue;
+        // 折叠代理:右下角 8,8 处的 28×24 按钮
+        if (Rect.fromLTWH(rect.right - 8 - 28, rect.bottom - 8 - 24, 28, 24)
+            .contains(flow)) {
+          return true;
+        }
+      } else {
+        final rect = _packageRegionRect(group);
+        if (rect == null) continue;
+        // 展开区域:右上角 6,5 处的 24×24 按钮(随缩放保持屏幕像素大小)
+        final size = 24 / _zoom;
+        if (Rect.fromLTWH(
+          rect.right - size - 6 / _zoom,
+          rect.top + 5 / _zoom,
+          size,
+          size,
+        ).contains(flow)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   Widget _buildExpandedPackageToggle(NodeGroup group, SyphonTheme t) {
     return AnimatedBuilder(
       key: ValueKey('package-expanded-control-layout-${group.id}'),
@@ -3753,10 +3786,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                 message: '收起 Package',
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
+                  // 用 Listener 的按下事件而不是 onTap:画布级 pan 手势(鼠标
+                  // hit slop 仅 1px)会先赢下手势竞技场,onTap/onTapDown 都收不到,
+                  // 表现就是"点按钮没反应"。按下即切换与 pan 无关。
+                  child: Listener(
                     key: ValueKey('package-toggle-expanded-${current.id}'),
                     behavior: HitTestBehavior.opaque,
-                    onTapDown: (_) => _collapsePackage(current),
+                    onPointerDown: (_) => _collapsePackage(current),
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         color: const Color(0xFF8A9099).withValues(alpha: .2),
@@ -3958,12 +3994,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                                   message: '展开 Package',
                                   child: MouseRegion(
                                     cursor: SystemMouseCursors.click,
-                                    child: GestureDetector(
+                                    // 同右上角"收起":按下即切换,不与画布 pan 竞争
+                                    child: Listener(
                                       key: ValueKey(
                                         'package-toggle-${current.id}',
                                       ),
                                       behavior: HitTestBehavior.opaque,
-                                      onTap: () => _expandPackage(current),
+                                      onPointerDown: (_) =>
+                                          _expandPackage(current),
                                       child: Container(
                                         width: 28,
                                         height: 24,

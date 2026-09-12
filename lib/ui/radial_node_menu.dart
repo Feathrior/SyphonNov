@@ -9,6 +9,7 @@ import '../i18n.dart';
 import '../models/color_utils.dart';
 import '../models/data.dart';
 import '../models/registry.dart';
+import 'drag_ring.dart';
 import 'motion.dart';
 import 'theme.dart';
 
@@ -501,21 +502,41 @@ class _RadialNodeMenuPainter extends CustomPainter {
     }
     // 光晕脉冲同样只看 progress:分离与收束过程中都有一次呼吸,静止时归零
     final pulse = math.sin(progress * math.pi);
-    // 圆球形光晕:叠加(变亮)混合 —— 与色环/节点重叠处只提亮,不出现暗边
-    canvas.drawCircle(
-      dot,
-      13 + pulse * 4,
-      Paint()
-        ..color = color.withValues(alpha: .35)
-        ..blendMode = BlendMode.plus
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 + pulse * 5),
-    );
-    canvas.drawCircle(dot, 9.5, Paint()..color = color);
-    canvas.drawCircle(
-      dot - const Offset(2.5, 2.5),
-      2.2,
-      Paint()..color = Colors.white.withValues(alpha: .7),
-    );
+    // 分离后渐变成"上方栏拖拽"同款的发光指示环(直接复用 DragRingPainter):
+    // 前 35% 还是实心圆球,之后逐步换成亮色空心环 —— 两者都停在指针上,
+    // 交接期间位置一致,看起来就是圆球"融"成圆环
+    final ringT = ((progress - .35) / .55).clamp(0.0, 1.0);
+    final blobT = 1 - ringT;
+    if (blobT > .01) {
+      // 圆球形光晕:叠加(变亮)混合 —— 与色环/节点重叠处只提亮,不出现暗边
+      canvas.drawCircle(
+        dot,
+        13 + pulse * 4,
+        Paint()
+          ..color = color.withValues(alpha: .35 * blobT)
+          ..blendMode = BlendMode.plus
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 + pulse * 5),
+      );
+      canvas.drawCircle(dot, 9.5, Paint()..color = color.withValues(alpha: blobT));
+      canvas.drawCircle(
+        dot - const Offset(2.5, 2.5),
+        2.2,
+        Paint()..color = Colors.white.withValues(alpha: .7 * blobT),
+      );
+    }
+    if (ringT > .01) {
+      canvas.save();
+      canvas.translate(
+        dot.dx - kDragRingExtent / 2,
+        dot.dy - kDragRingExtent / 2,
+      );
+      DragRingPainter(
+        color: color,
+        progress: 1,
+        appear: ringT,
+      ).paint(canvas, const Size(kDragRingExtent, kDragRingExtent));
+      canvas.restore();
+    }
   }
 
   @override

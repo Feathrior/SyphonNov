@@ -520,7 +520,10 @@ void main() {
     expect(find.text('解散 Package'), findsOneWidget);
 
     final before = store.nodes.length;
-    await tester.tap(find.text('表格输入').last);
+    // 精确点菜单里的条目(属性面板里也有同名文本)
+    final item = find.descendant(of: menu, matching: find.text('表格输入'));
+    expect(item, findsOneWidget);
+    await tester.tap(item);
     await tester.pumpAndSettle();
     expect(store.nodes.length, before + 1);
     final created = store.selectedId!;
@@ -596,6 +599,73 @@ void main() {
       store.groups.singleWhere((g) => g.id == packageId).nodeIds,
       isNot(contains(store.selectedId)),
     );
+  });
+
+  testWidgets('package toggle works even when the mouse jitters while clicking', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeShelfEnabled = false;
+    final store = GraphStore.instance;
+    final first = store.addNode(
+      'table_input',
+      const Offset(120, 120),
+      triggerRun: false,
+    );
+    final second = store.addNode(
+      'table_to_scatter',
+      const Offset(440, 120),
+      triggerRun: false,
+    );
+    final packageId = store.createPackage([first, second], '开关')!;
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+
+    bool collapsed() =>
+        store.groups.singleWhere((g) => g.id == packageId).collapsed;
+
+    // 折叠态:点右下角"展开"按钮时鼠标抖 2px(画布 pan 的鼠标 hit slop 只有
+    // 1px,旧实现里 onTap 会被 pan 抢走,表现为"点了没反应")
+    final expandBtn = find.byKey(ValueKey('package-toggle-$packageId'));
+    expect(expandBtn, findsOneWidget);
+    var gesture = await tester.startGesture(
+      tester.getCenter(expandBtn),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveBy(const Offset(2, 1));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(collapsed(), isFalse, reason: '轻微抖动也要能展开');
+
+    // 展开态:点右上角"收起"按钮,同样带抖动
+    final collapseBtn = find.byKey(
+      ValueKey('package-toggle-expanded-$packageId'),
+    );
+    expect(collapseBtn, findsOneWidget);
+    gesture = await tester.startGesture(
+      tester.getCenter(collapseBtn),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveBy(const Offset(-2, 1));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(collapsed(), isTrue, reason: '轻微抖动也要能收起');
+
+    // 连点两轮:状态必须每次都翻转
+    for (var round = 0; round < 2; round++) {
+      await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+      await tester.pumpAndSettle();
+      expect(collapsed(), isFalse, reason: '第 $round 轮展开');
+      await tester.tap(
+        find.byKey(ValueKey('package-toggle-expanded-$packageId')),
+      );
+      await tester.pumpAndSettle();
+      expect(collapsed(), isTrue, reason: '第 $round 轮收起');
+    }
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('physical Delete remains available after rebinding deletion', (

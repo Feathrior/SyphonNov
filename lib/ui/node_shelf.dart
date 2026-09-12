@@ -2,7 +2,6 @@ library;
 
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
     show GestureBinding, PointerDownEvent, PointerEvent, kSecondaryMouseButton;
@@ -15,6 +14,7 @@ import '../models/color_utils.dart';
 import '../models/data.dart' hide Column;
 import '../models/registry.dart';
 import '../store/settings_store.dart';
+import 'drag_ring.dart';
 import 'motion.dart';
 import 'theme.dart';
 
@@ -803,10 +803,10 @@ class _PackageLibrary extends StatelessWidget {
                       key: ValueKey('package-spine-${item['id']}'),
                       data: item,
                       dragAnchorStrategy: (_, _, _) => const Offset(
-                        _kDragRingExtent / 2,
-                        _kDragRingExtent / 2,
+                        kDragRingExtent / 2,
+                        kDragRingExtent / 2,
                       ),
-                      feedback: const _DragRing(color: _tint),
+                      feedback: const DragRing(color: _tint),
                       childWhenDragging: Opacity(opacity: .45, child: tile),
                       onDragStarted: onDragStarted,
                       onDragUpdate: (details) =>
@@ -1000,8 +1000,8 @@ class _NodeTileState extends State<_NodeTile> {
           // 指示环以指针为中心(与右键圆环拖出的圆球一致),
           // 因此锚点取反馈框中心而不是左上角
           dragAnchorStrategy: (_, _, _) =>
-              const Offset(_kDragRingExtent / 2, _kDragRingExtent / 2),
-          feedback: _DragRing(color: color),
+              const Offset(kDragRingExtent / 2, kDragRingExtent / 2),
+          feedback: DragRing(color: color),
           childWhenDragging: Opacity(opacity: .45, child: tile),
           onDragStarted: widget.onDragStarted,
           onDragUpdate: (details) =>
@@ -1045,148 +1045,4 @@ class _VerticalSpineLabel extends StatelessWidget {
       ),
     );
   }
-}
-
-/// 拖拽指示环的反馈框尺寸(环本身 19px,其余留白给"从条形长出来"的形变)
-const double _kDragRingExtent = 52;
-
-/// 从顶部书脊拖出节点时的跟随指示环。
-///
-/// 起始形状是分类胶囊那样的横条,随后很快(与节点入场同节奏)"长"成与右键
-/// 圆环拖出的圆球同尺寸的圆环:环体是几乎纯白的亮色(只留一点分类底色),
-/// 外面套一层同色发光阴影,不再额外描一圈细线。
-class _DragRing extends StatefulWidget {
-  final Color color;
-
-  const _DragRing({required this.color});
-
-  @override
-  State<_DragRing> createState() => _DragRingState();
-}
-
-class _DragRingState extends State<_DragRing>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  bool _started = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(vsync: this);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // 与节点入场同节奏:条形变圆环要利落,不能拖成"慢动作"
-    _controller.duration = MotionTokens.nodeEntry(context);
-    if (!_started) {
-      _started = true;
-      _controller.forward();
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _controller,
-    builder: (context, _) {
-      final amplitude = MotionTokens.amplitude(context);
-      final frame = popMotionFrame(
-        _controller.value,
-        beginScale: 1 - .82 * amplitude,
-        maxBlur: 16 * amplitude,
-      );
-      final turn =
-          -.2 *
-          amplitude *
-          (1 - Curves.easeOutCubic.transform(_controller.value));
-      final content = Opacity(
-        opacity: amplitude == 0 ? 1 : frame.opacity,
-        child: Transform.rotate(
-          angle: turn,
-          child: Transform.scale(
-            scale: amplitude == 0 ? 1 : frame.scale,
-            child: IgnorePointer(
-              child: CustomPaint(
-                key: const Key('node-drag-dot'),
-                size: const Size(_kDragRingExtent, _kDragRingExtent),
-                painter: _DragRingPainter(
-                  color: widget.color,
-                  progress: amplitude == 0 ? 1 : _controller.value,
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-      if (frame.blur <= .05) return content;
-      return ImageFiltered(
-        imageFilter: ui.ImageFilter.blur(
-          sigmaX: frame.blur,
-          sigmaY: frame.blur,
-        ),
-        child: content,
-      );
-    },
-  );
-}
-
-class _DragRingPainter extends CustomPainter {
-  /// 与右键圆环拖出的圆点同尺寸(radial_node_menu 中半径为 9.5)
-  static const double _ringDiameter = 19;
-  static const double _ringStroke = 3.8;
-  static const double _barWidth = 44;
-  static const double _barHeight = 13;
-
-  final Color color;
-  final double progress;
-
-  const _DragRingPainter({required this.color, required this.progress});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final clamped = progress.clamp(0.0, 1.0);
-    // 轻微过冲:条形先缩到略小于圆环,再回弹到圆环尺寸
-    final morph = Curves.easeOutBack.transform(clamped);
-    final width = _barWidth + (_ringDiameter - _barWidth) * morph;
-    final height = _barHeight + (_ringDiameter - _barHeight) * morph;
-    final rrect = RRect.fromRectAndRadius(
-      Rect.fromCenter(
-        center: size.center(Offset.zero),
-        width: width,
-        height: height,
-      ),
-      Radius.circular(height / 2),
-    );
-    final appear = Curves.easeOut.transform(clamped);
-    // 环体接近纯白,只留一点分类底色 —— 在任何背景上都"跳"出来
-    final bright = Color.lerp(color, Colors.white, .86)!;
-    // 1) 分类色的发光阴影(柔和的模糊,不产生硬边)
-    canvas.drawRRect(
-      rrect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = _ringStroke * 3
-        ..color = color.withValues(alpha: .62 * appear)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
-    );
-    // 2) 环体本身:粗一点、亮一点;不再额外描一圈细线
-    canvas.drawRRect(
-      rrect,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = _ringStroke
-        ..color = bright.withValues(alpha: .96 * appear),
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _DragRingPainter old) =>
-      old.color != color || old.progress != progress;
 }
