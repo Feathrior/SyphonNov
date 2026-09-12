@@ -137,7 +137,9 @@ void main() {
     test('每一波固定成组:2 节点 1 连线、3 节点 2 连线…且切完不会补线', () {
       final game = NinjaGame()
         ..width = 1600
-        ..height = 6000;
+        ..height = 6000
+        // 关掉炸弹:只抛普通波次,便于核对固定结构
+        ..mixBombs = false;
       // 等到抛完两波(2 节点 + 3 节点 = 5 个节点)
       var frames = 0;
       while (game.fruits.length < 5 && frames < 60 * 30) {
@@ -226,8 +228,9 @@ void main() {
     test('随时间入场时连线只在入场瞬间建立', () {
       final game = NinjaGame()
         ..width = 1600
-        ..height = 600;
-      for (var i = 0; i < 60 * 6; i++) {
+        ..height = 2400;
+      // 画布够高:节点不会很快落回画面外
+      for (var i = 0; i < 60 * 4; i++) {
         game.update(1 / 60);
       }
       expect(game.wires, isNotEmpty);
@@ -236,8 +239,257 @@ void main() {
         expect(game.fruits, contains(w.from));
         expect(game.fruits, contains(w.to));
       }
-      // 每波节点数 N → 该波连线数 N-1,场上总连线数 ≤ 节点数
+      // 每波节点数 N → 该波连线数 N-1,场上总连线数 < 节点数
       expect(game.wires.length, lessThan(game.fruits.length));
+    });
+
+    test('漏掉节点扣一颗心,扣完游戏结束且不再抛新节点', () {
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 600;
+      expect(game.lives, NinjaGame.maxLives);
+      // 连抛 5 个直接掉出画面(速度向下)
+      for (var i = 0; i < NinjaGame.maxLives; i++) {
+        final fruit = nodeAt(Offset(200.0 + i * 60, 700))
+          ..velocity = const Offset(0, 400);
+        game.fruits.add(fruit);
+      }
+      for (var i = 0; i < 60 * 6 && !game.gameOver; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.gameOver, isTrue, reason: '扣完五颗心就结束');
+      expect(game.lives, 0);
+      final fruitsAtEnd = game.fruits.length;
+      for (var i = 0; i < 60 * 5; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.fruits.length, lessThanOrEqualTo(fruitsAtEnd));
+      expect(game.fruits, isEmpty, reason: '结束后不再抛新节点');
+    });
+
+    test('连击:窗口内连切累加连击数,分数按连击递增', () {
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 600;
+      final a = nodeAt(const Offset(200, 300));
+      final b = nodeAt(const Offset(400, 300));
+      final c = nodeAt(const Offset(600, 300));
+      game.fruits.addAll([a, b, c]);
+      // 依次切三个(每次 0.1s,仍在连击窗口内)
+      game.slice(const Offset(200, 180), const Offset(200, 420));
+      expect(game.combo, 1);
+      expect(game.score, 1);
+      game.update(.1);
+      game.slice(const Offset(400, 180), const Offset(400, 420));
+      expect(game.combo, 2);
+      expect(game.score, 1 + 2, reason: '连击 2 → 得 2 分');
+      game.update(.1);
+      game.slice(const Offset(600, 180), const Offset(600, 420));
+      expect(game.combo, 3);
+      expect(game.score, 1 + 2 + 3);
+      expect(game.bestCombo, 3);
+      expect(game.pops, isNotEmpty, reason: '连击要有弹出提示');
+      // 超过窗口后连击清零
+      game.update(NinjaGame.comboWindow + .1);
+      expect(game.combo, 0);
+    });
+
+    test('一颗榴莲要挨 15~20 刀才爆:中途不消失、连线不断', () {
+      // 画布够高:测试期间榴莲不会因为重力掉出画面
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 6000;
+      final durian = NinjaFruit(
+        configId: 'axis_input',
+        label: '坐标系输入',
+        icon: '▦',
+        color: const Color(0xFF22C55E),
+        position: const Offset(400, 300),
+        velocity: Offset.zero,
+        angle: 0,
+        spin: 0,
+        size: const Size(210, 120),
+        isDurian: true,
+        hitsToExplode: 17,
+      );
+      final other = nodeAt(const Offset(700, 300));
+      game.fruits.addAll([durian, other]);
+      final wire = NinjaWire(
+        from: durian,
+        to: other,
+        color: const Color(0xFFF59E0B),
+      );
+      game.wires.add(wire);
+
+      // 第一刀:进子弹时间、记连击、留血(不消失)
+      game.slice(const Offset(400, 180), const Offset(400, 420));
+      expect(durian.hits, 1);
+      expect(game.bulletTimeActive, isTrue, reason: '砍榴莲进入子弹时间');
+      expect(game.combo, 1);
+      expect(game.fruits, contains(durian), reason: '没砍够刀数不能爆');
+      expect(wire.cut, isFalse, reason: '榴莲还活着,连线不断');
+
+      // 后续刀数:过了冷却才计数,且不再涨连击(连击只认切到不同节点)
+      final comboAfterFirst = game.combo;
+      for (var i = 1; i < 17; i++) {
+        game.update(NinjaGame.durianHitCooldown + .01);
+        // 每次都对着榴莲当前位置下刀(它在往下掉)
+        game.slice(
+          Offset(durian.position.dx, durian.position.dy - 60),
+          Offset(durian.position.dx, durian.position.dy + 60),
+        );
+      }
+      expect(durian.hits, 17);
+      expect(
+        game.combo,
+        lessThanOrEqualTo(comboAfterFirst),
+        reason: '同一颗榴莲反复挨刀不算连击',
+      );
+      expect(game.bestCombo, 1, reason: '只有第一刀算一次切割');
+      expect(game.explosionSerial, 1, reason: '第 17 刀剧烈爆炸');
+      expect(game.durianExplosions, 1);
+      expect(wire.cut, isTrue, reason: '爆掉的榴莲连线一并断开');
+      expect(game.fruits, isEmpty, reason: '剧烈爆炸清空全场');
+    });
+
+    test('砍榴莲的刀数上限在 15~20 之间', () {
+      final game = NinjaGame()
+        ..width = 1600
+        ..height = 6000;
+      // 抛到榴莲波(每 3 波一次)
+      var frames = 0;
+      NinjaFruit? durian;
+      while (durian == null && frames < 60 * 40) {
+        game.update(1 / 60);
+        frames++;
+        durian = game.fruits.where((f) => f.isDurian).firstOrNull;
+      }
+      expect(durian, isNotNull, reason: '每隔几波会抛一颗大榴莲');
+      expect(
+        durian!.hitsToExplode,
+        inInclusiveRange(NinjaGame.durianMinHits, NinjaGame.durianMaxHits),
+      );
+      // 同一波的普通节点错开一点点入场:等它们都进来再看连线
+      for (var i = 0; i < 60; i++) {
+        game.update(1 / 60);
+      }
+      // 榴莲波:榴莲与若干普通节点相连
+      final linked = game.wires
+          .where(
+            (w) => identical(w.from, durian) || identical(w.to, durian),
+          )
+          .length;
+      expect(linked, greaterThanOrEqualTo(2), reason: '榴莲与数个节点全部相连');
+    });
+
+    test('子弹时间:聚焦到榴莲上,榴莲掉出画面/被砍爆后结束', () {
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 600;
+      final durian = NinjaFruit(
+        configId: 'axis_input',
+        label: '坐标系输入',
+        icon: '▦',
+        color: const Color(0xFF22C55E),
+        position: const Offset(400, 200),
+        velocity: Offset.zero,
+        angle: 0,
+        spin: 0,
+        size: const Size(210, 120),
+        isDurian: true,
+        hitsToExplode: 15,
+      );
+      game.fruits.add(durian);
+      expect(game.bulletTimeActive, isFalse);
+      game.slice(const Offset(400, 100), const Offset(400, 320));
+      expect(game.bulletTimeActive, isTrue);
+      expect(game.bulletFocus, same(durian), reason: '聚焦到被砍的这颗榴莲');
+
+      // 物理放慢到 1/5:同样真实时间内的位移明显更小
+      final probe = nodeAt(const Offset(100, 100))
+        ..velocity = const Offset(0, -600);
+      game.fruits.add(probe);
+      final slowBefore = probe.position;
+      game.update(.1);
+      final slowMoved = (probe.position - slowBefore).dy;
+      // 让榴莲掉出画面 → 子弹时间结束
+      durian.position = const Offset(400, 800);
+      durian.velocity = const Offset(0, 400);
+      for (var i = 0; i < 120 && game.bulletTimeActive; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.bulletTimeActive, isFalse, reason: '榴莲掉下去后子弹时间结束');
+      expect(game.bulletFocus, isNull);
+
+      // 正常速度下同样时间的位移更大(对照组)
+      final fastBefore = probe.position;
+      game.update(.1);
+      final fastMoved = (probe.position - fastBefore).dy;
+      expect(slowMoved.abs(), lessThan(fastMoved.abs()));
+    });
+
+    test('炸弹:切到扣分并冒烟,漏掉不扣心', () {
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 600;
+      final bomb = NinjaFruit(
+        configId: 'table_input',
+        label: 'Package',
+        icon: '⧉',
+        color: const Color(0xFF8A9099),
+        position: const Offset(400, 300),
+        velocity: Offset.zero,
+        angle: 0,
+        spin: 0,
+        size: const Size(146, 86),
+        isBomb: true,
+      );
+      game.fruits.add(bomb);
+      game.score = 50;
+      game.slice(const Offset(400, 240), const Offset(400, 360));
+      expect(game.score, 50 - NinjaGame.bombPenalty, reason: '切到炸弹扣分');
+      expect(game.smokeSerial, 1, reason: '炸弹要冒烟爆炸');
+      expect(game.fruits, isNot(contains(bomb)));
+
+      // 漏掉炸弹不扣心(只跑半秒:此时还没有普通节点落回画面外)
+      final missed = NinjaFruit(
+        configId: 'table_input',
+        label: 'Package',
+        icon: '⧉',
+        color: const Color(0xFF8A9099),
+        position: const Offset(120, 700),
+        velocity: const Offset(0, 400),
+        angle: 0,
+        spin: 0,
+        size: const Size(146, 86),
+        isBomb: true,
+      );
+      game.fruits.add(missed);
+      final lives = game.lives;
+      for (var i = 0; i < 30; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.fruits, isNot(contains(missed)), reason: '炸弹已掉出画面');
+      expect(game.lives, lives, reason: '炸弹是躲开的目标,漏掉不扣心');
+    });
+
+    test('节点之间留出足够间距:同波相邻节点中心相距不小于 200px', () {
+      final game = NinjaGame()
+        ..width = 1400
+        ..height = 3000
+        ..mixBombs = false;
+      // 等到第二个节点刚入场:此时两个节点的水平间距就是入场时的间距
+      var frames = 0;
+      while (game.fruits.length < 2 && frames < 60 * 20) {
+        game.update(1 / 60);
+        frames++;
+      }
+      expect(game.fruits, hasLength(2));
+      expect(
+        (game.fruits[0].position - game.fruits[1].position).dx.abs(),
+        greaterThanOrEqualTo(200),
+        reason: '节点之间要留够空间,才切得到它们之间的连线',
+      );
     });
 
     test('抛物线:节点飞起后落回画面外被移除', () {

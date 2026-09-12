@@ -269,12 +269,15 @@ class _ParticleBurst {
   final List<_Particle> particles;
   final double g; // 重力加速度(flow 单位/秒²,向下为正)
   final DateTime at;
+  /// 烟团:粒子逐渐膨胀并带柔化模糊(火花粒子则是缩小淡出)
+  final bool smoke;
 
   const _ParticleBurst({
     required this.origin,
     required this.particles,
     required this.g,
     required this.at,
+    this.smoke = false,
   });
 }
 
@@ -311,6 +314,8 @@ class _EdgesPainter extends CustomPainter {
   final List<Offset> slashTrail;
   final double slashTrailProgress;
   final Map<String, GraphNode> nodeMap; // 节点 id → 节点(由 nodes 派生,绘制时查询用)
+  /// 忍者模式的摄像机偏移:刀光/粒子与游戏对象同在"摄像机之前"的坐标系里
+  final Offset camera;
 
   // 预计算锚点:edgeId → (源锚点, 目标锚点)。
   // 一次性遍历节点端口统计,避免逐边重复 O(E) 扫描(连线多时性能关键)
@@ -341,6 +346,7 @@ class _EdgesPainter extends CustomPainter {
     required this.zoom,
     this.slashTrail = const [],
     this.slashTrailProgress = 1,
+    this.camera = Offset.zero,
   }) : nodeMap = {for (final n in nodes) n.id: n} {
     _collapsedPackageByNode = {
       for (final group in groups)
@@ -655,13 +661,18 @@ class _EdgesPainter extends CustomPainter {
       final t = lb.progress.clamp(0.0, 1.0).toDouble();
       // 前 14% 完全不透明,之后线性淡出到 0(比原曲线更显眼)
       final fade = t < 0.14 ? 1.0 : ((1 - t) / 0.86).clamp(0.0, 1.0);
+      final smoke = lb.burst.smoke;
+      paint.maskFilter = smoke
+          ? MaskFilter.blur(BlurStyle.normal, 3 + 9 * t)
+          : null;
       for (final p in lb.burst.particles) {
         final pos =
             lb.burst.origin +
+            camera +
             p.vel * t +
             Offset(0, 0.5 * lb.burst.g * t * t); // 重力:½gt² 向下
-        paint.color = p.color.withValues(alpha: fade);
-        canvas.drawCircle(pos, p.size * (1 - 0.4 * t), paint);
+        paint.color = p.color.withValues(alpha: smoke ? fade * .85 : fade);
+        canvas.drawCircle(pos, smoke ? p.size * (1 + 1.6 * t) : p.size * (1 - 0.4 * t), paint);
       }
     }
   }
@@ -670,6 +681,9 @@ class _EdgesPainter extends CustomPainter {
   void _paintSlashTrail(Canvas canvas) {
     final pts = slashTrail;
     if (pts.length < 2) return;
+    // 与游戏对象同在"摄像机之前"的坐标系
+    canvas.save();
+    canvas.translate(camera.dx, camera.dy);
     final fade = (1 - slashTrailProgress).clamp(0.0, 1.0).toDouble();
     // 轨迹整体淡出:最近的点(末尾)最亮,越远越暗
     for (var i = 0; i < pts.length - 1; i++) {
@@ -695,6 +709,7 @@ class _EdgesPainter extends CustomPainter {
           ..style = PaintingStyle.fill,
       );
     }
+    canvas.restore();
   }
 
   /// 沿采样点路径绘制虚线(用于三次贝塞尔连线预览)
@@ -895,6 +910,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   Ticker? _ninjaTicker;
   DateTime _ninjaTickAt = DateTime.now();
   Offset? _lastNinjaPos;
+  /// 已处理的剧烈爆炸序号(避免重复炸粒子)
+  int _lastNinjaExplosion = 0;
+  /// 已处理的炸弹冒烟序号
+  int _lastNinjaSmoke = 0;
+  /// 忍者模式的摄像机偏移(子弹时间把画面拉到榴莲附近)
+  Offset _ninjaCamera = Offset.zero;
 
   /// 是否处于水果忍者模式(供外部按键彩蛋查询)
   bool get ninjaActive => _ninjaMode;
@@ -917,6 +938,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _pan = Offset.zero;
     _zoomNotifier.value = 1;
     _ninja.reset();
+    _ninjaCamera = Offset.zero;
     _ninjaMode = true;
     _ninjaTickAt = DateTime.now();
     _ninjaTicker ??= createTicker(_onNinjaTick);
@@ -931,6 +953,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _ninjaTicker?.stop();
     _ninjaMode = false;
     _ninja.reset();
+    _ninjaCamera = Offset.zero;
     final saved = _ninjaSavedGraph;
     _ninjaSavedGraph = null;
     if (saved != null) {
@@ -952,14 +975,99 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       ..width = _canvasSize.width
       ..height = _canvasSize.height;
     _ninja.update(dt);
+    _updateNinjaCamera(dt);
+    // 榴莲累计切够 15 颗:剧烈爆炸 → 在爆心周围炸出一大片粒子
+    if (_ninja.explosionSerial != _lastNinjaExplosion) {
+      _lastNinjaExplosion = _ninja.explosionSerial;
+      final at = _ninja.explosionAt;
+      final rand = math.Random();
+      for (var i = 0; i < 8; i++) {
+        final dir = Offset.fromDirection(rand.nextDouble() * 2 * math.pi, i * 26);
+        _bursts.add(
+          _makeBurst(at + dir, _ninjaExplosionColor(i), _swipeVel, scale: 3),
+        );
+      }
+      while (_bursts.length > 16) {
+        _bursts.removeAt(0);
+      }
+      if (!_cutTicker.isActive) _cutTicker.start();
+      _focusNode.requestFocus();
+    }
+    // 切到炸弹:冒烟爆炸(烟团 + 一点火星)
+    if (_ninja.smokeSerial != _lastNinjaSmoke) {
+      _lastNinjaSmoke = _ninja.smokeSerial;
+      final at = _ninja.smokeAt;
+      _bursts.add(_makeSmokeBurst(at));
+      _bursts.add(_makeBurst(at, const Color(0xFFFF7043), _swipeVel, scale: 1.6));
+      while (_bursts.length > 16) {
+        _bursts.removeAt(0);
+      }
+      if (!_cutTicker.isActive) _cutTicker.start();
+    }
   }
+
+  /// 忍者模式的摄像机:子弹时间把被砍的榴莲平滑拉到画面中心,
+  /// 结束后缓缓归位
+  void _updateNinjaCamera(double dt) {
+    final focus = _ninja.bulletFocus;
+    final target = focus == null
+        ? Offset.zero
+        : Offset(
+            _canvasSize.width / 2 - focus.position.dx,
+            _canvasSize.height / 2 - focus.position.dy,
+          );
+    const follow = 5.5; // 跟随速度(每秒)
+    final k = (dt * follow).clamp(0.0, 1.0);
+    final next = _ninjaCamera + (target - _ninjaCamera) * k;
+    if ((next - _ninjaCamera).distance < .05) return;
+    setState(() => _ninjaCamera = next);
+  }
+
+  /// 冒烟爆炸的烟团:灰白粒子、上浮、逐渐膨胀(与火花粒子区分渲染)
+  _ParticleBurst _makeSmokeBurst(Offset p) {
+    final rand = math.Random();
+    const palette = [
+      Color(0xFFBDBDBD),
+      Color(0xFF9E9E9E),
+      Color(0xFF757575),
+      Color(0xFFE0E0E0),
+    ];
+    return _ParticleBurst(
+      origin: p,
+      at: DateTime.now(),
+      // 负重力 = 往上飘
+      g: -150,
+      smoke: true,
+      particles: [
+        for (var i = 0; i < 26; i++)
+          _Particle(
+            vel:
+                Offset.fromDirection(
+                  rand.nextDouble() * 2 * math.pi,
+                  (18 + rand.nextDouble() * 70) / _zoom,
+                ) +
+                Offset(0, -30 / _zoom),
+            size: (7.0 + rand.nextDouble() * 9) / _zoom,
+            color: palette[rand.nextInt(palette.length)],
+          ),
+      ],
+    );
+  }
+
+  /// 爆炸粒子的取色:榴莲绿 + 若干强调色
+  static Color _ninjaExplosionColor(int i) => switch (i % 4) {
+    0 => const Color(0xFF2E7D32),
+    1 => const Color(0xFFF9A825),
+    2 => const Color(0xFF43A047),
+    _ => const Color(0xFFFF7043),
+  };
 
   Widget _buildNinjaLayer(SyphonTheme t) {
     return Positioned.fill(
       child: IgnorePointer(
         child: CustomPaint(
           key: const Key('ninja-layer'),
-          painter: NinjaPainter(game: _ninja, theme: t),
+          painter: NinjaPainter(game: _ninja, theme: t, camera: _ninjaCamera),
         ),
       ),
     );
@@ -967,7 +1075,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   /// 水果忍者:一次指针移动 = 一刀。
   /// 命中目标是节点中间穿过的连线(与 Ctrl 切断连线同源:刀光/粒子一并复用)。
-  void _sliceNinja(Offset local) {
+  void _sliceNinja(Offset screenLocal) {
+    // 指针在屏幕坐标,游戏对象在"摄像机之前的坐标":减掉摄像机偏移
+    final local = screenLocal - _ninjaCamera;
     final from = _lastNinjaPos ?? local;
     _lastNinjaPos = local;
     _slashTrail.add(local);
@@ -2180,7 +2290,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // 水果忍者模式:画布不参与任何编辑交互,按下只记录刀锋起点
     if (_ninjaMode) {
       _downButtons = e.buttons;
-      _lastNinjaPos = e.localPosition;
+      // 刀锋起点同样要减掉摄像机偏移(与 _sliceNinja 保持一致)
+      _lastNinjaPos = e.localPosition - _ninjaCamera;
       _slashTrail.clear();
       _focusNode.requestFocus();
       return;
@@ -3590,6 +3701,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       zoom: _zoom,
       slashTrail: _slashTrail,
       slashTrailProgress: slashProg,
+      camera: _ninjaCamera,
     );
   }
 
