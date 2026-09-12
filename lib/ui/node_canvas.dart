@@ -4176,14 +4176,20 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       top: 37.5 + index * 22,
       width: 82,
       height: 18,
-      child: IgnorePointer(
-        child: Row(
-          mainAxisAlignment: isSource
-              ? MainAxisAlignment.end
-              : MainAxisAlignment.start,
-          children: isSource
-              ? [label, const SizedBox(width: 5), handle]
-              : [handle, const SizedBox(width: 5), label],
+      // 接口上不显示整包拖动的"移动"光标:与节点接口一致(仍是普通箭头,
+      // 靠端口方块本身的悬停发光提示可连线)。MouseRegion 要在 IgnorePointer
+      // 外面才收得到悬停
+      child: MouseRegion(
+        cursor: SystemMouseCursors.basic,
+        child: IgnorePointer(
+          child: Row(
+            mainAxisAlignment: isSource
+                ? MainAxisAlignment.end
+                : MainAxisAlignment.start,
+            children: isSource
+                ? [label, const SizedBox(width: 5), handle]
+                : [handle, const SizedBox(width: 5), label],
+          ),
         ),
       ),
     );

@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter/gestures.dart'
     show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart'
-    show AlertDialog, DecoratedBox, IgnorePointer, Key;
+    show AlertDialog, DecoratedBox, IgnorePointer, Key, MouseRegion, SystemMouseCursors;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -798,6 +798,16 @@ void main() {
     await tester.pumpAndSettle();
     final port = find.byKey(ValueKey('package-output-$second-out0'));
     expect(port, findsOneWidget, reason: 'Package 端口要复用节点接口方块');
+    // 接口上不能是"整包拖动"的移动光标(与节点接口一致)
+    final portCursor = tester
+        .widget<MouseRegion>(
+          find
+              .descendant(of: port, matching: find.byType(MouseRegion))
+              .first,
+        )
+        .cursor;
+    expect(portCursor, isNot(SystemMouseCursors.move));
+    expect(portCursor, SystemMouseCursors.basic);
     final portPoint = tester.getRect(port).centerRight - const Offset(5, 0);
     beforeMember = store.nodeOf(first)!.position;
     beforeOther = store.nodeOf(second)!.position;
