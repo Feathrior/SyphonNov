@@ -17,6 +17,7 @@ library;
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../models/color_utils.dart' show parseColor;
@@ -129,8 +130,8 @@ class NinjaGame extends ChangeNotifier {
   static const double waveGap = 250;
   /// 生命(左上角五颗心)
   static const int maxLives = 5;
-  /// 连击窗口(真实秒)
-  static const double comboWindow = .85;
+  /// 连击窗口(真实秒):只有 0.4 秒内的连续击中才算连击
+  static const double comboWindow = .4;
   /// 子弹时间:物理放慢到 1/5,画面聚焦到被砍的榴莲上。
   /// 结束条件不是计时,而是那颗榴莲掉出画面或被砍爆。
   static const double bulletTimeScale = .2;
@@ -686,28 +687,61 @@ Color _categoryColor(String name) {
   return Color(value ?? 0xFF7C8DB5);
 }
 
+/// 忍者模式摄像机:偏移 + 缩放。用 ValueNotifier 驱动重绘,
+/// 这样每帧移动摄像机不需要重建组件树(只让两个画笔重绘)。
+typedef NinjaCamera = ({Offset offset, double scale});
+
+/// 无偏移、无缩放的初始摄像机
+const NinjaCamera kNinjaCameraIdentity = (offset: Offset.zero, scale: 1);
+
 /// 忍者模式的绘制层:节点卡片(榴莲带尖刺)、连线、HUD(心/分数/连击/子弹时间)
 class NinjaPainter extends CustomPainter {
   final NinjaGame game;
   final SyphonTheme theme;
 
-  /// 摄像机偏移与缩放(子弹时间把画面放大并拉到榴莲附近);HUD 不受影响
-  final Offset camera;
-  final double cameraScale;
+  /// 摄像机:画笔在 paint 时读取当前值,并由它驱动重绘
+  final ValueListenable<NinjaCamera> camera;
 
   NinjaPainter({
     required this.game,
     required this.theme,
-    this.camera = Offset.zero,
-    this.cameraScale = 1,
-  }) : super(repaint: game);
+    required this.camera,
+  }) : super(repaint: Listenable.merge([game, camera]));
+
+  // 文字排版缓存:每帧给十几个文本重新 layout 是忍者模式最大的开销之一,
+  // 这里按(文本 + 字号 + 颜色 + 行宽)缓存 TextPainter,超过上限整体清空。
+  static final Map<String, TextPainter> _textCache = {};
+  static const int _textCacheLimit = 128;
+
+  static TextPainter _layoutText(
+    String text,
+    double maxWidth,
+    TextStyle style, {
+    bool ellipsis = true,
+  }) {
+    final key =
+        '$text\u0000${style.fontSize}\u0000${style.fontWeight?.value}'
+        '\u0000${style.color?.toARGB32()}\u0000$maxWidth\u0000$ellipsis';
+    final cached = _textCache[key];
+    if (cached != null) return cached;
+    if (_textCache.length >= _textCacheLimit) _textCache.clear();
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+      ellipsis: ellipsis ? '…' : null,
+    )..layout(maxWidth: maxWidth);
+    _textCache[key] = painter;
+    return painter;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
+    final cam = camera.value;
     canvas.save();
-    // screen = world * scale + camera
-    canvas.translate(camera.dx, camera.dy);
-    canvas.scale(cameraScale);
+    // screen = world * scale + offset
+    canvas.translate(cam.offset.dx, cam.offset.dy);
+    canvas.scale(cam.scale);
     // 先画连线(在节点下层,像真实连线一样从卡片边缘接出),再画节点卡片
     for (final wire in game.wires) {
       _paintWire(canvas, game.wirePath(wire), wire);
@@ -1028,30 +1062,30 @@ class NinjaPainter extends CustomPainter {
     );
   }
 
-  /// 切点浮动文字(连击 "×N 连击" / 炸弹 "-20"):先放大后淡出
+  /// 切点浮动文字(连击 "×N 连击" / 炸弹 "-20"):先放大后淡出。
+  /// 字号固定、用画布缩放做"变大",便于复用排版缓存;亮度按 1/6 量化,避免缓存爆炸。
   void _paintPop(Canvas canvas, NinjaPop pop) {
     final t = (pop.life / NinjaPop.duration).clamp(0.0, 1.0);
     final appear = Curves.easeOutBack.transform(math.min(1, t * 3));
     final alpha = (1 - t).clamp(0.0, 1.0);
+    final quant = (alpha * 6).ceil() / 6;
     final style = TextStyle(
-      fontSize: 20 * (0.7 + .3 * appear),
+      fontSize: 20,
       fontWeight: FontWeight.w900,
-      color: pop.color.withValues(alpha: alpha),
+      color: pop.color.withValues(alpha: quant),
       shadows: [
         Shadow(
-          color: Colors.black.withValues(alpha: .35 * alpha),
+          color: Colors.black.withValues(alpha: .35 * quant),
           blurRadius: 6,
         ),
       ],
     );
-    final painter = TextPainter(
-      text: TextSpan(text: pop.text, style: style),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    painter.paint(
-      canvas,
-      pop.at - Offset(painter.width / 2, painter.height + 12 + 18 * t),
-    );
+    final painter = _layoutText(pop.text, double.infinity, style, ellipsis: false);
+    canvas.save();
+    canvas.translate(pop.at.dx, pop.at.dy - 12 - 18 * t);
+    canvas.scale(0.7 + .3 * appear);
+    painter.paint(canvas, Offset(-painter.width / 2, -painter.height));
+    canvas.restore();
   }
 
   /// HUD:左上角五颗心 + 分数/连击/榴莲进度
@@ -1109,18 +1143,16 @@ class NinjaPainter extends CustomPainter {
     );
 
     const hint = '按住左键划过连线或节点,把它们一刀两断 · ↑↑↓↓←→←→ 退出';
-    final painter = TextPainter(
-      text: TextSpan(
-        text: hint,
-        style: TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-          color: theme.textDim.withValues(alpha: .85),
-        ),
+    final painter = _layoutText(
+      hint,
+      size.width - 40,
+      TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        color: theme.textDim.withValues(alpha: .85),
       ),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-    )..layout(maxWidth: size.width - 40);
+      ellipsis: false,
+    );
     painter.paint(
       canvas,
       Offset((size.width - painter.width) / 2, size.height - 34),
@@ -1250,19 +1282,10 @@ class NinjaPainter extends CustomPainter {
     double maxWidth,
     TextStyle style,
   ) {
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: maxWidth);
-    painter.paint(canvas, at);
+    _layoutText(text, maxWidth, style).paint(canvas, at);
   }
 
   @override
   bool shouldRepaint(covariant NinjaPainter old) =>
-      old.game != game ||
-      old.theme != theme ||
-      old.camera != camera ||
-      old.cameraScale != cameraScale;
+      old.game != game || old.theme != theme || old.camera != camera;
 }

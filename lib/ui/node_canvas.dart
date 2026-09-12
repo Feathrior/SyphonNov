@@ -12,7 +12,7 @@ import 'package:flutter/gestures.dart'
         kPrimaryButton,
         kSecondaryMouseButton;
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart' show ValueListenable, setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
@@ -300,8 +300,12 @@ class _EdgesPainter extends CustomPainter {
   final Offset? altSplitPoint;
   final String? insertPreviewEdge;
   final Offset? insertPreviewPoint;
-  // 切断粒子爆裂(水果忍者式):每次切断一颗,各带独立动画进度
-  final List<({_ParticleBurst burst, double progress})> liveBursts;
+  // 切断粒子爆裂(水果忍者式):进度在画笔内按当前时刻计算
+  final List<_ParticleBurst> bursts;
+  /// 最后一次划过画布的时刻(刀光整体淡出用)
+  final DateTime slashTrailAt;
+  /// 特效计时(每帧 +1 驱动重绘,不重建组件树)
+  final Listenable effectsTick;
   final _Conn? connecting;
   final Offset? connectPos;
   final bool connectConversion; // Alt 拖拽悬停到“需经转换节点”的端口:预览线琥珀色
@@ -313,13 +317,12 @@ class _EdgesPainter extends CustomPainter {
   final Color warn;
   final bool isDark; // 亮色模式下连线颜色压暗一档(避免鲜艳色刺眼)
   final double zoom; // 当前缩放:Transform 内绘制,所有标记尺寸除以 zoom 保持屏幕恒定
-  // 切水果刀光:划过轨迹点(flow 坐标)与整体淡出进度 0~1
+  // 切水果刀光:划过轨迹点(flow 坐标)
   final List<Offset> slashTrail;
-  final double slashTrailProgress;
   final Map<String, GraphNode> nodeMap; // 节点 id → 节点(由 nodes 派生,绘制时查询用)
-  /// 忍者模式的摄像机偏移:刀光/粒子与游戏对象同在"摄像机之前"的坐标系里
-  final Offset camera;
-  final double cameraScale;
+  /// 忍者模式的摄像机(偏移+缩放,含爆炸晃动):由它驱动画笔重绘,
+  /// 刀光/粒子与游戏对象同在"摄像机之前"的坐标系里
+  final ValueListenable<NinjaCamera> ninjaCamera;
 
   // 预计算锚点:edgeId → (源锚点, 目标锚点)。
   // 一次性遍历节点端口统计,避免逐边重复 O(E) 扫描(连线多时性能关键)
@@ -336,7 +339,9 @@ class _EdgesPainter extends CustomPainter {
     this.altSplitPoint,
     this.insertPreviewEdge,
     this.insertPreviewPoint,
-    this.liveBursts = const [],
+    required this.bursts,
+    required this.slashTrailAt,
+    required this.effectsTick,
     this.connecting,
     this.connectPos,
     this.connectConversion = false,
@@ -349,10 +354,9 @@ class _EdgesPainter extends CustomPainter {
     required this.isDark,
     required this.zoom,
     this.slashTrail = const [],
-    this.slashTrailProgress = 1,
-    this.camera = Offset.zero,
-    this.cameraScale = 1,
-  }) : nodeMap = {for (final n in nodes) n.id: n} {
+    required this.ninjaCamera,
+  }) : nodeMap = {for (final n in nodes) n.id: n},
+       super(repaint: Listenable.merge([ninjaCamera, effectsTick])) {
     _collapsedPackageByNode = {
       for (final group in groups)
         if (group.isPackage && group.collapsed)
@@ -452,11 +456,11 @@ class _EdgesPainter extends CustomPainter {
       _paintInsertPreview(canvas, insertPreviewPoint!);
     }
     // 切断粒子爆裂(水果忍者果肉迸溅,扩散 + 淡出)
-    if (liveBursts.isNotEmpty) {
+    if (bursts.isNotEmpty) {
       _paintBursts(canvas);
     }
     // 切水果刀光(白色渐变光带,随轨迹渐隐)
-    if (slashTrail.length >= 2 && slashTrailProgress < 1) {
+    if (slashTrail.length >= 2) {
       _paintSlashTrail(canvas);
     }
   }
@@ -661,28 +665,31 @@ class _EdgesPainter extends CustomPainter {
   /// 切断粒子爆裂:每次切断的粒子束各自沿方向飞散,
   /// 受重力向下弯曲;开头保持近不透明(更显眼),随后线性淡出 + 半径收缩
   void _paintBursts(Canvas canvas) {
-    if (liveBursts.isEmpty) return;
+    if (bursts.isEmpty) return;
+    final cam = ninjaCamera.value;
     canvas.save();
-    canvas.translate(camera.dx, camera.dy);
-    canvas.scale(cameraScale);
+    canvas.translate(cam.offset.dx, cam.offset.dy);
+    canvas.scale(cam.scale);
     final paint = Paint();
-    for (final lb in liveBursts) {
-      final t = lb.progress.clamp(0.0, 1.0).toDouble();
+    final now = DateTime.now();
+    for (final burst in bursts) {
+      final t =
+          (now.difference(burst.at).inMilliseconds / 450.0).clamp(0.0, 1.0);
       // 前 14% 完全不透明,之后线性淡出到 0(比原曲线更显眼)
       final fade = t < 0.14 ? 1.0 : ((1 - t) / 0.86).clamp(0.0, 1.0);
-      final grow = lb.burst.grow;
-      final softness = lb.burst.blur;
+      final grow = burst.grow;
+      final softness = burst.blur;
       paint.maskFilter = softness <= 0
           ? null
           : MaskFilter.blur(
               BlurStyle.normal,
               grow ? softness * (0.4 + t) : softness,
             );
-      for (final p in lb.burst.particles) {
+      for (final p in burst.particles) {
         final pos =
-            lb.burst.origin +
+            burst.origin +
             p.vel * t +
-            Offset(0, 0.5 * lb.burst.g * t * t); // 重力:½gt² 向下
+            Offset(0, 0.5 * burst.g * t * t); // 重力:½gt² 向下
         paint.color = p.color.withValues(alpha: grow ? fade * .85 : fade);
         canvas.drawCircle(
           pos,
@@ -699,10 +706,17 @@ class _EdgesPainter extends CustomPainter {
     final pts = slashTrail;
     if (pts.length < 2) return;
     // 与游戏对象同在"摄像机之前"的坐标系
+    final cam = ninjaCamera.value;
     canvas.save();
-    canvas.translate(camera.dx, camera.dy);
-    canvas.scale(cameraScale);
-    final fade = (1 - slashTrailProgress).clamp(0.0, 1.0).toDouble();
+    canvas.translate(cam.offset.dx, cam.offset.dy);
+    canvas.scale(cam.scale);
+    final fade =
+        (1 - DateTime.now().difference(slashTrailAt).inMilliseconds / 300.0)
+            .clamp(0.0, 1.0);
+    if (fade <= 0.01) {
+      canvas.restore();
+      return;
+    }
     // 轨迹整体淡出:最近的点(末尾)最亮,越远越暗
     for (var i = 0; i < pts.length - 1; i++) {
       final f = i / (pts.length - 2); // 0=最旧 → 1=最新
@@ -809,14 +823,14 @@ class _EdgesPainter extends CustomPainter {
       old.revision != revision ||
       old.zoom != zoom ||
       old.isDark != isDark ||
-      old.slashTrailProgress != slashTrailProgress ||
       old.slashTrail != slashTrail ||
       old.hoverEdge != hoverEdge ||
       old.altSplitEdge != altSplitEdge ||
       old.altSplitPoint != altSplitPoint ||
       old.insertPreviewEdge != insertPreviewEdge ||
       old.insertPreviewPoint != insertPreviewPoint ||
-      old.liveBursts != liveBursts ||
+      old.bursts != bursts ||
+      old.effectsTick != effectsTick ||
       old.selectedSplitEdgeId != selectedSplitEdgeId ||
       old.connecting != connecting ||
       old.connectPos != connectPos;
@@ -932,15 +946,20 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   int _lastNinjaExplosion = 0;
   /// 已处理的炸弹冒烟序号
   int _lastNinjaSmoke = 0;
-  /// 忍者模式的摄像机偏移(子弹时间把画面拉到榴莲附近)
+  /// 忍者模式摄像机(偏移 + 缩放 + 晃动):用 ValueNotifier 驱动两个画笔重绘,
+  /// 避免每帧 setState 重建整棵画布组件树
+  final ValueNotifier<NinjaCamera> _ninjaCam = ValueNotifier(
+    kNinjaCameraIdentity,
+  );
+  /// 特效计时:刀光/粒子播放期间由 _cutTicker 每帧 +1 驱动重绘,
+  /// 同样避免 setState(忍者模式连续挥刀时尤其重要)
+  final ValueNotifier<int> _effectsTick = ValueNotifier(0);
+  /// 摄像机自身状态(平滑插值用,不参与重建)
   Offset _ninjaCamera = Offset.zero;
-  /// 摄像机缩放(聚焦时推近)
   double _ninjaCameraScale = 1;
   /// 画布晃动强度(炸弹爆炸时 1 → 衰减到 0)
   double _ninjaShake = 0;
   double _ninjaShakePhase = 0;
-  /// 实际渲染用的变换:screen = world * [cameraScale] + [renderOffset]
-  Offset _ninjaRenderOffset = Offset.zero;
 
   /// 是否处于水果忍者模式(供外部按键彩蛋查询)
   bool get ninjaActive => _ninjaMode;
@@ -965,7 +984,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _ninja.reset();
     _clearNinjaEffects();
     _ninjaCamera = Offset.zero;
-    _ninjaRenderOffset = Offset.zero;
     _ninjaCameraScale = 1;
     _ninjaShake = 0;
     _ninjaMode = true;
@@ -996,7 +1014,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     // 特效粒子/刀光/浮字一律清掉:不留任何残留到编辑画布上
     _clearNinjaEffects();
     _ninjaCamera = Offset.zero;
-    _ninjaRenderOffset = Offset.zero;
     _ninjaCameraScale = 1;
     _ninjaShake = 0;
     final saved = _ninjaSavedGraph;
@@ -1055,6 +1072,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   /// 忍者模式的摄像机:子弹时间把被砍的榴莲放大并拉到画面中心,
   /// 但不越出原来画布视窗的边界(不会露出画布外的空白);
   /// 结束(榴莲掉下去/被砍爆)后缓缓归位。炸弹爆炸时再叠加一段晃动。
+  ///
+  /// 只更新 [_ninjaCam] 这个 ValueNotifier:画笔据此重绘,不重建组件树。
   void _updateNinjaCamera(double dt) {
     final focus = _ninja.bulletFocus;
     const follow = 5.5; // 跟随速度(每秒)
@@ -1072,14 +1091,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     }
     target = _clampNinjaPan(target, scale);
     final pan = _ninjaCamera + (target - _ninjaCamera) * k;
-    final clamped = _clampNinjaPan(pan, scale);
-    var changed = false;
-    if ((clamped - _ninjaCamera).distance >= .05 ||
-        (scale - _ninjaCameraScale).abs() >= .002) {
-      _ninjaCamera = clamped;
-      _ninjaCameraScale = scale;
-      changed = true;
-    }
+    _ninjaCamera = _clampNinjaPan(pan, scale);
+    _ninjaCameraScale = scale;
     // 晃动:高频抖动 + 指数衰减
     Offset shake = Offset.zero;
     if (_ninjaShake > 0.001) {
@@ -1090,17 +1103,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         math.cos(_ninjaShakePhase * 1.7) * amp * .8,
       );
       _ninjaShake = math.max(0, _ninjaShake - dt * 2.4);
-      changed = true;
     } else if (_ninjaShake != 0) {
       _ninjaShake = 0;
-      changed = true;
     }
-    final render = _ninjaCamera + shake;
-    if (render != _ninjaRenderOffset) {
-      _ninjaRenderOffset = render;
-      changed = true;
-    }
-    if (changed) setState(() {});
+    _ninjaCam.value = (offset: _ninjaCamera + shake, scale: scale);
   }
 
   /// 把摄像机平移钳制在"缩放后的画布内容仍覆盖整个视窗"的范围内:
@@ -1131,7 +1137,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       g: -320 / _zoom,
       blur: 3,
       particles: [
-        for (var i = 0; i < 70; i++)
+        for (var i = 0; i < 44; i++)
           _Particle(
             vel:
                 Offset.fromDirection(
@@ -1164,7 +1170,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       grow: true,
       blur: 5 * scale,
       particles: [
-        for (var i = 0; i < (52 * scale).round(); i++)
+        for (var i = 0; i < (34 * scale).round(); i++)
           _Particle(
             vel:
                 Offset.fromDirection(
@@ -1184,12 +1190,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       child: IgnorePointer(
         child: CustomPaint(
           key: const Key('ninja-layer'),
-          painter: NinjaPainter(
-            game: _ninja,
-            theme: t,
-            camera: _ninjaRenderOffset,
-            cameraScale: _ninjaCameraScale,
-          ),
+          painter: NinjaPainter(game: _ninja, theme: t, camera: _ninjaCam),
         ),
       ),
     );
@@ -1200,7 +1201,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   void _sliceNinja(Offset screenLocal) {
     // 指针在屏幕坐标,游戏对象在"摄像机之前的坐标":减掉摄像机偏移
     // 屏幕 → 世界:先平移再除以缩放(与渲染变换互逆)
-    final local = (screenLocal - _ninjaRenderOffset) / _ninjaCameraScale;
+    final cam = _ninjaCam.value;
+    final local = (screenLocal - cam.offset) / cam.scale;
     final from = _lastNinjaPos ?? local;
     _lastNinjaPos = local;
     _slashTrail.add(local);
@@ -1291,13 +1293,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       grow: true,
       blur: 10,
       particles: [
-        for (var i = 0; i < 14; i++)
+        for (var i = 0; i < 6; i++)
           _Particle(
             vel: Offset.fromDirection(
               rand.nextDouble() * 2 * math.pi,
               (30 + rand.nextDouble() * 130) / _zoom,
             ),
-            size: (46 + rand.nextDouble() * 74) / _zoom,
+            size: (40 + rand.nextDouble() * 52) / _zoom,
             color: palette[rand.nextInt(palette.length)],
           ),
       ],
@@ -1626,17 +1628,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           now.difference(_slashTrailAt).inMilliseconds < 300;
       if (!burstAlive && !trailAlive) {
         _cutTicker.stop();
-        if (_bursts.isNotEmpty) {
-          _bursts.clear();
-          _bump();
-        }
-        if (_slashTrail.isNotEmpty) {
-          _slashTrail.clear();
-          _bump();
-        }
+        if (_bursts.isNotEmpty) _bursts.clear();
+        if (_slashTrail.isNotEmpty) _slashTrail.clear();
+        _effectsTick.value++;
         return;
       }
-      _bump();
+      // 只让画笔重绘,不重建组件树(忍者模式连续挥刀时每帧都走这里)
+      _effectsTick.value++;
     });
     // 节点被删除时(快捷键/菜单/属性面板/撤销)生成退场幻影
     _lastNodeSnapshot = {for (final n in store.nodes) n.id: n};
@@ -2475,7 +2473,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _downButtons = e.buttons;
       // 刀锋起点同样要减掉摄像机偏移(与 _sliceNinja 保持一致)
       _lastNinjaPos =
-          (e.localPosition - _ninjaRenderOffset) / _ninjaCameraScale;
+          (e.localPosition - _ninjaCam.value.offset) / _ninjaCam.value.scale;
       _slashTrail.clear();
       _focusNode.requestFocus();
       return;
@@ -3839,29 +3837,15 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  /// 连线层画笔(含切断/刀光动画进度)
+  /// 连线层画笔(含切断/刀光动画)
+  ///
+  /// 粒子/刀光的动画进度在画笔内部按当前时刻计算,并由 _effectsTick 驱动重绘:
+  /// 这样特效播放期间不需要 setState 重建整棵画布组件树(忍者模式下尤其重要)。
   _EdgesPainter _buildEdgePainter(
     SyphonTheme t,
     List<GraphNode> nodes,
     List<GraphEdge> edges,
   ) {
-    // 切断粒子爆裂:每次切断各自计时(各 0~1,450ms)
-    final now = DateTime.now();
-    final liveBursts = [
-      for (final b in _bursts)
-        (
-          burst: b,
-          progress: (now.difference(b.at).inMilliseconds / 450.0).clamp(
-            0.0,
-            1.0,
-          ),
-        ),
-    ];
-    // 刀光整体淡出:距最后一次划过的时刻 0→300ms 内从 0 → 1
-    final slashProg = _slashTrail.isEmpty
-        ? 1.0
-        : (DateTime.now().difference(_slashTrailAt).inMilliseconds / 300.0)
-              .clamp(0.0, 1.0);
     return _EdgesPainter(
       nodes: nodes,
       edges: edges,
@@ -3871,7 +3855,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       altSplitPoint: _altSplitPoint,
       insertPreviewEdge: _insertPreviewEdge,
       insertPreviewPoint: _insertPreviewPoint,
-      liveBursts: liveBursts,
+      bursts: _bursts,
+      slashTrailAt: _slashTrailAt,
+      effectsTick: _effectsTick,
       connecting: _connecting,
       connectPos: _connectFlowPos,
       connectConversion: _connectConversion,
@@ -3884,9 +3870,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       isDark: t.isDark,
       zoom: _zoom,
       slashTrail: _slashTrail,
-      slashTrailProgress: slashProg,
-      camera: _ninjaRenderOffset,
-      cameraScale: _ninjaCameraScale,
+      ninjaCamera: _ninjaCam,
     );
   }
 
