@@ -301,6 +301,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeMenuMode = NodeMenuMode.menu;
     final first = GraphStore.instance.addNode(
       'table_input',
       const Offset(120, 90),
@@ -315,17 +316,32 @@ void main() {
     await tester.pumpWidget(const SyphonApp());
     await tester.pumpAndSettle();
 
+    // 节点右键菜单里不再有"打包为 Package"
+    final canvasRect = tester.getRect(find.byType(NodeCanvas));
     final firstCard = find.byWidgetPredicate(
       (widget) => widget is NodeCard && widget.nodeId == first,
     );
     await tester.tapAt(tester.getCenter(firstCard), buttons: kSecondaryButton);
     await tester.pumpAndSettle();
-    expect(find.text('分组'), findsNothing);
-    expect(find.text('取消分组'), findsNothing);
-    expect(find.text('打包为 Package'), findsOneWidget);
+    expect(find.text('打包为 Package'), findsNothing);
+    expect(find.text('复制所选'), findsOneWidget);
+    // 菜单层是全屏的,点菜单外任意处即关闭(不会连带清掉多选)
+    await tester.tapAt(Offset(canvasRect.center.dx, canvasRect.top + 12));
+    await tester.pumpAndSettle();
+    expect(find.text('复制所选'), findsNothing);
 
+    // 空白右键:新建节点菜单底部提供"打包为 Package"(选中 ≥2 个节点时)
+    GraphStore.instance.setMultiSelected({first, second});
+    await tester.pumpAndSettle();
+    await tester.tapAt(
+      Offset(canvasRect.center.dx, canvasRect.top + 12),
+      buttons: kSecondaryButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('打包为 Package'), findsOneWidget);
     await tester.tap(find.text('打包为 Package'));
     await tester.pumpAndSettle();
+
     // 与「帮助 → 关于 Syphon」一致:fluent ContentDialog + TextBox(不再是 AlertDialog)
     expect(find.byType(AlertDialog), findsNothing);
     expect(find.byType(fluent.ContentDialog), findsOneWidget);
@@ -335,7 +351,11 @@ void main() {
       matching: find.byType(fluent.TextBox),
     );
     expect(box, findsOneWidget);
-    expect(tester.widget<fluent.TextBox>(box).autofocus, isTrue);
+    final textBox = tester.widget<fluent.TextBox>(box);
+    expect(textBox.autofocus, isTrue);
+    expect(textBox.maxLines, 1, reason: '正常单行输入框,不能被对话框撑高');
+    // 输入框高度必须接近单行控件高度(此前会被对话框拉成几百像素的大白框)
+    expect(tester.getSize(box).height, lessThan(64));
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
     expect(find.byType(fluent.ContentDialog), findsNothing);
@@ -485,14 +505,19 @@ void main() {
     final region = tester.getRect(
       find.byKey(ValueKey('package-region-$packageId')),
     );
-    // 区域内部空白(避开成员节点与边框带):右键呼出新建节点菜单
+    // 区域内部空白:右键 = 新建节点菜单,且 Package 自身选项附在下方
     final inside = Offset(region.center.dx, region.top + 40);
     await tester.tapAt(inside, buttons: kSecondaryButton);
     await tester.pumpAndSettle();
-    expect(find.text('分组'), findsNothing);
-    expect(find.text('收起 Package'), findsNothing, reason: '包内空白不是 Package 菜单');
     final menu = find.byType(NodeMenu);
     expect(menu, findsOneWidget, reason: '包内应能呼出新建节点菜单');
+    expect(
+      find.text('收起 Package'),
+      findsOneWidget,
+      reason: 'Package 自身选项要附在新建节点菜单下方',
+    );
+    expect(find.text('保存到 Package 库'), findsOneWidget);
+    expect(find.text('解散 Package'), findsOneWidget);
 
     final before = store.nodes.length;
     await tester.tap(find.text('表格输入').last);
@@ -506,7 +531,8 @@ void main() {
       reason: '在 Package 内部新建的节点应并入该 Package',
     );
 
-    // 边框带上的右键仍然是 Package 菜单(折叠/保存/解散)
+    // 包内任意位置右键都带 Package 选项(不再是"只有边框一圈"):
+    // 取区域底部内边距(不在任何成员节点上)
     final grown = tester.getRect(
       find.byKey(ValueKey('package-region-$packageId')),
     );
@@ -515,6 +541,7 @@ void main() {
       buttons: kSecondaryButton,
     );
     await tester.pumpAndSettle();
+    expect(find.byType(NodeMenu), findsOneWidget);
     expect(find.text('收起 Package'), findsOneWidget);
     await tester.tapAt(const Offset(4, 400));
     await tester.pumpAndSettle();

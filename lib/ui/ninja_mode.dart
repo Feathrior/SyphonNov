@@ -67,8 +67,8 @@ class NinjaGame extends ChangeNotifier {
   static const double gravity = 980; // px/s²
   /// 切断的连线两半散开消失的时间(秒)
   static const double wireLife = .6;
-  /// 同屏最多几条连线(节点数量上限内保持可玩)
-  static const int maxWires = 6;
+  /// 每个新入场的节点固定连出几条线(连向紧邻它之前入场的节点)
+  static const int wiresPerNode = 2;
 
   final List<NinjaFruit> fruits = [];
   final List<NinjaWire> wires = [];
@@ -78,7 +78,6 @@ class NinjaGame extends ChangeNotifier {
   double width = 0;
   double height = 0;
   double _spawnTimer = 0.6;
-  double _wireTimer = 0.9;
 
   /// 满场节点数量上限(性能与可玩性平衡)
   static const int _maxFruits = 7;
@@ -88,7 +87,6 @@ class NinjaGame extends ChangeNotifier {
     wires.clear();
     score = 0;
     _spawnTimer = 0.6;
-    _wireTimer = 0.9;
   }
 
   /// 推进一帧。[dt] 为秒。
@@ -98,12 +96,6 @@ class NinjaGame extends ChangeNotifier {
     if (_spawnTimer <= 0 && fruits.length < _maxFruits) {
       _spawn();
       _spawnTimer = .45 + _random.nextDouble() * .55;
-    }
-    // 节点掉光时也要继续连出新线:定时在现有节点之间随机补一条
-    _wireTimer -= dt;
-    if (_wireTimer <= 0) {
-      _wireTimer = 1.1 + _random.nextDouble() * .7;
-      _linkRandomPair();
     }
 
     final alive = <NinjaFruit>[];
@@ -121,7 +113,8 @@ class NinjaGame extends ChangeNotifier {
       ..clear()
       ..addAll(alive);
 
-    // 连线:切开的继续播放两半散开动画;两端节点都在的保留
+    // 连线:切开的继续播放两半散开动画;两端节点都在的保留。
+    // 绝不会"凭空补线":连线只在节点入场时按固定规则建立,否则永远切不干净。
     wires.removeWhere((w) {
       if (w.cut) {
         w.cutT += dt;
@@ -153,45 +146,21 @@ class NinjaGame extends ChangeNotifier {
       spin: (_random.nextDouble() - .5) * 2.4,
       size: const Size(146, 86),
     );
-    // 先与已有节点连线,再把新节点加进去(避免连到自己)
-    _linkToExisting(fruit);
+    // 按固定规则与先前的节点连线(新节点 ↔ 最近的两个节点)
+    _linkOnSpawn(fruit);
     fruits.add(fruit);
   }
 
-  /// 新节点随机与场上 1~2 个节点相连(节点之间连出连线,而不是节点自带连线)
-  void _linkToExisting(NinjaFruit fruit) {
-    final others = fruits.toList();
-    if (others.isEmpty) return;
-    final links = 1 + _random.nextInt(2);
-    for (var i = 0; i < links; i++) {
-      if (_liveWireCount >= maxWires) return;
-      final other = others[_random.nextInt(others.length)];
-      if (_hasWire(fruit, other)) continue;
-      wires.add(NinjaWire(from: fruit, to: other, color: _wireColor()));
+  /// 连线结构完全固定:每个新节点与"先它入场的两个节点"相连。
+  ///
+  /// 不随机选对象、不按当前距离找邻居、更不在运行中补线 —— 否则玩家刚切完
+  /// 又会冒出新的线,永远切不干净。节点入场时建立一次,切开或端点离场即消失。
+  void _linkOnSpawn(NinjaFruit fruit) {
+    final previous = fruits.reversed.take(wiresPerNode).toList();
+    for (final other in previous) {
+      wires.add(NinjaWire(from: other, to: fruit, color: _wireColor()));
     }
   }
-
-  /// 在场上任意两个节点之间补一条连线(节点各自在动,连线一直有新目标)
-  void _linkRandomPair() {
-    if (_liveWireCount >= maxWires) return;
-    final live = fruits.toList();
-    if (live.length < 2) return;
-    for (var attempt = 0; attempt < 8; attempt++) {
-      final a = live[_random.nextInt(live.length)];
-      final b = live[_random.nextInt(live.length)];
-      if (identical(a, b) || _hasWire(a, b)) continue;
-      wires.add(NinjaWire(from: a, to: b, color: _wireColor()));
-      return;
-    }
-  }
-
-  int get _liveWireCount => wires.where((w) => !w.cut).length;
-
-  bool _hasWire(NinjaFruit a, NinjaFruit b) => wires.any(
-    (w) =>
-        (identical(w.from, a) && identical(w.to, b)) ||
-        (identical(w.from, b) && identical(w.to, a)),
-  );
 
   /// 连线当前的世界坐标折线:两端贴着节点卡片边缘,形状沿用画布贝塞尔
   List<Offset> wirePath(NinjaWire w) {

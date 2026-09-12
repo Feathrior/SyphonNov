@@ -32,10 +32,6 @@ import 'node_context_menus.dart';
 import 'radial_node_menu.dart';
 import 'theme.dart';
 
-/// 展开 Package 的"边框带"宽度:右键落在边框这一圈上算点击 Package 本体
-/// (呼出折叠/保存/解散菜单),落在内部空白则是在包内新建节点。
-const double _kPackageFrameBand = 18;
-
 // ==================== 背景网格 ====================
 
 class _BgPainter extends CustomPainter {
@@ -1530,19 +1526,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     return null;
   }
 
-  /// 右键落点是否应打开 Package 菜单(而不是在 Package 内部新建节点)。
-  ///
-  /// 折叠的 Package 代理卡片整张都算"卡片",菜单随处可呼出;展开的 Package
-  /// 只有边框一圈是 Package 自身(折叠/保存/解散),中间区域留给"在包内
-  /// 新建节点"——否则包内一旦变空就再也放不进新节点。
-  bool _packageMenuWantedAt(Offset flow, String groupId) {
-    final group = store.groups.where((g) => g.id == groupId).firstOrNull;
-    if (group == null || group.collapsed) return true;
-    final rect = _groupRect(group);
-    if (rect == null) return true;
-    return !rect.deflate(_kPackageFrameBand / _zoom).contains(flow);
-  }
-
   /// 在 Package 内部新建的节点自动并入该 Package(展开区域内或折叠代理上)
   void _joinPackageAt(String? nodeId, Offset flow) {
     if (nodeId == null) return;
@@ -2192,12 +2175,16 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _bump();
     }
     final flow = _toFlow(e.localPosition);
-    // 右键:节点上走卡片折叠；Package 区域打开 Package 菜单；
-    // 其余空白打开新建节点菜单。
+    // 右键:节点上走卡片折叠;折叠 Package 代理卡片走 Package 菜单;
+    // 其余空白(含展开 Package 内部)走新建节点菜单,展开 Package 的自身选项
+    // 会附在该菜单下方(见 _buildMenuLayer)。
     if (e.buttons & kSecondaryMouseButton != 0) {
       if (_pointInAnyNode(flow)) return; // 节点上右键走卡片折叠
       final gid = _groupAt(flow);
-      if (gid != null && _packageMenuWantedAt(flow, gid)) {
+      final group = gid == null
+          ? null
+          : store.groups.where((g) => g.id == gid).firstOrNull;
+      if (group != null && group.collapsed) {
         _menuPos = e.localPosition;
         _groupMenuFor = gid;
         _nodeMenuFor = null;
@@ -2205,7 +2192,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         _bump();
         return;
       }
-      // 展开 Package 内部空白:走新建节点菜单/圆环,新建的节点自动并入该 Package
+      // 展开 Package 内部:记住它,菜单层把 Package 选项接在新建节点菜单下方
+      _groupMenuFor = group?.id;
       final settings = SettingsStore.instance;
       if (settings.radialNodeMenuEnabled) {
         _beginRadialGesture(e.localPosition);
@@ -2896,21 +2884,27 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   // ---------------- 多选右键菜单动作(Package/复制/删除) ----------------
 
-  Future<void> _packageSelection() async {
-    final sel = _nodeMenuFor;
-    if (sel == null || sel.length < 2) return;
-    var draftName = 'Package';
-    final controller = TextEditingController(text: draftName);
+  /// 把指定节点收纳为 Package(名称弹窗;取消则不变)
+  Future<void> _packageSelection(List<String> ids) async {
+    if (ids.length < 2) return;
+    const defaultName = 'Package';
+    var draftName = defaultName;
+    final controller = TextEditingController(text: defaultName);
     // 与「帮助 → 关于 Syphon」一致,统一用 fluent 的 ContentDialog
     final name = await fluent.showDialog<String>(
       context: context,
       builder: (ctx) => fluent.ContentDialog(
         title: const Text('创建 Package'),
+        // 必须给出确定高度:fluent 的 ContentDialog 把内容放进 Flexible,
+        // 而 TextBox 内部的 Align 在没有宽高因子时会撑满可用空间 —— 不限制
+        // 高度的话输入框会变成几百像素高的大白框
         content: SizedBox(
-          width: 320,
+          width: 300,
+          height: 36,
           child: fluent.TextBox(
             controller: controller,
             autofocus: true,
+            maxLines: 1,
             placeholder: 'Package 名称',
             onChanged: (value) => draftName = value,
             onSubmitted: (value) => Navigator.of(ctx).pop(value),
@@ -2930,7 +2924,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
     controller.dispose();
     if (name == null) return;
-    store.createPackage(sel.toList(), name);
+    store.createPackage(ids, name);
     _closeMenu();
   }
 
@@ -3324,57 +3318,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildExternalDropPreview(SyphonTheme t) {
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: _dropPreview,
-          builder: (context, _) {
-            final preview = _dropPreview.value;
-            if (preview == null) return const SizedBox.shrink();
-            final color = preview.accepted ? preview.color : t.textFaint;
-            // 与拖拽指示环同一套外观:亮色粗环 + 同色发光,不再有细细的外圈
-            // (之前那圈 1.5px 描边拖到画布上后格外显眼)
-            final bright = Color.lerp(color, Colors.white, .7)!;
-            final strong = preview.accepted ? 1.0 : .45;
-            return Stack(
-              children: [
-                Positioned(
-                  left: preview.local.dx - 25,
-                  top: preview.local.dy - 25,
-                  child: Container(
-                    key: const Key('canvas-node-drop-preview'),
-                    width: 50,
-                    height: 50,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: color.withValues(alpha: .07 * strong),
-                      border: Border.all(
-                        color: bright.withValues(alpha: .9 * strong),
-                        width: 3.5,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: color.withValues(alpha: .42 * strong),
-                          blurRadius: 16,
-                          spreadRadius: 1,
-                        ),
-                        BoxShadow(
-                          color: color.withValues(alpha: .22 * strong),
-                          blurRadius: 34,
-                          spreadRadius: 4,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
+  /// 从上方栏拖入画布时的落点提示。
+  ///
+  /// 曾经在这里画一个 50px 的圆环示意落点,但在指针处已经有跟随的拖拽指示环,
+  /// 两层环叠在一起时最外圈的亮边非常抢眼(反馈过"一定要去掉")。落点提示就此
+  /// 取消:_dropPreview 仍记录当前指针位置与是否落在画布内,便于后续做更克制的
+  /// 提示或落点吸附。
+  Widget _buildExternalDropPreview(SyphonTheme t) => const SizedBox.shrink();
 
   /// 画布层:指针交互(Listener)+ 光标(MouseRegion)+ 端口状态广播(CanvasSockets)+ 分层渲染
   Widget _buildCanvasLayer(SyphonTheme t) {
@@ -4210,46 +4160,46 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   /// 菜单层:与画布层平级,独立指针链。
-  /// Package 右键 → Package 菜单；多选右键 → Package/复制/删除；
-  /// 空白 → NodeMenu(新建节点)。
+  /// 折叠 Package 右键 → Package 菜单；
+  /// 展开 Package 内部右键 → 新建节点菜单 + Package 选项(附在下方)；
+  /// 多选右键 → 复制/删除；空白 → NodeMenu(新建节点 + 所选打包)。
   Widget _buildMenuLayer() {
     final nodeMenu = _nodeMenuFor;
     final groupMenuId = _groupMenuFor;
-    Widget? menu;
+    NodeGroup? group;
     if (groupMenuId != null) {
-      NodeGroup? g;
       for (final x in store.groups) {
         if (x.id == groupMenuId) {
-          g = x;
+          group = x;
           break;
         }
       }
-      if (g != null && g.isPackage) {
-        final target = g;
-        menu = PackageContextMenu(
-          position: _menuPos!,
-          collapsed: target.collapsed,
-          onToggleCollapsed: () {
-            if (target.collapsed) {
-              _expandPackage(target);
-            } else {
-              _collapsePackage(target);
-            }
-            _closeMenu();
-          },
-          onSave: () => _savePackageToLibrary(target.id),
-          onDissolve: _dissolvePackageFromMenu,
-        );
-      }
+    }
+    final expandedPackage = group != null && group.isPackage && !group.collapsed;
+    final Widget menu;
+    if (group != null && group.isPackage && group.collapsed) {
+      final target = group;
+      menu = PackageContextMenu(
+        position: _menuPos!,
+        collapsed: target.collapsed,
+        onToggleCollapsed: () {
+          if (target.collapsed) {
+            _expandPackage(target);
+          } else {
+            _collapsePackage(target);
+          }
+          _closeMenu();
+        },
+        onSave: () => _savePackageToLibrary(target.id),
+        onDissolve: _dissolvePackageFromMenu,
+      );
     } else if (nodeMenu != null) {
       menu = NodeContextMenu(
         position: _menuPos!,
-        canPackage: nodeMenu.length >= 2,
         onRunNode: () {
           store.runPipelineDirty(nodeMenu);
           _closeMenu();
         },
-        onPackage: _packageSelection,
         onDuplicate: _duplicateSelection,
         onDelete: _deleteSelectionFromMenu,
       );
@@ -4258,14 +4208,57 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         position: _menuPos!,
         onPick: _pickNode,
         onClose: _closeMenu,
-        bottomSlot: _savedPackageMenu(),
+        bottomSlot: _nodeMenuBottomSlot(expandedPackage ? group : null),
       );
     }
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _closeMenu,
       onSecondaryTap: _closeMenu,
-      child: Stack(clipBehavior: Clip.none, children: [?menu]),
+      child: Stack(clipBehavior: Clip.none, children: [menu]),
+    );
+  }
+
+  /// 新建节点菜单的底部区:展开 Package 的自身选项 + 所选节点打包 + Package 库
+  Widget _nodeMenuBottomSlot(NodeGroup? package) {
+    final t = SyphonTheme.of(context);
+    final selection = store.multiSelected;
+    final saved = _savedPackageMenu();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (package != null)
+          PackageActionItems(
+            collapsed: package.collapsed,
+            onToggleCollapsed: () {
+              if (package.collapsed) {
+                _expandPackage(package);
+              } else {
+                _collapsePackage(package);
+              }
+              _closeMenu();
+            },
+            onSave: () => _savePackageToLibrary(package.id),
+            onDissolve: _dissolvePackageFromMenu,
+          ),
+        if (selection.length >= 2) ...[
+          if (package != null) const SizedBox(height: 2),
+          Divider(height: 1, thickness: 1, color: t.stroke),
+          const SizedBox(height: 2),
+          CtxMenuItem(
+            icon: Icons.inventory_2_outlined,
+            label: '打包为 Package',
+            onTap: () => _packageSelection(selection.toList()),
+          ),
+        ],
+        if (saved != null) ...[
+          if (package != null || selection.length >= 2) const SizedBox(height: 2),
+          Divider(height: 1, thickness: 1, color: t.stroke),
+          const SizedBox(height: 2),
+          saved,
+        ],
+      ],
     );
   }
 

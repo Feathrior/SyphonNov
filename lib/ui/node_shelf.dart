@@ -543,7 +543,9 @@ class _ShelfBar extends StatelessWidget {
                 symbol: kCategoryInfo[category]!.icon,
                 label: L.t(kCategoryInfo[category]!.label),
                 color: parseColor(kCategoryInfo[category]!.color),
-                highlighted: opened && activeCategory == category,
+                // Package 库展开时分类胶囊不再保持高亮:否则会出现
+                // "选了 Package,Package 和上一个分类同时亮"的错觉
+                highlighted: opened && !packageActive && activeCategory == category,
                 onEnter: () => onCategory(category),
                 onTap: () => onCategory(category),
               ),

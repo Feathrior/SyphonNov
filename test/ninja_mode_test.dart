@@ -134,22 +134,78 @@ void main() {
       expect(t.game.wires, isEmpty);
     });
 
-    test('抛出的节点之间会自动随机连出连线', () {
+    test('连线结构固定:每个新节点与紧邻它之前的两个节点相连,切完不会补线', () {
+      // 画布足够高:测试期间不会有节点落回画面外(出场顺序 = fruits 顺序)
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 4000;
+      var frames = 0;
+      while (game.fruits.length < 5 && frames < 60 * 20) {
+        game.update(1 / 60);
+        frames++;
+      }
+      final order = game.fruits.toList();
+      expect(order, hasLength(5));
+      // 第 1 个节点没有前驱 → 0 条;第 2 个只有 1 个前驱 → 1 条;之后固定 2 条
+      expect(
+        game.wires.length,
+        1 + (order.length - 2) * NinjaGame.wiresPerNode,
+      );
+      expect(
+        game.wires.where((w) => identical(w.to, order[1])).length,
+        1,
+        reason: '第 2 个节点只有 1 个前驱',
+      );
+      for (var i = 2; i < order.length; i++) {
+        final linkedFrom = game.wires
+            .where((w) => identical(w.to, order[i]))
+            .map((w) => w.from)
+            .toList();
+        expect(linkedFrom, hasLength(NinjaGame.wiresPerNode));
+        expect(linkedFrom, contains(order[i - 1]));
+        expect(linkedFrom, contains(order[i - 2]));
+      }
+
+      // 一刀刀切开所有连线:之后不会再凭空长出新的
+      for (final w in game.wires.toList()) {
+        final path = game.wirePath(w);
+        final mid = path[path.length ~/ 2];
+        game.slice(Offset(mid.dx, mid.dy - 30), Offset(mid.dx, mid.dy + 30));
+      }
+      expect(game.wires.where((w) => !w.cut), isEmpty);
+      // 之后运行的每一帧:已经在场的老节点之间绝不会再连出新线
+      // (新节点入场时才会带来它们自己的固定几条线)
+      final survivors = game.fruits.toSet();
+      for (var i = 0; i < 60 * 3; i++) {
+        game.update(1 / 60);
+        for (final w in game.wires.where((w) => !w.cut)) {
+          expect(
+            survivors.contains(w.from) && survivors.contains(w.to),
+            isFalse,
+            reason: '切干净后,老节点之间不能再补线',
+          );
+        }
+      }
+    });
+
+    test('随时间入场时连线只在入场瞬间建立', () {
       final game = NinjaGame()
         ..width = 800
         ..height = 600;
-      var sawWire = false;
-      for (var i = 0; i < 60 * 8 && !sawWire; i++) {
+      for (var i = 0; i < 60 * 6; i++) {
         game.update(1 / 60);
-        sawWire = game.wires.isNotEmpty;
       }
-      expect(sawWire, isTrue, reason: '节点之间随机连出连线供挥刀');
-      expect(game.wires.length, lessThanOrEqualTo(NinjaGame.maxWires));
+      expect(game.wires, isNotEmpty);
       for (final w in game.wires) {
         expect(identical(w.from, w.to), isFalse);
         expect(game.fruits, contains(w.from));
         expect(game.fruits, contains(w.to));
       }
+      // 场上节点数 N → 连线数 ≤ (N-1) * 2
+      expect(
+        game.wires.length,
+        lessThanOrEqualTo((game.fruits.length - 1) * NinjaGame.wiresPerNode),
+      );
     });
 
     test('抛物线:节点飞起后落回画面外被移除', () {

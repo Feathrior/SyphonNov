@@ -11,22 +11,19 @@ import 'motion.dart';
 import 'theme.dart';
 
 // ==================== 节点右键菜单(多选后) ====================
-// 由画布层在 Shift 多选后右键弹出:Package / 复制所选 / 删除所选
+// 由画布层在 Shift 多选后右键弹出:运行 / 复制所选 / 删除所选
+// (「打包为 Package」已从这里移除,改由空白处右键菜单底部提供)
 
 class NodeContextMenu extends StatelessWidget {
   final Offset position;
-  final bool canPackage;
   final VoidCallback? onRunNode;
-  final VoidCallback onPackage;
   final VoidCallback onDuplicate;
   final VoidCallback onDelete;
 
   const NodeContextMenu({
     super.key,
     required this.position,
-    required this.canPackage,
     this.onRunNode,
-    required this.onPackage,
     required this.onDuplicate,
     required this.onDelete,
   });
@@ -66,15 +63,6 @@ class NodeContextMenu extends StatelessWidget {
               Divider(height: 1, thickness: 1, color: t.stroke),
               const SizedBox(height: 4),
             ],
-            CtxMenuItem(
-              icon: Icons.inventory_2_outlined,
-              label: '打包为 Package',
-              enabled: canPackage,
-              onTap: onPackage,
-            ),
-            const SizedBox(height: 4),
-            Divider(height: 1, thickness: 1, color: t.stroke),
-            const SizedBox(height: 4),
             CtxMenuItem(
               icon: Icons.copy_outlined,
               label: L.t('复制所选'),
@@ -132,27 +120,62 @@ class PackageContextMenu extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 收起/展开:不依赖区域右上角小按钮的位置,是可靠的折叠入口
-            CtxMenuItem(
-              icon: collapsed
-                  ? Icons.unfold_more_rounded
-                  : Icons.unfold_less_rounded,
-              label: collapsed ? '展开 Package' : '收起 Package',
-              onTap: onToggleCollapsed,
-            ),
-            CtxMenuItem(
-              icon: Icons.save_outlined,
-              label: '保存到 Package 库',
-              onTap: onSave,
-            ),
-            CtxMenuItem(
-              icon: Icons.inventory_2_outlined,
-              label: '解散 Package',
-              onTap: onDissolve,
+            PackageActionItems(
+              collapsed: collapsed,
+              onToggleCollapsed: onToggleCollapsed,
+              onSave: onSave,
+              onDissolve: onDissolve,
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Package 自身的操作项(展开 / 保存到库 / 解散)。
+///
+/// 折叠状态:独立弹出为 Package 菜单;
+/// 展开状态:附在"在包内新建节点"的右键菜单下方(同一套条目,顺序一致)。
+class PackageActionItems extends StatelessWidget {
+  final bool collapsed;
+  final VoidCallback onToggleCollapsed;
+  final VoidCallback onSave;
+  final VoidCallback onDissolve;
+
+  const PackageActionItems({
+    super.key,
+    required this.collapsed,
+    required this.onToggleCollapsed,
+    required this.onSave,
+    required this.onDissolve,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 收起/展开:不依赖区域右上角小按钮的位置,是可靠的折叠入口
+        CtxMenuItem(
+          icon: collapsed
+              ? Icons.unfold_more_rounded
+              : Icons.unfold_less_rounded,
+          label: collapsed ? '展开 Package' : '收起 Package',
+          onTap: onToggleCollapsed,
+        ),
+        CtxMenuItem(
+          icon: Icons.save_outlined,
+          label: '保存到 Package 库',
+          onTap: onSave,
+        ),
+        CtxMenuItem(
+          icon: Icons.inventory_2_outlined,
+          label: '解散 Package',
+          onTap: onDissolve,
+        ),
+      ],
     );
   }
 }
