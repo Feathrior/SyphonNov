@@ -63,11 +63,6 @@ class NinjaFruit {
   Offset velocity;
   double angle;
   double spin;
-
-  /// 被刀切中:从中间裂成两半
-  bool sliced = false;
-  double sliceAngle = 0;
-  double slicedLife = 0;
 }
 
 /// 一刀的结果:切中的连线或节点、切点(屏幕坐标)与颜色
@@ -78,21 +73,31 @@ typedef NinjaCut = ({
   Color color,
 });
 
+/// 待入场节点(延迟可变,所以用一个可变的小对象)
+class _QueuedFruit {
+  _QueuedFruit({required this.fruit, required this.delay, this.prev});
+
+  final NinjaFruit fruit;
+  double delay;
+  final NinjaFruit? prev;
+}
+
 /// 忍者模式的模拟:成组生成、抛物线运动、连线与节点切割判定
 class NinjaGame extends ChangeNotifier {
   static const double gravity = 980; // px/s²
   /// 切断的连线两半散开消失的时间(秒)
   static const double wireLife = .6;
-  /// 被切开的节点两半散开消失的时间(秒)
-  static const double slicedLife = 1.5;
   /// 一波最多抛几个节点(链式连线数 = 节点数 - 1)
   static const int maxWaveNodes = 5;
   /// 同屏节点上限
   static const int maxFruits = 12;
+  /// 同一波节点之间的错开时间(秒):不必完全同时
+  static const double waveStagger = .12;
 
   final List<NinjaFruit> fruits = [];
   final List<NinjaWire> wires = [];
   final math.Random _random = math.Random();
+  final List<_QueuedFruit> _pending = [];
 
   int score = 0;
   double width = 0;
@@ -101,9 +106,14 @@ class NinjaGame extends ChangeNotifier {
   /// 下一波抛几个节点:2 → 3 → 4 → …(到上限后循环)
   int _nextWaveNodes = 2;
 
+  /// 下一波的节点数(测试用:确认波次固定递增)
+  @visibleForTesting
+  int get nextWaveSize => _nextWaveNodes;
+
   void reset() {
     fruits.clear();
     wires.clear();
+    _pending.clear();
     score = 0;
     _spawnTimer = 0.6;
     _nextWaveNodes = 2;
@@ -113,12 +123,30 @@ class NinjaGame extends ChangeNotifier {
   void update(double dt) {
     if (width <= 0 || height <= 0) return;
     _spawnTimer -= dt;
-    if (_spawnTimer <= 0 && fruits.length < maxFruits) {
+    if (_spawnTimer <= 0 &&
+        fruits.length + _pending.length < maxFruits) {
       _spawnWave(_nextWaveNodes);
       _nextWaveNodes = _nextWaveNodes >= maxWaveNodes
           ? 2
           : _nextWaveNodes + 1;
       _spawnTimer = 1.6 + _random.nextDouble() * .5;
+    }
+    // 错开入场的节点:到点才真正飞进来,并和同波前一个节点连上
+    if (_pending.isNotEmpty) {
+      for (final p in _pending) {
+        p.delay -= dt;
+      }
+      final ready = _pending.where((p) => p.delay <= 0).toList();
+      for (final p in ready) {
+        _pending.remove(p);
+        fruits.add(p.fruit);
+        final prev = p.prev;
+        if (prev != null && fruits.any((f) => identical(f, prev))) {
+          wires.add(
+            NinjaWire(from: prev, to: p.fruit, color: _wireColor()),
+          );
+        }
+      }
     }
 
     final alive = <NinjaFruit>[];
@@ -126,11 +154,7 @@ class NinjaGame extends ChangeNotifier {
       f.velocity = f.velocity + Offset(0, gravity * dt);
       f.position = f.position + f.velocity * dt;
       f.angle += f.spin * dt;
-      if (f.sliced) {
-        // 切开的两半散开淡出
-        f.slicedLife += dt;
-        if (f.slicedLife > slicedLife) continue;
-      } else if (f.position.dy - f.size.height > height + 80) {
+      if (f.position.dy - f.size.height > height + 80) {
         // 掉出画面(抛物线回落)后移除
         continue;
       }
@@ -156,16 +180,18 @@ class NinjaGame extends ChangeNotifier {
 
   /// 抛出一波:固定 [count] 个节点 + (count-1) 条链式连线。
   ///
-  /// 节点一起从画面下方抛入,水平方向均匀铺开,抛物线几乎同步;
-  /// 连线按入场顺序首尾相接,结构固定。
+  /// 节点从画面下方**斜抛**上来(带横向初速度与水平铺开),入场时间按
+  /// [waveStagger] 依次错开一点点;连线按入场顺序首尾相接,结构固定。
   void _spawnWave(int count) {
     final n = count.clamp(2, maxWaveNodes);
     // 一波的整体落点:屏幕中段随机横向偏移
-    final span = math.min(width * .7, 190.0 * (n - 1));
+    final span = math.min(width * .7, 170.0 * (n - 1));
     final left = (width - span) / 2 + (_random.nextDouble() - .5) * 40;
     final peak = height * (.5 + _random.nextDouble() * .2);
     final vy = -math.sqrt(2 * gravity * peak);
-    final wave = <NinjaFruit>[];
+    // 整波统一的横向方向:斜着抛过来
+    final dir = _random.nextBool() ? 1.0 : -1.0;
+    NinjaFruit? prev;
     for (var i = 0; i < n; i++) {
       final config = kNodeConfigs[_random.nextInt(kNodeConfigs.length)];
       final x = n == 1 ? left : left + span * i / (n - 1);
@@ -174,20 +200,24 @@ class NinjaGame extends ChangeNotifier {
         label: config.label,
         icon: kCatInfo[config.category.name]?.icon ?? '▣',
         color: _categoryColor(config.category.name),
-        position: Offset(x, height + 60 + i * 18),
-        velocity: Offset((width / 2 - x) * .18, vy),
+        position: Offset(x, height + 60 + i * 12),
+        // 斜抛:横向速度 = 整波方向 + 个体抖动,再叠一点向中心收拢
+        velocity: Offset(
+          dir * (50 + _random.nextDouble() * 90) + (width / 2 - x) * .12,
+          vy,
+        ),
         angle: (_random.nextDouble() - .5) * .5,
         spin: (_random.nextDouble() - .5) * 1.8,
         size: const Size(146, 86),
       );
-      wave.add(fruit);
-      fruits.add(fruit);
-    }
-    // 链式连线:1-2,2-3,3-4…(固定结构,数量 = 节点数 - 1)
-    for (var i = 0; i < wave.length - 1; i++) {
-      wires.add(
-        NinjaWire(from: wave[i], to: wave[i + 1], color: _wireColor()),
+      _pending.add(
+        _QueuedFruit(
+          fruit: fruit,
+          delay: i * waveStagger * (0.8 + _random.nextDouble() * .5),
+          prev: prev,
+        ),
       );
+      prev = fruit;
     }
   }
 
@@ -215,18 +245,17 @@ class NinjaGame extends ChangeNotifier {
   /// 鼠标从 [from] 划到 [to]:返回这一刀切中的连线与节点。
   ///
   /// 连线按"上次指针位置 → 本次位置"与之逐段精确求交;节点则按卡片矩形
-  /// (旋转变换回局部坐标后)判定。节点被切中时,属于它的连线一并断开。
+  /// (旋转变换回局部坐标后)判定。节点被切中时**立刻消失**(靠画布上的大团
+  /// 爆炸粒子表现"炸开"),属于它的连线一并断开。
   List<NinjaCut> slice(Offset from, Offset to, {double threshold = 7}) {
     if ((to - from).distance < 1) return const [];
     final cuts = <NinjaCut>[];
 
-    // 1) 节点:从中间一切两半
+    // 1) 节点:切中即炸开消失
+    final blown = <NinjaFruit>[];
     for (final fruit in fruits) {
-      if (fruit.sliced) continue;
       if (!_segmentHitsRotatedRect(from, to, fruit)) continue;
-      fruit.sliced = true;
-      fruit.slicedLife = 0;
-      fruit.sliceAngle = math.atan2(to.dy - from.dy, to.dx - from.dx);
+      blown.add(fruit);
       cuts.add((
         wire: null,
         fruit: fruit,
@@ -242,6 +271,13 @@ class NinjaGame extends ChangeNotifier {
         }
         _cutWire(wire, wirePath(wire), 0);
       }
+    }
+    if (blown.isNotEmpty) {
+      fruits.removeWhere((f) => blown.any((b) => identical(b, f)));
+      // 还没来得及入场的同波节点:同波连线也就不该再接了
+      _pending.removeWhere(
+        (p) => p.prev != null && blown.any((b) => identical(b, p.prev)),
+      );
     }
 
     // 2) 连线
@@ -309,7 +345,7 @@ class NinjaGame extends ChangeNotifier {
     return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0));
   }
 
-  int get flying => fruits.where((f) => !f.sliced).length;
+  int get flying => fruits.length;
 
   Color _wireColor() {
     final values = kSocketColors.values.toList();
@@ -347,67 +383,19 @@ class NinjaPainter extends CustomPainter {
       canvas.save();
       canvas.translate(f.position.dx, f.position.dy);
       canvas.rotate(f.angle);
-      final rect = Rect.fromCenter(
-        center: Offset.zero,
-        width: f.size.width,
-        height: f.size.height,
+      _paintCard(
+        canvas,
+        Rect.fromCenter(
+          center: Offset.zero,
+          width: f.size.width,
+          height: f.size.height,
+        ),
+        f,
+        1,
       );
-      if (!f.sliced) {
-        _paintCard(canvas, rect, f, 1);
-      } else {
-        // 切开的节点:从切口分成两半,各自平移旋转着散开并淡出
-        final p = (f.slicedLife / NinjaGame.slicedLife).clamp(0.0, 1.0);
-        final alpha = (1 - p).clamp(0.0, 1.0);
-        final normal = Offset(
-          math.cos(f.sliceAngle + math.pi / 2),
-          math.sin(f.sliceAngle + math.pi / 2),
-        );
-        final spread = 34 * p;
-        _paintHalf(
-          canvas,
-          rect,
-          f,
-          f.sliceAngle,
-          upper: true,
-          offset: normal * spread,
-          rotation: .4 * p,
-          alpha: alpha,
-        );
-        _paintHalf(
-          canvas,
-          rect,
-          f,
-          f.sliceAngle,
-          upper: false,
-          offset: -normal * spread,
-          rotation: -.4 * p,
-          alpha: alpha,
-        );
-      }
       canvas.restore();
     }
     _paintHud(canvas, size);
-  }
-
-  void _paintHalf(
-    Canvas canvas,
-    Rect rect,
-    NinjaFruit f,
-    double sliceAngle, {
-    required bool upper,
-    required Offset offset,
-    required double rotation,
-    required double alpha,
-  }) {
-    canvas.save();
-    canvas.translate(offset.dx, offset.dy);
-    // 转到切线水平 → 只留一侧 → 转回来再画卡片,得到"半个节点"
-    canvas.rotate(sliceAngle);
-    canvas.clipRect(Rect.fromLTWH(-600, upper ? -600 : 0, 1200, 600));
-    canvas.rotate(-sliceAngle);
-    canvas.rotate(rotation);
-    _paintCard(canvas, rect, f, alpha);
-    canvas.restore();
   }
 
   void _paintWire(Canvas canvas, List<Offset> path, NinjaWire w) {

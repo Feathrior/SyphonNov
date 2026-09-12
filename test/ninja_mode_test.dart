@@ -182,27 +182,22 @@ void main() {
       final game = NinjaGame()
         ..width = 1600
         ..height = 8000;
-      // 记录每次"节点数突增"时的增量 = 该波节点数
-      final waves = <int>[];
-      var last = 0;
-      var frames = 0;
-      while (waves.length < 4 && frames < 60 * 60) {
+      // 同一波节点错开入场,所以直接看"下一波规模"计数器
+      expect(game.nextWaveSize, 2);
+      // 首波在 0.6s 后抛出 → 抛出后排到 3
+      for (var i = 0; i < 45; i++) {
         game.update(1 / 60);
-        frames++;
-        final now = game.fruits.length;
-        if (now > last) {
-          waves.add(now - last);
-          last = now;
-        }
       }
-      expect(waves.take(3).toList(), [2, 3, 4]);
-      expect(
-        waves.every((n) => n >= 2 && n <= NinjaGame.maxWaveNodes),
-        isTrue,
-      );
+      expect(game.fruits, isNotEmpty);
+      expect(game.nextWaveSize, 3, reason: '抛出第一波(2 节点)后排到 3');
+      for (var i = 0; i < 60 * 3; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.nextWaveSize, 4);
+      expect(game.nextWaveSize, lessThanOrEqualTo(NinjaGame.maxWaveNodes));
     });
 
-    test('线节点都可以切:切中节点会裂成两半,并带走属于它的连线', () {
+    test('线节点都可以切:切中节点立刻爆开消失,并带走属于它的连线', () {
       final game = NinjaGame()
         ..width = 800
         ..height = 600;
@@ -219,17 +214,13 @@ void main() {
       );
       expect(cuts, hasLength(1));
       expect(cuts.single.fruit, same(a));
-      expect(a.sliced, isTrue, reason: '节点也能被切开');
+      expect(game.fruits, isNot(contains(a)), reason: '节点被切中后立刻消失(爆开)');
+      expect(game.fruits, contains(b));
       expect(
         wire.cut,
         isTrue,
         reason: '节点被切开后,挂在它身上的连线一并断开',
       );
-      // 两半在 slicedLife 之后移除
-      for (var i = 0; i < 60 * 2; i++) {
-        game.update(1 / 60);
-      }
-      expect(game.fruits, isNot(contains(a)));
     });
 
     test('随时间入场时连线只在入场瞬间建立', () {
