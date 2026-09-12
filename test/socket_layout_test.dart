@@ -35,6 +35,7 @@ void main() {
                 onSelect: (_) {},
                 onActivateViewer: (_) {},
                 onSecondaryTap: (_) {},
+                onToggleCollapse: (_) {},
               ),
             ),
           ),

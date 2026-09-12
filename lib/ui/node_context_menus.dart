@@ -11,19 +11,22 @@ import 'motion.dart';
 import 'theme.dart';
 
 // ==================== 节点右键菜单(多选后) ====================
-// 由画布层在 Shift 多选后右键弹出:运行 / 复制所选 / 删除所选
-// (「打包为 Package」已从这里移除,改由空白处右键菜单底部提供)
+// 由画布层在右键节点时弹出:Package / 复制所选 / 删除所选
 
 class NodeContextMenu extends StatelessWidget {
   final Offset position;
+  final bool canPackage;
   final VoidCallback? onRunNode;
+  final VoidCallback onPackage;
   final VoidCallback onDuplicate;
   final VoidCallback onDelete;
 
   const NodeContextMenu({
     super.key,
     required this.position,
+    required this.canPackage,
     this.onRunNode,
+    required this.onPackage,
     required this.onDuplicate,
     required this.onDelete,
   });
@@ -63,6 +66,15 @@ class NodeContextMenu extends StatelessWidget {
               Divider(height: 1, thickness: 1, color: t.stroke),
               const SizedBox(height: 4),
             ],
+            CtxMenuItem(
+              icon: Icons.inventory_2_outlined,
+              label: '打包为 Package',
+              enabled: canPackage,
+              onTap: onPackage,
+            ),
+            const SizedBox(height: 4),
+            Divider(height: 1, thickness: 1, color: t.stroke),
+            const SizedBox(height: 4),
             CtxMenuItem(
               icon: Icons.copy_outlined,
               label: L.t('复制所选'),

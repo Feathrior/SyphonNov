@@ -1935,15 +1935,16 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onSecondaryTap(String id) {
-    // 多选(≥2)状态下右键所选节点:弹出分组/批量操作菜单(Blender 风格)
+    // 右键节点 = 该节点的操作菜单(多选时是所选整组)。
+    // 折叠不再挂在右键上(见 NodeCard 标题栏的折叠箭头)。
     final sel = store.multiSelected;
-    if (sel.contains(id) && sel.length > 1) {
-      _nodeMenuFor = {...sel};
-      _menuPos = _toScreen(_nodePos(id)); // 从节点左上角弹出
-      _bump();
-      return;
+    final grouped = sel.contains(id) && sel.length > 1;
+    if (!grouped && !setEquals(sel, {id})) {
+      store.setMultiSelected({id});
     }
-    store.toggleCollapse(id);
+    _nodeMenuFor = grouped ? {...sel} : {id};
+    // 菜单一律从鼠标指针处弹出(右键按下时的指针位置)
+    _menuPos = _downPosScreen ?? _toScreen(_nodePos(id));
     _bump();
   }
 
@@ -3225,6 +3226,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     onSelect: _onSelect,
     onActivateViewer: _activateViewer,
     onSecondaryTap: _onSecondaryTap,
+    onToggleCollapse: (id) {
+      store.toggleCollapse(id);
+      _bump();
+    },
     onResizeStart: _onViewerResizeStart,
     onResizeUpdate: _onViewerResizeUpdate,
     onResizeEnd: _onViewerResizeEnd,
@@ -3411,18 +3416,23 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
               clipBehavior: Clip.none,
               children: [
                 _buildBgLayer(t),
-                for (final group in store.groups)
-                  if (group.isPackage) _buildPackageBackgroundLayer(group, t),
                 _buildEdgesLayer(t, nodes, edges),
-                for (final n in paintNodes) _buildNodeLayer(n),
+                // 普通节点(不属于任何"展开 Package"的)
+                for (final n in paintNodes)
+                  if (!_nodeInExpandedPackage(n.id)) _buildNodeLayer(n),
+                // 展开的 Package 整块浮在普通节点之上:半透明底板 → 成员节点 →
+                // 虚线框/名称。Package 内部的一切元素都不该被外部节点盖住。
+                for (final group in store.groups)
+                  if (group.isPackage && !group.collapsed) ...[
+                    _buildPackageBackgroundLayer(group, t),
+                    for (final n in paintNodes)
+                      if (group.nodeIds.contains(n.id)) _buildNodeLayer(n),
+                    _buildPackageRegionForeground(group, t),
+                  ],
                 // Keep collapsed Package proxies above their hidden members so
                 // the whole card, including its expand button, remains hittable.
                 for (final group in store.groups)
                   if (group.isPackage) _buildPackageLayer(group, t),
-                // 展开 Package 的虚线框与名称也放在节点之上:
-                // 任何一个单节点压上去都不该挡住"这块区域属于哪个 Package"
-                for (final group in store.groups)
-                  if (group.isPackage) _buildPackageRegionForeground(group, t),
                 for (final group in store.groups)
                   if (group.isPackage) _buildExpandedPackageToggle(group, t),
               ],
@@ -3712,8 +3722,18 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
+  /// 该节点是否属于某个"已展开"的 Package(展开包的成员整体画在普通节点之上)
+  bool _nodeInExpandedPackage(String nodeId) {
+    for (final group in store.groups) {
+      if (group.isPackage && !group.collapsed && group.nodeIds.contains(nodeId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// 展开 Package 区域的外框矩形;回弹展开过程中节点每帧都在动,
-  /// 因此以"最终帧"为锚点,避免控制区从点击位置滑走。
+  /// 因此以"最终帧"为锚点,避免控制区从点击位置滑开。
   Rect? _packageRegionRect(NodeGroup group) {
     final isExpanding =
         _conversionLayoutController.isAnimating &&
@@ -4234,10 +4254,12 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     } else if (nodeMenu != null) {
       menu = NodeContextMenu(
         position: _menuPos!,
+        canPackage: nodeMenu.length >= 2,
         onRunNode: () {
           store.runPipelineDirty(nodeMenu);
           _closeMenu();
         },
+        onPackage: () => _packageSelection(nodeMenu.toList()),
         onDuplicate: _duplicateSelection,
         onDelete: _deleteSelectionFromMenu,
       );
@@ -4257,10 +4279,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  /// 新建节点菜单的底部区:展开 Package 的自身选项 + 所选节点打包 + Package 库
+  /// 新建节点菜单的底部区:展开 Package 的自身选项 + Package 库
   Widget _nodeMenuBottomSlot(NodeGroup? package) {
     final t = SyphonTheme.of(context);
-    final selection = store.multiSelected;
     final saved = _savedPackageMenu();
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -4280,18 +4301,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             onSave: () => _savePackageToLibrary(package.id),
             onDissolve: _dissolvePackageFromMenu,
           ),
-        if (selection.length >= 2) ...[
-          if (package != null) const SizedBox(height: 2),
-          Divider(height: 1, thickness: 1, color: t.stroke),
-          const SizedBox(height: 2),
-          CtxMenuItem(
-            icon: Icons.inventory_2_outlined,
-            label: '打包为 Package',
-            onTap: () => _packageSelection(selection.toList()),
-          ),
-        ],
         if (saved != null) ...[
-          if (package != null || selection.length >= 2) const SizedBox(height: 2),
+          if (package != null) const SizedBox(height: 2),
           Divider(height: 1, thickness: 1, color: t.stroke),
           const SizedBox(height: 2),
           saved,

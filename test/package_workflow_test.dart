@@ -14,6 +14,7 @@ import 'package:syphon_nov/ui/canvas_geometry.dart';
 import 'package:syphon_nov/ui/context_menu.dart';
 import 'package:syphon_nov/ui/node_canvas.dart';
 import 'package:syphon_nov/ui/node_card.dart';
+import 'package:syphon_nov/ui/node_context_menus.dart';
 void main() {
   setUp(() {
     GraphStore.useIsolate = false;
@@ -316,21 +317,34 @@ void main() {
     await tester.pumpWidget(const SyphonApp());
     await tester.pumpAndSettle();
 
-    // 节点右键菜单里不再有"打包为 Package"
+    // 多选后右键其中的节点:只有节点相关操作,菜单从指针处弹出
     final canvasRect = tester.getRect(find.byType(NodeCanvas));
     final firstCard = find.byWidgetPredicate(
       (widget) => widget is NodeCard && widget.nodeId == first,
     );
-    await tester.tapAt(tester.getCenter(firstCard), buttons: kSecondaryButton);
+    final cardCenter = tester.getCenter(firstCard);
+    await tester.tapAt(cardCenter, buttons: kSecondaryButton);
     await tester.pumpAndSettle();
-    expect(find.text('打包为 Package'), findsNothing);
+    expect(find.text('打包为 Package'), findsOneWidget);
     expect(find.text('复制所选'), findsOneWidget);
-    // 菜单层是全屏的,点菜单外任意处即关闭(不会连带清掉多选)
+    expect(
+      find.byType(NodeMenu),
+      findsNothing,
+      reason: '右键节点只弹节点操作菜单,不弹创建节点菜单',
+    );
+    // 菜单贴着指针弹出(指针位于菜单的某个角上:空间不足时整体翻转到左上方)
+    final menuRect = tester.getRect(find.byType(NodeContextMenu));
+    expect(
+      menuRect.inflate(8).contains(cardCenter),
+      isTrue,
+      reason: '右键菜单应从鼠标指针处弹出',
+    );
+    // 关闭菜单(菜单层覆盖整个画布,点任意处即关闭)
     await tester.tapAt(Offset(canvasRect.center.dx, canvasRect.top + 12));
     await tester.pumpAndSettle();
     expect(find.text('复制所选'), findsNothing);
 
-    // 空白右键:新建节点菜单底部提供"打包为 Package"(选中 ≥2 个节点时)
+    // 多选后右键空白处:创建节点菜单,且底部不追加"打包"选项
     GraphStore.instance.setMultiSelected({first, second});
     await tester.pumpAndSettle();
     await tester.tapAt(
@@ -338,7 +352,18 @@ void main() {
       buttons: kSecondaryButton,
     );
     await tester.pumpAndSettle();
-    expect(find.text('打包为 Package'), findsOneWidget);
+    expect(find.byType(NodeMenu), findsOneWidget);
+    expect(
+      find.text('打包为 Package'),
+      findsNothing,
+      reason: '右键空白处弹创建节点菜单,不掺入节点操作',
+    );
+
+    // 从节点菜单进入创建 Package 弹窗
+    await tester.tapAt(Offset(canvasRect.center.dx, canvasRect.top + 12));
+    await tester.pumpAndSettle();
+    await tester.tapAt(cardCenter, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('打包为 Package'));
     await tester.pumpAndSettle();
 
@@ -665,6 +690,58 @@ void main() {
       await tester.pumpAndSettle();
       expect(collapsed(), isTrue, reason: '第 $round 轮收起');
     }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('expanded Package draws above outside nodes', (tester) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    SettingsStore.instance.nodeShelfEnabled = false;
+    final store = GraphStore.instance;
+    final first = store.addNode(
+      'table_input',
+      const Offset(120, 120),
+      triggerRun: false,
+    );
+    final second = store.addNode(
+      'table_to_scatter',
+      const Offset(420, 120),
+      triggerRun: false,
+    );
+    final packageId = store.createPackage([first, second], '图层')!;
+    // 外部节点压在 Package 成员上
+    final outside = store.addNode(
+      'axis_input',
+      const Offset(160, 150),
+      triggerRun: false,
+    );
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(ValueKey('package-toggle-$packageId')));
+    await tester.pumpAndSettle();
+
+    // Stack 的子级顺序 = 绘制顺序:展开包的成员必须排在外来节点之后
+    final order = [
+      for (final card in tester.widgetList<NodeCard>(find.byType(NodeCard)))
+        card.nodeId,
+    ];
+    expect(order, contains(first));
+    expect(order, contains(outside));
+    expect(
+      order.indexOf(first),
+      greaterThan(order.indexOf(outside)),
+      reason: '展开 Package 的成员要画在外部节点之上',
+    );
+    expect(
+      order.indexOf(second),
+      greaterThan(order.indexOf(outside)),
+      reason: '展开 Package 的成员要画在外部节点之上',
+    );
+    // 展开区域底板同样在外部节点之上(底板紧跟成员之前绘制)
+    final regionPlate = find.byKey(ValueKey('package-region-$packageId'));
+    expect(regionPlate, findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

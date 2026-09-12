@@ -24,6 +24,8 @@ class NodeCardCallbacks {
   final void Function(String id) onSelect;
   final void Function(String id) onActivateViewer;
   final void Function(String id) onSecondaryTap;
+  /// 标题栏右侧折叠箭头:点击折叠/展开节点(右键不再折叠)
+  final void Function(String id) onToggleCollapse;
   final void Function(String id)? onResizeStart;
   final void Function(String id, Offset delta)? onResizeUpdate;
   final void Function(String id)? onResizeEnd;
@@ -32,6 +34,7 @@ class NodeCardCallbacks {
     required this.onSelect,
     required this.onActivateViewer,
     required this.onSecondaryTap,
+    required this.onToggleCollapse,
     this.onResizeStart,
     this.onResizeUpdate,
     this.onResizeEnd,
@@ -52,8 +55,15 @@ class NodeCard extends StatelessWidget {
     );
   }
 
-  Widget _buildCard(BuildContext context, GraphStore store) {
-    final node = store.nodeOf(nodeId);
+  /// 折叠切换动画的子级:按自然高度布局(不受卡片当前高度约束),避免溢出断言
+  static Widget _unboundedSwitchChild(Widget child) => OverflowBox(
+    alignment: Alignment.topLeft,
+    minHeight: 0,
+    maxHeight: double.infinity,
+    child: child,
+  );
+
+  Widget _buildCard(BuildContext context, GraphStore store) {    final node = store.nodeOf(nodeId);
     if (node == null) return const SizedBox.shrink();
     final cfg = getConfig(node.configId);
     if (cfg == null) return const SizedBox.shrink();
@@ -131,12 +141,19 @@ class NodeCard extends StatelessWidget {
                             switchInCurve: Curves.easeOut,
                             switchOutCurve: Curves.easeIn,
                             layoutBuilder: (currentChild, previousChildren) =>
-                                Stack(
-                                  alignment: Alignment.topLeft,
-                                  children: <Widget>[
-                                    ...previousChildren,
-                                    ?currentChild,
-                                  ],
+                                // 折叠切换时新旧内容共存:退场的整体比折叠后的卡片高,
+                                // 直接按当前高度约束会触发 RenderFlex overflow(调试期黄黑条)。
+                                // 只让"退场"的那份按自然高度布局,并整体裁掉超出部分;
+                                // 当前内容保持正常约束(内部表格等滚动区依赖有限高度)。
+                                ClipRect(
+                                  child: Stack(
+                                    alignment: Alignment.topLeft,
+                                    children: <Widget>[
+                                      for (final child in previousChildren)
+                                        _unboundedSwitchChild(child),
+                                      ?currentChild,
+                                    ],
+                                  ),
                                 ),
                             child: collapsed
                                 ? KeyedSubtree(
@@ -299,12 +316,24 @@ class NodeCard extends StatelessWidget {
               style: const TextStyle(fontSize: 12, color: Colors.white),
             ),
           ),
-          // 折叠指示(React .nf-collapse-ind,opacity 0.85)
-          Text(
-            node.collapsed ? '▸' : '▾',
-            style: TextStyle(
-              fontSize: 10,
-              color: Colors.white.withValues(alpha: 0.85),
+          // 折叠按钮(React .nf-collapse-ind):点击折叠/展开。
+          // 用 Listener 的按下事件:画布级 pan 手势会抢走 onTap(见 node_canvas)
+          Listener(
+            key: ValueKey('node-collapse-$nodeId'),
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (_) => callbacks.onToggleCollapse(nodeId),
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Text(
+                  node.collapsed ? '▸' : '▾',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.white.withValues(alpha: 0.85),
+                  ),
+                ),
+              ),
             ),
           ),
           // 错误徽章:16px 圆点,白字(React .nf-node-badge)

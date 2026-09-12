@@ -2,7 +2,7 @@
 // 以及"文本框聚焦时按键不被画布快捷键吞掉"的回归测试
 // (空格/回车/退格在右键菜单搜索框中完全失效的问题)。
 import 'package:flutter/gestures.dart' show kSecondaryButton;
-import 'package:flutter/material.dart' show TextField;
+import 'package:flutter/material.dart' show TextField, ValueKey;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -96,5 +96,48 @@ void main() {
       tester.widgetList<NodeCard>(find.byType(NodeCard)).length,
       countBefore - 1,
     );
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+  // ==================== 节点菜单与折叠 ====================
+  // 右键节点 = 节点操作菜单(从指针处弹出),折叠改由标题栏箭头负责;
+  // 这样右键不会再"顺手"把节点折叠起来。
+  testWidgets('右键节点弹菜单而不折叠,折叠由标题栏箭头负责', (tester) async {
+    GraphStore.useIsolate = false;
+    addTearDown(() => GraphStore.useIsolate = true);
+    GraphStore.instance.clearAll();
+    final id = GraphStore.instance.addNode(
+      'table_input',
+      const Offset(120, 90),
+      triggerRun: false,
+    );
+    await pumpApp(tester);
+    await tester.pumpAndSettle();
+
+    final card = find.byWidgetPredicate(
+      (widget) => widget is NodeCard && widget.nodeId == id,
+    );
+    final center = tester.getCenter(card);
+    await tester.tapAt(center, buttons: kSecondaryButton);
+    await tester.pumpAndSettle();
+    expect(find.text('复制所选'), findsOneWidget, reason: '右键节点弹节点菜单');
+    expect(
+      GraphStore.instance.nodeOf(id)!.collapsed,
+      isFalse,
+      reason: '右键不再折叠节点',
+    );
+
+    // 关掉菜单
+    await tester.tapAt(Offset(center.dx, center.dy + 320));
+    await tester.pumpAndSettle();
+    expect(find.text('复制所选'), findsNothing);
+
+    final arrow = find.byKey(ValueKey('node-collapse-$id'));
+    expect(arrow, findsOneWidget);
+    await tester.tap(arrow);
+    await tester.pumpAndSettle();
+    expect(GraphStore.instance.nodeOf(id)!.collapsed, isTrue);
+    await tester.tap(arrow);
+    await tester.pumpAndSettle();
+    expect(GraphStore.instance.nodeOf(id)!.collapsed, isFalse);
   }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 }
