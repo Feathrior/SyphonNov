@@ -458,6 +458,63 @@ void main() {
       );
     });
 
+    test('提示气泡会按时清掉,游戏结束后也不残留', () {
+      final game = NinjaGame()
+        ..width = 800
+        ..height = 600;
+      final a = nodeAt(const Offset(200, 300));
+      final b = nodeAt(const Offset(400, 300));
+      game.fruits.addAll([a, b]);
+      game.slice(const Offset(200, 180), const Offset(200, 420));
+      game.update(.1);
+      game.slice(const Offset(400, 180), const Offset(400, 420));
+      expect(game.pops, isNotEmpty, reason: '连击要有气泡');
+
+      // 正常推进:气泡按时长自动清掉
+      game.update(NinjaPop.duration + .05);
+      expect(game.pops, isEmpty, reason: '气泡到期即清');
+
+      // 游戏结束后:气泡仍然会走完并清掉,不会僵在画面上
+      final c = nodeAt(const Offset(150, 300));
+      final d = nodeAt(const Offset(450, 300));
+      game.fruits.addAll([c, d]);
+      game.slice(const Offset(150, 180), const Offset(150, 420));
+      game.update(.05);
+      game.slice(const Offset(450, 180), const Offset(450, 420));
+      expect(game.pops, isNotEmpty, reason: '连击 2 会有气泡');
+      game.gameOver = true;
+      for (var i = 0; i < 60; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.pops, isEmpty, reason: '结束后气泡也要清干净');
+      expect(game.gameOver, isTrue);
+    });
+
+    test('reset 会清空场上节点/连线/气泡与各种计数', () {
+      final game = NinjaGame()
+        ..width = 1600
+        ..height = 4000;
+      for (var i = 0; i < 60 * 3; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.fruits, isNotEmpty);
+      expect(game.wires, isNotEmpty);
+      game.pops.add(
+        NinjaPop(at: Offset.zero, text: 'x', color: const Color(0xFF000000)),
+      );
+      game.reset();
+      expect(game.fruits, isEmpty);
+      expect(game.wires, isEmpty);
+      expect(game.pops, isEmpty);
+      expect(game.score, 0);
+      expect(game.lives, NinjaGame.maxLives);
+      expect(game.bulletTimeActive, isFalse);
+      expect(game.gameOver, isFalse);
+      expect(game.explosionSerial, 0);
+      expect(game.smokeSerial, 0);
+      expect(game.durianExplosions, 0);
+    });
+
     test('炸弹:切到扣分并冒烟,漏掉不扣心', () {
       final game = NinjaGame()
         ..width = 800

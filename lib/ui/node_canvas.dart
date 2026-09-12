@@ -963,6 +963,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _pan = Offset.zero;
     _zoomNotifier.value = 1;
     _ninja.reset();
+    _clearNinjaEffects();
     _ninjaCamera = Offset.zero;
     _ninjaRenderOffset = Offset.zero;
     _ninjaCameraScale = 1;
@@ -975,12 +976,25 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     _bump();
   }
 
+  /// 清掉画布上的忍者模式瞬时特效(刀光、粒子、鼠标速度采样)
+  void _clearNinjaEffects() {
+    _bursts.clear();
+    _slashTrail.clear();
+    _motionSamples.clear();
+    _swipeVel = Offset.zero;
+    _lastNinjaPos = null;
+    _lastNinjaExplosion = 0;
+    _lastNinjaSmoke = 0;
+  }
+
   /// 退出彩蛋模式:恢复进入前的画布
   void exitNinjaMode() {
     if (!_ninjaMode) return;
     _ninjaTicker?.stop();
     _ninjaMode = false;
     _ninja.reset();
+    // 特效粒子/刀光/浮字一律清掉:不留任何残留到编辑画布上
+    _clearNinjaEffects();
     _ninjaCamera = Offset.zero;
     _ninjaRenderOffset = Offset.zero;
     _ninjaCameraScale = 1;
@@ -1022,13 +1036,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       _ninjaShake = math.max(_ninjaShake, 1);
       _focusNode.requestFocus();
     }
-    // 切到炸弹:火光 + 烟雾 + 闪光,并让画布晃一下
+    // 切到炸弹:普通爆炸效果(普通火花 + 小股冒烟)+ 晃屏,并扣分扣心
     if (_ninja.smokeSerial != _lastNinjaSmoke) {
       _lastNinjaSmoke = _ninja.smokeSerial;
       final at = _ninja.smokeAt;
-      _bursts.add(_makeFlashBurst(at));
-      _bursts.add(_makeFireBurst(at));
-      _bursts.add(_makeSmokeBurst(at));
+      _bursts.add(
+        _makeBurst(at, const Color(0xFFFF7043), _swipeVel, scale: 1.6),
+      );
+      _bursts.add(_makeSmokeBurst(at, scale: .6));
       while (_bursts.length > 16) {
         _bursts.removeAt(0);
       }
@@ -1131,8 +1146,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     );
   }
 
-  /// 烟雾:灰白粒子、上浮、逐渐膨胀(比火光更慢更散)
-  _ParticleBurst _makeSmokeBurst(Offset p) {
+  /// 烟雾:灰白粒子、上浮、逐渐膨胀(比火光更慢更散)。
+  /// [scale] 用来区分"大榴莲的大爆炸"与"炸弹的普通冒烟"。
+  _ParticleBurst _makeSmokeBurst(Offset p, {double scale = 1}) {
     final rand = math.Random();
     const palette = [
       Color(0xFFBDBDBD),
@@ -1146,17 +1162,17 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       // 负重力 = 往上飘
       g: -150 / _zoom,
       grow: true,
-      blur: 5,
+      blur: 5 * scale,
       particles: [
-        for (var i = 0; i < 52; i++)
+        for (var i = 0; i < (52 * scale).round(); i++)
           _Particle(
             vel:
                 Offset.fromDirection(
                   rand.nextDouble() * 2 * math.pi,
-                  (24 + rand.nextDouble() * 140) / _zoom,
+                  (24 + rand.nextDouble() * 140) * scale / _zoom,
                 ) +
-                Offset(0, -40 / _zoom),
-            size: (16.0 + rand.nextDouble() * 26) / _zoom,
+                Offset(0, -40 * scale / _zoom),
+            size: (16.0 + rand.nextDouble() * 26) * scale / _zoom,
             color: palette[rand.nextInt(palette.length)],
           ),
       ],

@@ -211,17 +211,18 @@ class NinjaGame extends ChangeNotifier {
 
   /// 推进一帧。[dt] 为真实秒。
   void update(double dt) {
-    if (width <= 0 || height <= 0 || gameOver) return;
-    // 连击窗口与提示气泡走真实时间
-    if (comboLeft > 0) {
-      comboLeft -= dt;
-      if (comboLeft <= 0) combo = 0;
-    }
-    if (livesFlash > 0) livesFlash = math.max(0, livesFlash - dt * 1.6);
+    // 提示气泡/闪动即使在游戏结束后也要继续走完并清掉,
+    // 否则它们会永远僵在画面上(游戏结束只冻结场上的节点与连线)
     for (final pop in pops) {
       pop.life += dt;
     }
     pops.removeWhere((pop) => pop.life > NinjaPop.duration);
+    if (livesFlash > 0) livesFlash = math.max(0, livesFlash - dt * 1.6);
+    if (comboLeft > 0) {
+      comboLeft -= dt;
+      if (comboLeft <= 0) combo = 0;
+    }
+    if (width <= 0 || height <= 0 || gameOver) return;
 
     // 子弹时间:物理与入场一起变慢(玩家有更多时间挥刀)。
     // 聚焦的榴莲掉出画面或被砍爆后自动结束。
