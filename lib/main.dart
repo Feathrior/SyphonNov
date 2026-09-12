@@ -161,6 +161,68 @@ class _AppShellState extends State<_AppShell> {
   // 外部文件拖拽(Win32 WM_DROPFILES → 平台通道 → 这里)→ 在放点生成表格输入节点
   static const _fileDropChannel = MethodChannel('syphon/file_drop');
 
+  // ---- 彩蛋:上上下下左右左右 → 水果忍者模式 ----
+  static const List<LogicalKeyboardKey> _konamiCode = [
+    LogicalKeyboardKey.arrowUp,
+    LogicalKeyboardKey.arrowUp,
+    LogicalKeyboardKey.arrowDown,
+    LogicalKeyboardKey.arrowDown,
+    LogicalKeyboardKey.arrowLeft,
+    LogicalKeyboardKey.arrowRight,
+    LogicalKeyboardKey.arrowLeft,
+    LogicalKeyboardKey.arrowRight,
+  ];
+  final List<LogicalKeyboardKey> _konamiBuffer = [];
+
+  /// 累计方向键序列。命中返回 true(该按键已被彩蛋消费)。
+  bool _trackKonami(LogicalKeyboardKey key) {
+    if (!_konamiCode.contains(key)) return false;
+    final next = _konamiCode[_konamiBuffer.length];
+    if (key == next) {
+      _konamiBuffer.add(key);
+    } else {
+      // 按错则重置;若按错的正好是序列首位,则以它作为新的开始
+      _konamiBuffer.clear();
+      if (key == _konamiCode.first) _konamiBuffer.add(key);
+    }
+    if (_konamiBuffer.length == _konamiCode.length) {
+      _konamiBuffer.clear();
+      _openNinjaPrompt();
+    }
+    return true;
+  }
+
+  /// 序列完成:已在该模式则直接退出,否则弹窗确认后进入
+  Future<void> _openNinjaPrompt() async {
+    final canvas = _canvasKey.currentState;
+    if (canvas == null) return;
+    if (canvas.ninjaActive) {
+      canvas.exitNinjaMode();
+      return;
+    }
+    final go = await fluent.showDialog<bool>(
+      context: context,
+      builder: (ctx) => fluent.ContentDialog(
+        title: const Text('水果忍者'),
+        content: const SizedBox(
+          width: 320,
+          child: Text('检测到隐藏指令。是否进入水果忍者模式?\n(进入后当前画布会暂存,再次输入指令即可退出)'),
+        ),
+        actions: [
+          fluent.Button(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          fluent.FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('进入'),
+          ),
+        ],
+      ),
+    );
+    if (go == true) _canvasKey.currentState?.enterNinjaMode();
+  }
+
   void _fitView() => _canvasKey.currentState?.fitView();
 
   /// 导出画布图片:捕获画布 RepaintBoundary(当前视口)→ PNG(2x)→ 另存为
@@ -268,6 +330,15 @@ class _AppShellState extends State<_AppShell> {
     // 撤销画布/参数操作(修复"改完参数后 Ctrl+Z 无反应")
     if (_editing() && !_isGlobalShortcut(event)) {
       return KeyEventResult.ignored;
+    }
+
+    // 彩蛋:方向键序列(上上下下左右左右)在画布内始终可用
+    if (_trackKonami(event.logicalKey)) {
+      return KeyEventResult.handled;
+    }
+    // 水果忍者模式期间:吞掉所有编辑快捷键,只保留上面的退出指令
+    if (_canvasKey.currentState?.ninjaActive ?? false) {
+      return KeyEventResult.handled;
     }
 
     final settings = SettingsStore.instance;

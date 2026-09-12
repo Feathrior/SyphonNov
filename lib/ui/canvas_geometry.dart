@@ -491,3 +491,81 @@ EdgeHit? closestOnEdge({
   }
   return best;
 }
+
+/// 两条线段上的最近点对:a 在 [p1,p2] 上,b 在 [p3,p4] 上。
+///
+/// 相交时 b 即交点且 dist = 0(用于切断判定与切点定位)。
+({Offset a, Offset b, double dist}) closestSegmentPair(
+  Offset p1,
+  Offset p2,
+  Offset p3,
+  Offset p4,
+) {
+  final d1 = p2 - p1;
+  final d2 = p4 - p3;
+  final r = p1 - p3;
+  final a = d1.dx * d1.dx + d1.dy * d1.dy;
+  final e = d2.dx * d2.dx + d2.dy * d2.dy;
+  final f = d2.dx * r.dx + d2.dy * r.dy;
+  double s;
+  double t;
+  if (a <= 1e-9 && e <= 1e-9) {
+    s = 0;
+    t = 0;
+  } else if (a <= 1e-9) {
+    s = 0;
+    t = (f / e).clamp(0.0, 1.0);
+  } else {
+    final c = d1.dx * r.dx + d1.dy * r.dy;
+    if (e <= 1e-9) {
+      t = 0;
+      s = (-c / a).clamp(0.0, 1.0);
+    } else {
+      final b = d1.dx * d2.dx + d1.dy * d2.dy;
+      final denom = a * e - b * b;
+      s = denom.abs() > 1e-9
+          ? ((b * f - c * e) / denom).clamp(0.0, 1.0)
+          : 0.0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = (-c / a).clamp(0.0, 1.0);
+      } else if (t > 1) {
+        t = 1;
+        s = ((b - c) / a).clamp(0.0, 1.0);
+      }
+    }
+  }
+  final pa = p1 + d1 * s;
+  final pb = p3 + d2 * t;
+  return (a: pa, b: pb, dist: (pa - pb).distance);
+}
+
+/// 命中检测:鼠标划过的整条线段与连线(采样折线)求最近点。
+///
+/// 逐个采样点比对会漏掉"两次 move 之间跨过连线"的情况(快速划过时只断掉
+/// 少数几条),因此这里按线段与线段求解,把采样点之间的线段也纳入判定。
+EdgeHit? closestOnEdgeSegment({
+  required Offset a,
+  required Offset b,
+  Offset? mid,
+  required Offset from,
+  required Offset to,
+  required double threshold,
+}) {
+  final samples = edgeSamples(a: a, b: b, mid: mid);
+  if (samples.isEmpty) return null;
+  if (samples.length == 1) {
+    final d = (samples.first - from).distance;
+    return d <= threshold ? EdgeHit(samples.first, d) : null;
+  }
+  EdgeHit? best;
+  for (var i = 0; i < samples.length - 1; i++) {
+    final pair = closestSegmentPair(from, to, samples[i], samples[i + 1]);
+    if (pair.dist > threshold) continue;
+    if (best == null || pair.dist < best.dist) {
+      best = EdgeHit(pair.b, pair.dist);
+    }
+  }
+  return best;
+}

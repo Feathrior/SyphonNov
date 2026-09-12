@@ -1,6 +1,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart'
@@ -32,6 +33,9 @@ typedef NodeDragCallback = void Function(
 const double _kNodeTileWidth = 48;
 const double _kNodeTileHoverWidth = 64;
 const double _kNodeTileGap = 7;
+
+/// 弹层与窗口边缘的最小间距(居中放不下时贴边用)
+const double _kShelfPanelMargin = 16;
 
 /// 顶部节点提示条。折叠条固定高度，节点库通过 Overlay 展开，不参与画布布局。
 class NodeShelf extends StatefulWidget {
@@ -73,6 +77,13 @@ class _NodeShelfState extends State<NodeShelf> {
   /// 当前被悬停的书脊索引:书脊 hover 时会左右拓宽,弹层宽度跟着一起加宽,
   /// 否则右侧内容会被裁掉。
   int? _hoveredTile;
+
+  /// 分类段落锚点:弹层水平居中到当前段落下方
+  final Map<Category, GlobalKey> _segmentKeys = {
+    for (final category in kAllCategories) category: GlobalKey(),
+  };
+  final GlobalKey _packageKey = GlobalKey();
+
   Offset? _lastDragGlobal;
   bool _dragging = false;
   bool _closing = false;
@@ -260,7 +271,7 @@ class _NodeShelfState extends State<NodeShelf> {
               ),
             ],
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           child: Row(
             children: [
               // 所有分类 + Package 融合成一条纯色分段条:段落之间没有空隙,
@@ -273,6 +284,8 @@ class _NodeShelfState extends State<NodeShelf> {
                 onPackages: _openPackages,
                 onEnter: () => _leaveTimer?.cancel(),
                 onExit: _scheduleClose,
+                segmentKeys: _segmentKeys,
+                packageKey: _packageKey,
               ),
               const Spacer(),
               Text(
@@ -314,13 +327,32 @@ class _NodeShelfState extends State<NodeShelf> {
         ? 0.0
         : (_kNodeTileHoverWidth - _kNodeTileWidth);
     final width = (count * perTile + 24 + hoverExtra).clamp(160.0, available);
+
+    // 水平位置:居中于当前胶囊的正下方;若会超出窗口则紧贴窗口(与旧行为一致)
+    var left = origin.dx;
+    final segmentBox =
+        (_packageMode ? _packageKey : _segmentKeys[_category])
+            ?.currentContext
+            ?.findRenderObject();
+    if (segmentBox is RenderBox && segmentBox.hasSize) {
+      final segmentCenter = overlayBox.globalToLocal(
+        segmentBox.localToGlobal(segmentBox.size.center(Offset.zero)),
+      );
+      left = (segmentCenter.dx - width / 2).clamp(
+        _kShelfPanelMargin,
+        math.max(_kShelfPanelMargin, screen.width - width - _kShelfPanelMargin),
+      );
+    }
     return Positioned.fill(
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          Positioned(
-            left: origin.dx,
+          AnimatedPositioned(
+            left: left,
             top: origin.dy,
+            // 与宽度过渡同节奏:横扫胶囊时整个面板平移到新位置
+            duration: MotionTokens.quick(overlayContext),
+            curve: MotionTokens.emphasized,
             child: MouseRegion(
               onEnter: (_) => _leaveTimer?.cancel(),
               onExit: (_) => _scheduleClose(),
@@ -431,12 +463,10 @@ class _NodeShelfState extends State<NodeShelf> {
   }
 }
 
-/// 上边栏的一体化分类条:所有分类与 Package 位于同一个纯色分段容器内。
+/// 上边栏的一体化分类条:所有分类与 Package 位于同一个分段容器内。
 ///
-/// 融合成一条有两个好处:
-/// 1. 段落之间没有空隙,鼠标横向扫过时整条栏只触发一次 onEnter/onExit,
-///    次级菜单不会再"先关再开",而是直接切换分类并让宽度连续变化;
-/// 2. 每段都是纯色填充、无描边,视觉上是一个整体按钮。
+/// 段落之间没有空隙,鼠标横向扫过时整条栏只触发一次 onEnter/onExit,
+/// 次级菜单不会再"先关再开",而是直接切换分类并让宽度连续变化。
 class _ShelfBar extends StatelessWidget {
   final bool opened;
   final Category activeCategory;
@@ -445,6 +475,9 @@ class _ShelfBar extends StatelessWidget {
   final VoidCallback onPackages;
   final VoidCallback onEnter;
   final VoidCallback onExit;
+  /// 各段落的锚点 key:弹层据此把自己的中心对齐到当前段落下方
+  final Map<Category, GlobalKey> segmentKeys;
+  final GlobalKey packageKey;
 
   const _ShelfBar({
     required this.opened,
@@ -454,6 +487,8 @@ class _ShelfBar extends StatelessWidget {
     required this.onPackages,
     required this.onEnter,
     required this.onExit,
+    required this.segmentKeys,
+    required this.packageKey,
   });
 
   @override
@@ -464,7 +499,7 @@ class _ShelfBar extends StatelessWidget {
       onExit: (_) => onExit(),
       child: Container(
         key: const Key('node-shelf-bar'),
-        height: 30,
+        height: 34,
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
           color: t.bgRaise,
@@ -475,7 +510,8 @@ class _ShelfBar extends StatelessWidget {
           children: [
             for (final category in kAllCategories)
               _ShelfSegment(
-                key: ValueKey('node-category-${category.name}'),
+                key: segmentKeys[category],
+                tileKey: ValueKey('node-category-${category.name}'),
                 symbol: kCategoryInfo[category]!.icon,
                 label: L.t(kCategoryInfo[category]!.label),
                 color: parseColor(kCategoryInfo[category]!.color),
@@ -484,7 +520,8 @@ class _ShelfBar extends StatelessWidget {
                 onTap: () => onCategory(category),
               ),
             _ShelfSegment(
-              key: const Key('node-category-package'),
+              key: packageKey,
+              tileKey: const Key('node-category-package'),
               symbol: '⧉',
               label: 'Package',
               color: const Color(0xFF8A9099),
@@ -499,12 +536,16 @@ class _ShelfBar extends StatelessWidget {
   }
 }
 
-/// 分类条里的一段:纯色填充、无描边;悬停或激活时提高不透明度并加一层同色柔光。
+/// 分类条里的一段:低饱和填充 + 彩色内描边(呼出时加粗)。
+///
+/// 不做发光:状态只靠内描边的粗细/透明度与文字明度区分,整体比过去的
+/// 实心高饱和更收敛。
 class _ShelfSegment extends StatefulWidget {
   final String symbol;
   final String label;
   final Color color;
   final bool highlighted;
+  final Key? tileKey;
   final VoidCallback onEnter;
   final VoidCallback onTap;
 
@@ -514,6 +555,7 @@ class _ShelfSegment extends StatefulWidget {
     required this.label,
     required this.color,
     required this.highlighted,
+    required this.tileKey,
     required this.onEnter,
     required this.onTap,
   });
@@ -527,6 +569,7 @@ class _ShelfSegmentState extends State<_ShelfSegment> {
 
   @override
   Widget build(BuildContext context) {
+    final t = SyphonTheme.of(context);
     final on = _hover || widget.highlighted;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -538,43 +581,37 @@ class _ShelfSegmentState extends State<_ShelfSegment> {
       child: GestureDetector(
         onTap: widget.onTap,
         child: AnimatedContainer(
+          key: widget.tileKey,
           duration: MotionTokens.standard(context),
           curve: MotionTokens.enter,
           margin: const EdgeInsets.symmetric(horizontal: 1),
-          padding: EdgeInsets.symmetric(horizontal: on ? 12 : 10, vertical: 5),
+          // 内边距恒定:hover 只加粗内描边/提亮文字,胶囊尺寸不变——
+          // 尺寸变化会让后续胶囊整体位移,弹层"居中于胶囊"的定位就会差几像素。
+          // 上下留 3px:胶囊够高,中文标签不会被内描边切掉上下沿
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
           decoration: BoxDecoration(
-            // 纯色填充:不描边,靠不透明度与柔光区分状态
-            color: widget.color.withValues(alpha: on ? 1 : .88),
+            // 低饱和填充 + 彩色内描边;无发光
+            color: widget.color.withValues(alpha: on ? .20 : .07),
             borderRadius: BorderRadius.circular(8),
-            // 阴影模糊/偏移恒定,只插值颜色:AnimatedContainer 的装饰插值若
-            // 让模糊值外插(曲线过冲 t>1)会产生负 blurRadius(框架断言)
-            boxShadow: [
-              BoxShadow(
-                color: on
-                    ? widget.color.withValues(alpha: .5)
-                    : widget.color.withValues(alpha: 0),
-                blurRadius: 10,
-                offset: const Offset(0, 2),
-              ),
-            ],
+            border: Border.all(
+              color: widget.color.withValues(alpha: on ? .95 : .45),
+              width: on ? 1.8 : 1.2,
+            ),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 widget.symbol,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Colors.white.withValues(alpha: .92),
-                ),
+                style: TextStyle(fontSize: 11, color: widget.color),
               ),
               const SizedBox(width: 5),
               Text(
                 widget.label,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                  color: on ? t.text : t.textDim,
                 ),
               ),
             ],

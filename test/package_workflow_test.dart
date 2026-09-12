@@ -1,7 +1,8 @@
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter/gestures.dart' show kSecondaryButton;
 import 'package:flutter/material.dart'
-    show AlertDialog, Color, DecoratedBox, IgnorePointer;
+    show AlertDialog, DecoratedBox, IgnorePointer;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -293,7 +294,7 @@ void main() {
     expect(proxy.hitTestable(), findsOneWidget);
   });
 
-  testWidgets('Package creation menu is opaque grey and Group is absent', (
+  testWidgets('Package creation dialog matches the About dialog style', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1200, 800);
@@ -325,10 +326,21 @@ void main() {
 
     await tester.tap(find.text('打包为 Package'));
     await tester.pumpAndSettle();
-    final dialog = tester.widget<AlertDialog>(find.byType(AlertDialog));
-    expect(dialog.backgroundColor, const Color(0xFFE1E3E6));
+    // 与「帮助 → 关于 Syphon」一致:fluent ContentDialog + TextBox(不再是 AlertDialog)
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(fluent.ContentDialog), findsOneWidget);
+    expect(find.text('创建 Package'), findsOneWidget);
+    final box = find.descendant(
+      of: find.byType(fluent.ContentDialog),
+      matching: find.byType(fluent.TextBox),
+    );
+    expect(box, findsOneWidget);
+    expect(tester.widget<fluent.TextBox>(box).autofocus, isTrue);
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
+    expect(find.byType(fluent.ContentDialog), findsNothing);
+    // 取消后不应建出 Package
+    expect(GraphStore.instance.groups, isEmpty);
   });
 
   testWidgets('collapsed Package follows the pointer during drag', (

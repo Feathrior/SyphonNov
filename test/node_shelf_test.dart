@@ -215,7 +215,10 @@ void main() {
       await tester.pumpWidget(const SyphonApp());
       await tester.pump();
 
-      expect(tester.getSize(find.byKey(const Key('node-shelf'))).height, 42);
+      expect(
+        tester.getSize(find.byKey(const Key('node-shelf'))).height,
+        SyphonDims.nodeShelfH,
+      );
       final canvas = find.byType(NodeCanvas);
       final state = tester.state<NodeCanvasState>(canvas);
       final rect = tester.getRect(canvas);

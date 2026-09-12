@@ -11,6 +11,7 @@ import 'package:flutter/gestures.dart'
         PointerSignalEvent,
         kPrimaryButton,
         kSecondaryMouseButton;
+import 'package:fluent_ui/fluent_ui.dart' as fluent;
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -25,6 +26,7 @@ import 'canvas_geometry.dart';
 import 'context_menu.dart';
 import 'mini_map.dart';
 import 'motion.dart';
+import 'ninja_mode.dart';
 import 'node_card.dart';
 import 'node_context_menus.dart';
 import 'radial_node_menu.dart';
@@ -858,6 +860,112 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   // 切水果刀光:记录 Ctrl 拖拽划过画布的轨迹点(flow 坐标),用于绘制渐隐光带
   final List<Offset> _slashTrail = [];
   DateTime _slashTrailAt = DateTime.now();
+  // 上一次切断判定的指针位置:与当前位置连成线段,避免快速划过漏掉连线
+  Offset? _lastCutFlow;
+
+  // ---- 彩蛋:水果忍者模式 ----
+  bool _ninjaMode = false;
+  /// 进入前的画布 JSON(退出时原样恢复)
+  String? _ninjaSavedGraph;
+  final NinjaGame _ninja = NinjaGame();
+  Ticker? _ninjaTicker;
+  DateTime _ninjaTickAt = DateTime.now();
+  Offset? _lastNinjaPos;
+
+  /// 是否处于水果忍者模式(供外部按键彩蛋查询)
+  bool get ninjaActive => _ninjaMode;
+
+  /// 忍者模式的模拟状态(测试用:可注入固定位置的水果)
+  @visibleForTesting
+  NinjaGame get ninjaGame => _ninja;
+
+  /// 画布平移量(测试用:验证忍者模式下画布固定不动)
+  @visibleForTesting
+  Offset get canvasPan => _pan;
+
+  /// 进入彩蛋模式:自动保存当前画布 → 清空 → 开始抛节点
+  void enterNinjaMode() {
+    if (_ninjaMode) return;
+    _ninjaSavedGraph = store.saveGraph();
+    store.clearAll();
+    // 刀光与节点都在屏幕坐标里,先把缩放/平移归位,保证 flow == 屏幕坐标
+    _zoom = 1;
+    _pan = Offset.zero;
+    _zoomNotifier.value = 1;
+    _ninja.reset();
+    _ninjaMode = true;
+    _ninjaTickAt = DateTime.now();
+    _ninjaTicker ??= createTicker(_onNinjaTick);
+    _ninjaTicker!.start();
+    _focusNode.requestFocus();
+    _bump();
+  }
+
+  /// 退出彩蛋模式:恢复进入前的画布
+  void exitNinjaMode() {
+    if (!_ninjaMode) return;
+    _ninjaTicker?.stop();
+    _ninjaMode = false;
+    _ninja.reset();
+    final saved = _ninjaSavedGraph;
+    _ninjaSavedGraph = null;
+    if (saved != null) {
+      store.loadGraph(saved, silent: true);
+      fitView();
+    }
+    _bump();
+  }
+
+  void _onNinjaTick(Duration _) {
+    if (!_ninjaMode) return;
+    final now = DateTime.now();
+    final dt = (now.difference(_ninjaTickAt).inMicroseconds / 1e6).clamp(
+      0.0,
+      0.05,
+    );
+    _ninjaTickAt = now;
+    _ninja
+      ..width = _canvasSize.width
+      ..height = _canvasSize.height;
+    _ninja.update(dt);
+  }
+
+  Widget _buildNinjaLayer(SyphonTheme t) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: CustomPaint(
+          key: const Key('ninja-layer'),
+          painter: NinjaPainter(game: _ninja, theme: t),
+        ),
+      ),
+    );
+  }
+
+  /// 水果忍者:一次指针移动 = 一刀。
+  /// 命中目标是节点中间穿过的连线(与 Ctrl 切断连线同源:刀光/粒子一并复用)。
+  void _sliceNinja(Offset local) {
+    final from = _lastNinjaPos ?? local;
+    _lastNinjaPos = local;
+    _slashTrail.add(local);
+    if (_slashTrail.length > 24) _slashTrail.removeAt(0);
+    _slashTrailAt = DateTime.now();
+    if (!_cutTicker.isActive) _cutTicker.start();
+    _motionSamples.add((pos: local, t: DateTime.now()));
+    if (_motionSamples.length > 4) _motionSamples.removeAt(0);
+    if (_motionSamples.length >= 2) {
+      final a = _motionSamples.first;
+      final b = _motionSamples.last;
+      final dt = b.t.difference(a.t).inMicroseconds / 1e6;
+      if (dt > 0.004) _swipeVel = (b.pos - a.pos) / dt;
+    }
+    final cuts = _ninja.slice(from, local);
+    if (cuts.isEmpty) return;
+    for (final c in cuts) {
+      // 每切断一条连线都在切点爆一次粒子(颜色跟随该连线)
+      _bursts.add(_makeBurst(c.point, c.color, _swipeVel));
+      if (_bursts.length > 16) _bursts.removeAt(0);
+    }
+  }
   // 鼠标划过速度(flow 单位/秒):由最近几次移动采样测得,作为粒子初速度
   final List<({Offset pos, DateTime t})> _motionSamples = [];
   Offset _swipeVel = Offset.zero;
@@ -1972,6 +2080,14 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   // ---------------- 背景交互 ----------------
 
   void _onBackgroundDown(PointerDownEvent e) {
+    // 水果忍者模式:画布不参与任何编辑交互,按下只记录刀锋起点
+    if (_ninjaMode) {
+      _downButtons = e.buttons;
+      _lastNinjaPos = e.localPosition;
+      _slashTrail.clear();
+      _focusNode.requestFocus();
+      return;
+    }
     // 菜单打开期间:事件由菜单自身处理,画布层一律忽略(防反复重建)
     if (_menuPos != null) return;
     // 缩放手柄先在子 Listener 中开启状态；祖先 Listener 收到同一个 down 时
@@ -1987,6 +2103,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     if (e.buttons & kPrimaryButton != 0) _focusNode.requestFocus();
     _downButtons = e.buttons;
     _downPosScreen = e.localPosition;
+    // 新的手势:切断判定不跨手势连线
+    _lastCutFlow = null;
     // 按下即结束实时预览:点击生成断点/命中节点/断点圆点等任何操作时,
     // 预览圆点立即消失、不残留(清除后必须 _bump 触发重绘)
     if (_altSplitEdge != null || _altSplitPoint != null) {
@@ -2098,6 +2216,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundMove(PointerMoveEvent e) {
+    // 水果忍者模式:指针移动即刀锋,切中所有划过的水果(复用 Ctrl 切断的刀光/粒子)
+    if (_ninjaMode) {
+      _sliceNinja(e.localPosition);
+      return;
+    }
     final resizingViewerId = _resizingViewerId;
     if (resizingViewerId != null) {
       _onViewerResizeUpdate(resizingViewerId, e.delta);
@@ -2189,20 +2312,21 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         final dt = b.t.difference(a.t).inMicroseconds / 1e6;
         if (dt > 0.004) _swipeVel = (b.pos - a.pos) / dt;
       }
-      final hit = _hitEdgeAt(flow, threshold: 46 / _zoom);
-      if (hit != null) {
-        store.removeEdge(hit.edge.id);
+      // 判定用"上次指针位置 → 本次位置"这条线段:采样点之间的线段也参与,
+      // 快速划过不会漏线;且一次划过可同时切断所有相交的连线
+      final from = _lastCutFlow ?? flow;
+      _lastCutFlow = flow;
+      final hits = _hitEdgesAlongSwipe(from, flow, 46 / _zoom);
+      for (final h in hits) {
+        store.removeEdge(h.edge.id);
         // 每砍断一条线都在其切点生成一次粒子爆裂(颜色跟随该连线端口色)
-        _bursts.add(
-          _makeBurst(hit.hit.point, _edgeBaseColor(hit.edge), _swipeVel),
-        );
+        _bursts.add(_makeBurst(h.hit.point, _edgeBaseColor(h.edge), _swipeVel));
         if (_bursts.length > 16) _bursts.removeAt(0); // 手势中限长防堆积
-        if (!_cutTicker.isActive) _cutTicker.start();
       }
+      if (hits.isNotEmpty && !_cutTicker.isActive) _cutTicker.start();
       _bump();
       return;
     }
-
     // 无按键:悬停高亮(端口动画 + 连线高亮)
     if (!left && !_ctrl && !_shift) {
       _updateHover(e.localPosition);
@@ -2216,6 +2340,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundUp(PointerUpEvent e) {
+    _lastCutFlow = null;
+    // 水果忍者模式:松开只收刀,不触发任何画布选择/框选逻辑
+    if (_ninjaMode) {
+      _lastNinjaPos = null;
+      _downButtons = 0;
+      return;
+    }
     final resizingViewerId = _resizingViewerId;
     if (resizingViewerId != null) {
       _onViewerResizeEnd(resizingViewerId);
@@ -2346,29 +2477,15 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       final src = nodeMap[e.source];
       final tgt = nodeMap[e.target];
       if (src == null || tgt == null) continue;
-      final sourcePackage = _collapsedPackageForNode(e.source);
-      final targetPackage = _collapsedPackageForNode(e.target);
-      if (sourcePackage != null && sourcePackage.id == targetPackage?.id) {
-        continue;
-      }
-      final sourceRect = sourcePackage == null
-          ? null
-          : packageProxyRect(sourcePackage, store.nodes, store.edges);
-      final targetRect = targetPackage == null
-          ? null
-          : packageProxyRect(targetPackage, store.nodes, store.edges);
-      final a = sourceRect == null || sourcePackage == null
-          ? edgeSourceAnchor(e, src, store.edges)
-          : _packageAnchorForEdge(sourcePackage, sourceRect, e, isSource: true);
-      final b = targetRect == null || targetPackage == null
-          ? edgeTargetAnchor(e, tgt, store.edges)
-          : _packageAnchorForEdge(
-              targetPackage,
-              targetRect,
-              e,
-              isSource: false,
-            );
-      final hit = closestOnEdge(a: a, b: b, mid: e.mid, p: flowPos);
+      if (_sameCollapsedPackage(e)) continue;
+      final anchors = _edgeAnchors(e, src, tgt);
+      if (anchors == null) continue;
+      final hit = closestOnEdge(
+        a: anchors.a,
+        b: anchors.b,
+        mid: e.mid,
+        p: flowPos,
+      );
       if (hit != null &&
           hit.dist < threshold &&
           (bestHit == null || hit.dist < bestHit.dist)) {
@@ -2379,10 +2496,73 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     return bestEdge == null ? null : (edge: bestEdge, hit: bestHit!);
   }
 
+  /// 连线的两端世界坐标(折叠 Package 的成员改指到代理端口)
+  ({Offset a, Offset b})? _edgeAnchors(
+    GraphEdge e,
+    GraphNode src,
+    GraphNode tgt,
+  ) {
+    final sourcePackage = _collapsedPackageForNode(e.source);
+    final targetPackage = _collapsedPackageForNode(e.target);
+    final sourceRect = sourcePackage == null
+        ? null
+        : packageProxyRect(sourcePackage, store.nodes, store.edges);
+    final targetRect = targetPackage == null
+        ? null
+        : packageProxyRect(targetPackage, store.nodes, store.edges);
+    final a = sourceRect == null || sourcePackage == null
+        ? edgeSourceAnchor(e, src, store.edges)
+        : _packageAnchorForEdge(sourcePackage, sourceRect, e, isSource: true);
+    final b = targetRect == null || targetPackage == null
+        ? edgeTargetAnchor(e, tgt, store.edges)
+        : _packageAnchorForEdge(targetPackage, targetRect, e, isSource: false);
+    return (a: a, b: b);
+  }
+
+  bool _sameCollapsedPackage(GraphEdge e) {
+    final sourcePackage = _collapsedPackageForNode(e.source);
+    final targetPackage = _collapsedPackageForNode(e.target);
+    return sourcePackage != null && sourcePackage.id == targetPackage?.id;
+  }
+
+  /// 指针从 [from] 划到 [to] 时命中的**全部**连线。
+  ///
+  /// 按"划过的线段 vs 连线采样折线"求最近点:采样点之间的线段同样参与判定,
+  /// 因此快速划过时不会漏线;且一次划过会同时切断所有相交的连线(此前每次
+  /// 事件只切断最近的一条)。
+  List<({GraphEdge edge, EdgeHit hit})> _hitEdgesAlongSwipe(
+    Offset from,
+    Offset to,
+    double threshold,
+  ) {
+    final nodeMap = {for (final n in store.nodes) n.id: n};
+    final hits = <({GraphEdge edge, EdgeHit hit})>[];
+    for (final e in store.edges) {
+      final src = nodeMap[e.source];
+      final tgt = nodeMap[e.target];
+      if (src == null || tgt == null) continue;
+      if (_sameCollapsedPackage(e)) continue;
+      final anchors = _edgeAnchors(e, src, tgt);
+      if (anchors == null) continue;
+      final hit = closestOnEdgeSegment(
+        a: anchors.a,
+        b: anchors.b,
+        mid: e.mid,
+        from: from,
+        to: to,
+        threshold: threshold,
+      );
+      if (hit != null) hits.add((edge: e, hit: hit));
+    }
+    return hits;
+  }
+
   // ---------------- 视图 ----------------
 
   void _onWheel(PointerSignalEvent e) {
     if (e is! PointerScrollEvent) return;
+    // 水果忍者模式:画布固定不动
+    if (_ninjaMode) return;
     // 菜单打开期间:滚轮滚动菜单内容,不缩放画布
     if (_menuPos != null) return;
     // 仅 Ctrl+滚轮缩放画布,普通滚轮不响应
@@ -2411,6 +2591,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundPanStart(DragStartDetails d) {
+    // 水果忍者模式:画布固定不动,拖拽只用于挥刀切水果
+    if (_ninjaMode) return;
     // 菜单打开期间:pan 手势与 Listener 指针事件是两条独立路径,
     // 菜单弹出瞬间可能仍有残余 pan 手势在竞技场中,此处一并忽略(防反复重建)
     if (_menuPos != null) return;
@@ -2452,6 +2634,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundPanUpdate(DragUpdateDetails d) {
+    if (_ninjaMode) return;
     if (_menuPos != null) return;
     final packageId = _draggingPackageId;
     if (packageId != null) {
@@ -2474,6 +2657,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   }
 
   void _onBackgroundPanEnd(DragEndDetails d) {
+    if (_ninjaMode) {
+      _panFromNode = false;
+      return;
+    }
     if (_menuPos != null) return;
     final packageId = _draggingPackageId;
     if (packageId != null) {
@@ -2632,52 +2819,36 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   Future<void> _packageSelection() async {
     final sel = _nodeMenuFor;
     if (sel == null || sel.length < 2) return;
-    final t = SyphonTheme.of(context);
-    final panelColor = t.isDark
-        ? const Color(0xFF34383E)
-        : const Color(0xFFE1E3E6);
     var draftName = 'Package';
-    final name = await showDialog<String>(
+    final controller = TextEditingController(text: draftName);
+    // 与「帮助 → 关于 Syphon」一致,统一用 fluent 的 ContentDialog
+    final name = await fluent.showDialog<String>(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: .3),
-      builder: (ctx) => AlertDialog(
-        backgroundColor: panelColor,
-        surfaceTintColor: Colors.transparent,
-        shadowColor: Colors.black.withValues(alpha: .35),
-        shape: RoundedRectangleBorder(
-          side: BorderSide(color: t.strokeStrong),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        title: Text('创建 Package', style: TextStyle(color: t.text)),
-        content: TextFormField(
-          initialValue: draftName,
-          autofocus: true,
-          style: TextStyle(color: t.text),
-          decoration: InputDecoration(
-            labelText: 'Package 名称',
-            labelStyle: TextStyle(color: t.textDim),
-            filled: true,
-            fillColor: t.bgNode.withValues(alpha: .72),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(9),
-              borderSide: BorderSide(color: t.strokeStrong),
-            ),
+      builder: (ctx) => fluent.ContentDialog(
+        title: const Text('创建 Package'),
+        content: SizedBox(
+          width: 320,
+          child: fluent.TextBox(
+            controller: controller,
+            autofocus: true,
+            placeholder: 'Package 名称',
+            onChanged: (value) => draftName = value,
+            onSubmitted: (value) => Navigator.of(ctx).pop(value),
           ),
-          onChanged: (value) => draftName = value,
-          onFieldSubmitted: (value) => Navigator.of(ctx).pop(value),
         ),
         actions: [
-          TextButton(
+          fluent.Button(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('取消'),
           ),
-          FilledButton(
+          fluent.FilledButton(
             onPressed: () => Navigator.of(ctx).pop(draftName),
             child: const Text('创建'),
           ),
         ],
       ),
     );
+    controller.dispose();
     if (name == null) return;
     store.createPackage(sel.toList(), name);
     _closeMenu();
@@ -2897,6 +3068,7 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   @override
   void dispose() {
     _radialHoldTimer?.cancel();
+    _ninjaTicker?.dispose();
     _cutTicker.dispose();
     _conversionLayoutController.dispose();
     _zoomNotifier.dispose();
@@ -3151,6 +3323,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                     _buildBoxSelect(t),
                   _buildZoomControl(t),
                   _buildMiniMap(),
+                  // 彩蛋模式:飞上来的节点画在最上层(屏幕坐标),不会被缩略图挡住
+                  if (_ninjaMode) _buildNinjaLayer(t),
                 ],
               );
             },

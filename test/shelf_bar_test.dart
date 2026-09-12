@@ -9,9 +9,10 @@ import 'package:syphon_nov/store/graph_store.dart';
 import 'package:syphon_nov/store/settings_store.dart';
 
 /// 上边栏改造回归:
-/// 1. 所有分类 + Package 合并成一条纯色分段条(无描边);
+/// 1. 所有分类 + Package 合并成一条分段条:低饱和填充 + 彩色内描边,不做发光;
 /// 2. 书脊 hover 拓宽时,弹层宽度跟着加宽,不再裁切右侧内容;
-/// 3. 在同一分段条内横向扫过时,次级菜单不会关闭,而是直接切换分类。
+/// 3. 弹层水平居中于当前胶囊下方;
+/// 4. 在同一分段条内横向扫过时,次级菜单不会关闭,而是直接切换分类。
 void main() {
   setUp(() {
     GraphStore.useIsolate = false;
@@ -48,7 +49,7 @@ void main() {
     );
   }
 
-  testWidgets('shelf categories merge into one solid bar without borders', (
+  testWidgets('shelf segments are low-saturation pills with an inner stroke', (
     tester,
   ) async {
     await pumpApp(tester);
@@ -64,21 +65,44 @@ void main() {
     expect(find.byKey(const Key('node-category-package')), findsOneWidget);
 
     for (final category in kAllCategories) {
+      // tileKey 就在分段自身的 AnimatedContainer 上(便于按分类定位胶囊)
       final container = tester.widget<AnimatedContainer>(
-        find.descendant(
-          of: find.byKey(ValueKey('node-category-${category.name}')),
-          matching: find.byType(AnimatedContainer),
-        ),
+        find.byKey(ValueKey('node-category-${category.name}')),
       );
       final decoration = container.decoration! as BoxDecoration;
-      expect(decoration.border, isNull, reason: '${category.name} 不应有描边');
-      final fill = decoration.color!;
-      // 纯色填充:不透明度不低于 85%
-      expect(fill.a, greaterThanOrEqualTo(0.85));
-      // 阴影列表恒定非空(避免 AnimatedContainer 装饰插值产生负模糊半径)
-      expect(decoration.boxShadow, isNotNull);
-      expect(decoration.boxShadow, hasLength(1));
+      // 未呼出:低饱和填充 + 彩色内描边
+      expect(
+        decoration.color!.a,
+        lessThanOrEqualTo(0.2),
+        reason: '${category.name} 填充应收敛,不再整块纯色',
+      );
+      final border = decoration.border! as Border;
+      expect(border.top.width, closeTo(1.2, 0.01), reason: '静息描边较细');
+      expect(border.top.color.a, greaterThan(0.2), reason: '描边应带分类色');
+      // 不再发光(阴影列表必须为空,否则 hover 时会插值出负模糊半径)
+      expect(decoration.boxShadow, isNull, reason: '不做发光 hover');
     }
+
+    // 呼出后:描边加粗、填充加深(仍是内描边,不是整块纯色)
+    final pointer = TestPointer(94, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(
+      pointer.hover(
+        tester.getCenter(
+          find.byKey(ValueKey('node-category-${Category.compute.name}')),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final opened = tester
+        .widget<AnimatedContainer>(
+          find.byKey(ValueKey('node-category-${Category.compute.name}')),
+        )
+        .decoration! as BoxDecoration;
+    final openedBorder = opened.border! as Border;
+    expect(openedBorder.top.width, closeTo(1.8, 0.01));
+    expect(openedBorder.top.color.a, greaterThan(0.8));
+    expect(opened.color!.a, lessThanOrEqualTo(0.2));
+    expect(opened.boxShadow, isNull);
   });
 
   testWidgets('flyout width follows the hovered spine', (tester) async {
@@ -248,8 +272,21 @@ void main() {
       isTrue,
       reason: '背景矩形必须是同一个元素,不能被替换/重建',
     );
-    // 左端不动,只有宽度变化
-    expect(tester.getTopLeft(panel).dx, tester.getTopLeft(panel).dx);
+    // 水平位置跟随当前胶囊:面板中心对齐 visualize 段中心;若会超窗则贴边钳制
+    final segCenter = tester
+        .getRect(find.byKey(ValueKey('node-category-${Category.visualize.name}')))
+        .center
+        .dx;
+    final screenW =
+        tester.view.physicalSize.width / tester.view.devicePixelRatio;
+    final panelRect = tester.getRect(panel);
+    expect(panelRect.left, greaterThanOrEqualTo(15.5));
+    expect(panelRect.right, lessThanOrEqualTo(screenW - 15.5));
+    final clamped =
+        panelRect.left <= 16.5 || panelRect.right >= screenW - 16.5;
+    if (!clamped) {
+      expect(panelRect.center.dx, closeTo(segCenter, 2.0));
+    }
     expect(tester.getSize(panel).width, isNot(widthBefore));
     expect(tester.takeException(), isNull);
   });

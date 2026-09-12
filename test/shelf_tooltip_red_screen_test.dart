@@ -58,13 +58,25 @@ void main() {
     final overlay = find.byKey(const Key('node-library-overlay'));
     expect(overlay, findsOneWidget);
     final shelfRect = tester.getRect(find.byKey(const Key('node-shelf')));
-    // 面板外层(尺寸过渡容器)即弹层的定位框:上边栏左下角 + (16, 8)。
-    // 内层 overlay 在切换动画期间还会被缩放,所以以面板外层为准。
+    // 上边栏正下方 8px;水平方向居中于当前胶囊(超窗时贴边,最小边距 16)
     final panel = tester.getRect(
       find.byKey(const Key('node-library-size-transition')),
     );
-    expect(panel.left, closeTo(shelfRect.left + 16, 0.5));
     expect(panel.top, closeTo(shelfRect.bottom + 8, 0.5));
+    final screenW =
+        tester.view.physicalSize.width / tester.view.devicePixelRatio;
+    expect(panel.left, greaterThanOrEqualTo(15.5));
+    expect(panel.right, lessThanOrEqualTo(screenW - 15.5));
+    final segCenter = tester
+        .getRect(
+          find.byKey(ValueKey('node-category-${Category.compute.name}')),
+        )
+        .center
+        .dx;
+    final clamped = panel.left <= 16.5 || panel.right >= screenW - 16.5;
+    if (!clamped) {
+      expect(panel.center.dx, closeTo(segCenter, 2.0));
+    }
     // 弹层内部不能再有 follower 层(Tooltip 需要沿锚点链路计算变换)
     expect(
       find.descendant(
