@@ -2,7 +2,7 @@
 // 以及"文本框聚焦时按键不被画布快捷键吞掉"的回归测试
 // (空格/回车/退格在右键菜单搜索框中完全失效的问题)。
 import 'package:flutter/gestures.dart' show kSecondaryButton;
-import 'package:flutter/material.dart' show TextField, ValueKey;
+import 'package:flutter/material.dart' show Opacity, TextField, ValueKey;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fluent_ui/fluent_ui.dart' as fluent;
@@ -90,12 +90,59 @@ void main() {
 
     await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
-    await tester.pump();
+    // 删除会先播一段退场动画(缩小/淡出/模糊),等它收场后再数卡片
+    await tester.pumpAndSettle();
 
     expect(
       tester.widgetList<NodeCard>(find.byType(NodeCard)).length,
       countBefore - 1,
     );
+  }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
+
+  // ==================== 删除退场动画 ====================
+  // 节点被删除时立刻从图里消失(计算/撤销语义不变),但画面上会用它的快照
+  // 再播一段 ease-out 退场:缩小 + 淡出 + 变模糊,播完自动移除。
+  testWidgets('删除节点会播放缩小/淡出/模糊的退场动画', (tester) async {
+    GraphStore.useIsolate = false;
+    addTearDown(() => GraphStore.useIsolate = true);
+    GraphStore.instance.clearAll();
+    final id = GraphStore.instance.addNode(
+      'table_input',
+      const Offset(140, 120),
+      triggerRun: false,
+    );
+    await pumpApp(tester);
+    await tester.pumpAndSettle();
+    await tester.tapAt(
+      tester.getCenter(
+        find.byWidgetPredicate((w) => w is NodeCard && w.nodeId == id),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+    await tester.pump();
+    // 图里已经删掉了
+    expect(GraphStore.instance.nodes, isEmpty);
+    final ghost = find.byKey(ValueKey('node-ghost-$id'));
+    expect(ghost, findsOneWidget, reason: '删除后应有退场幻影');
+
+    // 动画中:正在淡出(不透明度介于 0 与 1 之间)
+    await tester.pump(const Duration(milliseconds: 80));
+    final opacity = tester
+        .widgetList<Opacity>(
+          find.descendant(of: ghost, matching: find.byType(Opacity)),
+        )
+        .first
+        .opacity;
+    expect(opacity, lessThan(1));
+    expect(opacity, greaterThan(0));
+
+    // 播完自动移除
+    await tester.pumpAndSettle();
+    expect(ghost, findsNothing);
+    expect(tester.takeException(), isNull);
   }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 
   // ==================== 节点菜单与折叠 ====================

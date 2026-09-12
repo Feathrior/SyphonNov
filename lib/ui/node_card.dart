@@ -44,7 +44,16 @@ class NodeCardCallbacks {
 class NodeCard extends StatelessWidget {
   final String nodeId;
   final NodeCardCallbacks callbacks;
-  const NodeCard({super.key, required this.nodeId, required this.callbacks});
+
+  /// 删除退场动画用的快照节点:节点已从 store 移除,但仍要按原样渲染最后一程
+  final GraphNode? nodeOverride;
+
+  const NodeCard({
+    super.key,
+    required this.nodeId,
+    required this.callbacks,
+    this.nodeOverride,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -63,7 +72,8 @@ class NodeCard extends StatelessWidget {
     child: child,
   );
 
-  Widget _buildCard(BuildContext context, GraphStore store) {    final node = store.nodeOf(nodeId);
+  Widget _buildCard(BuildContext context, GraphStore store) {
+    final node = nodeOverride ?? store.nodeOf(nodeId);
     if (node == null) return const SizedBox.shrink();
     final cfg = getConfig(node.configId);
     if (cfg == null) return const SizedBox.shrink();
