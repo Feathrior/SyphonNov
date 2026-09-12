@@ -117,11 +117,11 @@ void main() {
       t.game.slice(Offset(mid.dx, mid.dy - 40), Offset(mid.dx, mid.dy + 40));
       expect(t.wire.cut, isTrue);
       expect(t.wire.frozen, isNotEmpty, reason: '切开的折线被定格,便于两半散开');
-      // 播放完散开动画后移除
+      // 播放完散开动画后移除(期间可能有新一波入场,所以只查这一条)
       for (var i = 0; i < 60; i++) {
         t.game.update(1 / 60);
       }
-      expect(t.game.wires, isEmpty);
+      expect(t.game.wires.contains(t.wire), isFalse);
     });
 
     test('节点掉出画面后,与它相连的连线一并移除', () {
@@ -134,47 +134,37 @@ void main() {
       expect(t.game.wires, isEmpty);
     });
 
-    test('连线结构固定:每个新节点与紧邻它之前的两个节点相连,切完不会补线', () {
-      // 画布足够高:测试期间不会有节点落回画面外(出场顺序 = fruits 顺序)
+    test('每一波固定成组:2 节点 1 连线、3 节点 2 连线…且切完不会补线', () {
       final game = NinjaGame()
-        ..width = 800
-        ..height = 4000;
+        ..width = 1600
+        ..height = 6000;
+      // 等到抛完两波(2 节点 + 3 节点 = 5 个节点)
       var frames = 0;
-      while (game.fruits.length < 5 && frames < 60 * 20) {
+      while (game.fruits.length < 5 && frames < 60 * 30) {
         game.update(1 / 60);
         frames++;
       }
-      final order = game.fruits.toList();
-      expect(order, hasLength(5));
-      // 第 1 个节点没有前驱 → 0 条;第 2 个只有 1 个前驱 → 1 条;之后固定 2 条
-      expect(
-        game.wires.length,
-        1 + (order.length - 2) * NinjaGame.wiresPerNode,
+      expect(game.fruits, hasLength(5));
+      // 第一波 2 节点 1 连线;第二波 3 节点 2 连线 → 共 3 条
+      expect(game.wires, hasLength(3));
+      final f = game.fruits;
+      bool linked(NinjaFruit a, NinjaFruit b) => game.wires.any(
+        (w) =>
+            (identical(w.from, a) && identical(w.to, b)) ||
+            (identical(w.from, b) && identical(w.to, a)),
       );
-      expect(
-        game.wires.where((w) => identical(w.to, order[1])).length,
-        1,
-        reason: '第 2 个节点只有 1 个前驱',
-      );
-      for (var i = 2; i < order.length; i++) {
-        final linkedFrom = game.wires
-            .where((w) => identical(w.to, order[i]))
-            .map((w) => w.from)
-            .toList();
-        expect(linkedFrom, hasLength(NinjaGame.wiresPerNode));
-        expect(linkedFrom, contains(order[i - 1]));
-        expect(linkedFrom, contains(order[i - 2]));
-      }
+      expect(linked(f[0], f[1]), isTrue, reason: '第一波:2 节点 1 连线');
+      expect(linked(f[2], f[3]), isTrue, reason: '第二波:链式第一段');
+      expect(linked(f[3], f[4]), isTrue, reason: '第二波:链式第二段');
+      expect(linked(f[1], f[2]), isFalse, reason: '跨波不连线');
 
-      // 一刀刀切开所有连线:之后不会再凭空长出新的
+      // 全部切开后:老节点之间不会再冒出新线
       for (final w in game.wires.toList()) {
         final path = game.wirePath(w);
         final mid = path[path.length ~/ 2];
         game.slice(Offset(mid.dx, mid.dy - 30), Offset(mid.dx, mid.dy + 30));
       }
       expect(game.wires.where((w) => !w.cut), isEmpty);
-      // 之后运行的每一帧:已经在场的老节点之间绝不会再连出新线
-      // (新节点入场时才会带来它们自己的固定几条线)
       final survivors = game.fruits.toSet();
       for (var i = 0; i < 60 * 3; i++) {
         game.update(1 / 60);
@@ -188,9 +178,63 @@ void main() {
       }
     });
 
-    test('随时间入场时连线只在入场瞬间建立', () {
+    test('波次节点数递增:下一波比上一波多一个(到上限循环)', () {
+      final game = NinjaGame()
+        ..width = 1600
+        ..height = 8000;
+      // 记录每次"节点数突增"时的增量 = 该波节点数
+      final waves = <int>[];
+      var last = 0;
+      var frames = 0;
+      while (waves.length < 4 && frames < 60 * 60) {
+        game.update(1 / 60);
+        frames++;
+        final now = game.fruits.length;
+        if (now > last) {
+          waves.add(now - last);
+          last = now;
+        }
+      }
+      expect(waves.take(3).toList(), [2, 3, 4]);
+      expect(
+        waves.every((n) => n >= 2 && n <= NinjaGame.maxWaveNodes),
+        isTrue,
+      );
+    });
+
+    test('线节点都可以切:切中节点会裂成两半,并带走属于它的连线', () {
       final game = NinjaGame()
         ..width = 800
+        ..height = 600;
+      final a = nodeAt(const Offset(240, 300));
+      final b = nodeAt(const Offset(640, 300));
+      game.fruits.addAll([a, b]);
+      final wire = NinjaWire(from: a, to: b, color: const Color(0xFFF59E0B));
+      game.wires.add(wire);
+
+      // 一刀竖直划过节点 a
+      final cuts = game.slice(
+        const Offset(240, 180),
+        const Offset(240, 420),
+      );
+      expect(cuts, hasLength(1));
+      expect(cuts.single.fruit, same(a));
+      expect(a.sliced, isTrue, reason: '节点也能被切开');
+      expect(
+        wire.cut,
+        isTrue,
+        reason: '节点被切开后,挂在它身上的连线一并断开',
+      );
+      // 两半在 slicedLife 之后移除
+      for (var i = 0; i < 60 * 2; i++) {
+        game.update(1 / 60);
+      }
+      expect(game.fruits, isNot(contains(a)));
+    });
+
+    test('随时间入场时连线只在入场瞬间建立', () {
+      final game = NinjaGame()
+        ..width = 1600
         ..height = 600;
       for (var i = 0; i < 60 * 6; i++) {
         game.update(1 / 60);
@@ -201,11 +245,8 @@ void main() {
         expect(game.fruits, contains(w.from));
         expect(game.fruits, contains(w.to));
       }
-      // 场上节点数 N → 连线数 ≤ (N-1) * 2
-      expect(
-        game.wires.length,
-        lessThanOrEqualTo((game.fruits.length - 1) * NinjaGame.wiresPerNode),
-      );
+      // 每波节点数 N → 该波连线数 N-1,场上总连线数 ≤ 节点数
+      expect(game.wires.length, lessThan(game.fruits.length));
     });
 
     test('抛物线:节点飞起后落回画面外被移除', () {

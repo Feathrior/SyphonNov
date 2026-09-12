@@ -278,6 +278,14 @@ class _ParticleBurst {
   });
 }
 
+/// 删除退场幻影:节点已从 graph 移除,这里用它的快照再渲染最后一程
+class _NodeGhost {
+  final GraphNode node;
+  final AnimationController controller;
+
+  const _NodeGhost({required this.node, required this.controller});
+}
+
 class _EdgesPainter extends CustomPainter {
   final List<GraphEdge> edges;
   final List<NodeGroup> groups; // 分组框(Blender 风格):边框 + 名称标签
@@ -977,9 +985,29 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     final cuts = _ninja.slice(from, local);
     if (cuts.isEmpty) return;
     for (final c in cuts) {
-      // 每切断一条连线都在切点爆一次粒子(颜色跟随该连线)
-      _bursts.add(_makeBurst(c.point, c.color, _swipeVel));
+      // 切中节点:炸出一大团粒子(更大更多,像爆炸开);切断连线:普通爆裂
+      final big = c.fruit != null;
+      _bursts.add(
+        _makeBurst(c.point, c.color, _swipeVel, scale: big ? 2.6 : 1),
+      );
       if (_bursts.length > 16) _bursts.removeAt(0);
+      if (big) {
+        // 节点被切开:切口两侧再补两团,撑起"爆开"的观感
+        final normal = Offset(
+          math.cos(
+            math.atan2(local.dy - from.dy, local.dx - from.dx) + math.pi / 2,
+          ),
+          math.sin(
+            math.atan2(local.dy - from.dy, local.dx - from.dx) + math.pi / 2,
+          ),
+        );
+        for (final side in [normal * 26, normal * -26]) {
+          _bursts.add(
+            _makeBurst(c.point + side, c.color, _swipeVel, scale: 1.8),
+          );
+          if (_bursts.length > 16) _bursts.removeAt(0);
+        }
+      }
     }
   }
   // 鼠标划过速度(flow 单位/秒):由最近几次移动采样测得,作为粒子初速度
@@ -1317,6 +1345,9 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       }
       _bump();
     });
+    // 节点被删除时(快捷键/菜单/属性面板/撤销)生成退场幻影
+    _lastNodeSnapshot = {for (final n in store.nodes) n.id: n};
+    store.addListener(_syncNodeGhosts);
   }
 
   // ---------------- 节点卡片回调 ----------------
@@ -3169,6 +3200,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    store.removeListener(_syncNodeGhosts);
+    for (final ghost in _ghosts) {
+      ghost.controller.dispose();
+    }
+    _ghosts.clear();
     _radialHoldTimer?.cancel();
     _ninjaTicker?.dispose();
     _cutTicker.dispose();
@@ -3200,10 +3236,16 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   /// 生成切断粒子爆裂:10~17 颗,颜色以连线色为基准——隔一颗提亮提饱和
   /// (更显眼),其余保持原色轻微偏差;初速度 = 自身径向速度 + 鼠标划过速度;
   /// 重力向下;速度/尺寸/重力均按 zoom 折算成 flow 单位(屏幕恒定)。
-  _ParticleBurst _makeBurst(Offset p, Color base, Offset swipeVel) {
+  /// [scale] > 1 时粒子更多、更大、更快(水果忍者切中节点时用"爆炸"效果)
+  _ParticleBurst _makeBurst(
+    Offset p,
+    Color base,
+    Offset swipeVel, {
+    double scale = 1,
+  }) {
     final rand = math.Random();
     final hsv = HSVColor.fromColor(base);
-    final n = 10 + rand.nextInt(8);
+    final n = ((10 + rand.nextInt(8)) * scale).round();
     // boost=true:更亮更饱和;否则接近原色(仅轻微偏差)
     Color vary(bool boost) {
       final hue = (hsv.hue + rand.nextDouble() * 14 - 7) % 360.0;
@@ -3231,10 +3273,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
             vel:
                 Offset.fromDirection(
                   rand.nextDouble() * 2 * math.pi,
-                  (45 + rand.nextDouble() * 105) / _zoom,
+                  (45 + rand.nextDouble() * 105) * scale / _zoom,
                 ) +
                 swipeVel * 0.07, // 刀尖速度衰减为 7%,保留方向不过猛
-            size: (2.0 + rand.nextDouble() * 2.6) / _zoom,
+            size: ((2.0 + rand.nextDouble() * 2.6) * scale) / _zoom,
             color: vary(i.isEven),
           ),
       ],
@@ -3456,6 +3498,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                   if (group.isPackage) _buildPackageLayer(group, t),
                 for (final group in store.groups)
                   if (group.isPackage) _buildExpandedPackageToggle(group, t),
+                // 删除退场幻影:画在最上层,缩小的同时淡出并变模糊
+                _buildGhostLayer(),
               ],
             ),
           );
@@ -3753,8 +3797,91 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     return false;
   }
 
-  /// 节点命中顺序:与绘制顺序相反 —— 画在上面的先响应。
-  ///
+  // ---- 删除退场动画 ----
+  /// 已经从图上删掉的节点快照 + 各自的退场动画(缩小/淡出/变模糊)
+  final List<_NodeGhost> _ghosts = [];
+  /// 上一次见到的节点表:用来发现"被删掉的节点"(无论谁删的:快捷键/菜单/属性面板/撤销)
+  Map<String, GraphNode> _lastNodeSnapshot = const {};
+
+  /// 发现被删除的节点 → 生成一个退场幻影
+  void _syncNodeGhosts() {
+    final current = {for (final n in store.nodes) n.id: n};
+    for (final entry in _lastNodeSnapshot.entries) {
+      if (current.containsKey(entry.key)) continue;
+      if (_ghosts.any((g) => g.node.id == entry.key)) continue;
+      _spawnGhost(entry.value);
+    }
+    _lastNodeSnapshot = current;
+  }
+
+  void _spawnGhost(GraphNode node) {
+    if (!mounted) return;
+    // 关闭动效时直接不播
+    final duration = MotionTokens.quick(context);
+    if (duration == Duration.zero) return;
+    final controller = AnimationController(vsync: this, duration: duration);
+    final ghost = _NodeGhost(node: node, controller: controller);
+    _ghosts.add(ghost);
+    controller.addStatusListener((status) {
+      if (status != AnimationStatus.completed) return;
+      if (mounted) {
+        setState(() => _ghosts.remove(ghost));
+      } else {
+        _ghosts.remove(ghost);
+      }
+      controller.dispose();
+    });
+    controller.forward();
+    _bump();
+  }
+
+  Widget _buildGhostLayer() {
+    if (_ghosts.isEmpty) return const SizedBox.shrink();
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [for (final ghost in _ghosts) _buildGhost(ghost)],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGhost(_NodeGhost ghost) {
+    return AnimatedBuilder(
+      key: ValueKey('node-ghost-${ghost.node.id}'),
+      animation: ghost.controller,
+      builder: (context, child) {
+        // ease-out:缩小 + 淡出 + 变模糊
+        final t = Curves.easeOutCubic.transform(ghost.controller.value);
+        final content = Opacity(
+          opacity: (1 - t).clamp(0.0, 1.0),
+          child: Transform.scale(
+            scale: 1 - .28 * t,
+            alignment: Alignment.topLeft,
+            child: child,
+          ),
+        );
+        final blur = 14 * t;
+        return Transform.translate(
+          offset: ghost.node.position,
+          child: blur <= .05
+              ? content
+              : ImageFiltered(
+                  imageFilter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+                  child: content,
+                ),
+        );
+      },
+      child: NodeCard(
+        nodeId: ghost.node.id,
+        nodeOverride: ghost.node,
+        callbacks: _cardCallbacks,
+      ),
+    );
+  }
+
+  /// 节点命中顺序:与绘制顺序相反 —— 画在上面的先响应。  ///
   /// 绘制顺序是「展开 Package 的成员 → 普通节点」,组内被选中的节点画在最上;
   /// 因此命中检测也按这个顺序来,鼠标同时压住两个元素时先响应上面那个。
   List<GraphNode> _nodesTopFirst() {
