@@ -270,6 +270,12 @@ final List<NodeConfig> kNodeConfigs = [
       ),
       param(key: 'yAuto', label: 'Y 范围自动', type: 'boolean', defaultValue: true),
       param(
+        key: 'zAuto',
+        label: 'Z 范围自动(3D)',
+        type: 'boolean',
+        defaultValue: true,
+      ),
+      param(
         key: 'yFormat',
         label: 'Y 格式',
         type: 'select',

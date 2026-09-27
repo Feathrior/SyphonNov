@@ -3,6 +3,7 @@ library;
 
 import 'dart:math' as math;
 
+import 'auto_range.dart';
 import 'csv.dart';
 import 'data.dart';
 import 'math.dart';
@@ -244,6 +245,9 @@ Map<String, ExecFn> _buildExec() {
       if (xMax == xMin) xMax = xMin + math.max(1, xMin.abs()) * 1e-6;
       if (yMax == yMin) yMax = yMin + math.max(1, yMin.abs()) * 1e-6;
       if (zMax == zMin) zMax = zMin + math.max(1, zMin.abs()) * 1e-6;
+      final xScale = str(p['xScale'], 'linear');
+      final yScale = str(p['yScale'], 'linear');
+      final zScale = str(p['zScale'], 'linear');
       final axisOrigin = str(p['axisOrigin'], 'origin') == 'left'
           ? 'left'
           : 'origin';
@@ -296,11 +300,61 @@ Map<String, ExecFn> _buildExec() {
       final distI = ctx.inputs['in3'];
       final dist = distI is DistributionData ? distI : null;
 
+      // ---- 自适应坐标轴 ----
+      // 勾选「X/Y/Z 范围自动」时,按接入的图元(散点/曲线/曲面/分布)重算范围;
+      // 「扩展」再把范围向外取整到整齐刻度。没有可用数据时保留手动起止值。
+      final autoX = p['xAuto'] is bool ? p['xAuto'] as bool : true;
+      final autoY = p['yAuto'] is bool ? p['yAuto'] as bool : true;
+      final autoZ = p['zAuto'] is bool ? p['zAuto'] as bool : true;
+      final extendAuto = p['extendAuto'] is bool
+          ? p['extendAuto'] as bool
+          : true;
+      if (autoX || autoY || autoZ) {
+        final bounds = collectAxisBounds(
+          points: points,
+          lines: lines,
+          meshes: meshes,
+          dist: dist,
+        );
+        if (bounds != null) {
+          if (autoX && bounds.hasX) {
+            final (lo, hi) = fitAxisRange(
+              bounds.xMin!,
+              bounds.xMax!,
+              extend: extendAuto,
+              log: isLogScale(xScale),
+              minPositive: bounds.xPositive,
+            );
+            xMin = lo;
+            xMax = hi;
+          }
+          if (autoY && bounds.hasY) {
+            final (lo, hi) = fitAxisRange(
+              bounds.yMin!,
+              bounds.yMax!,
+              extend: extendAuto,
+              log: isLogScale(yScale),
+              minPositive: bounds.yPositive,
+            );
+            yMin = lo;
+            yMax = hi;
+          }
+          if (autoZ && bounds.hasZ) {
+            final (lo, hi) = fitAxisRange(
+              bounds.zMin!,
+              bounds.zMax!,
+              extend: extendAuto,
+              log: isLogScale(zScale),
+              minPositive: bounds.zPositive,
+            );
+            zMin = lo;
+            zMax = hi;
+          }
+        }
+      }
+
       final colorPreset = str(p['colorPreset'], 'paper');
       final bgColor = '${p['bgColor'] ?? '#ffffff'}';
-      final xScale = str(p['xScale'], 'linear');
-      final yScale = str(p['yScale'], 'linear');
-      final zScale = str(p['zScale'], 'linear');
       final symlogThreshold = num_(p['symlogThreshold'], 1);
       // 构造即验证范围；对数轴的非正范围在执行阶段给出明确错误。
       AxisScale.named(xScale, xMin, xMax, linearThreshold: symlogThreshold);

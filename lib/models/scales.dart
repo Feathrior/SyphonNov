@@ -4,6 +4,10 @@ import 'dart:math' as math;
 
 enum ScaleKind { linear, log, log10, log2, symlog, time }
 
+/// 该尺度名称是否对应对数轴(需要全正的范围)
+bool isLogScale(String name) =>
+    name == 'log' || name == 'log10' || name == 'log2';
+
 class ScaleTick {
   final double value;
   final String label;

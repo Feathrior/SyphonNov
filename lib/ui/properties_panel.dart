@@ -104,6 +104,7 @@ const Map<String, Set<String>> kAxisPropertyGroups = {
     'yScale',
     'yStart',
     'yEnd',
+    'zAuto',
     'zScale',
     'zStart',
     'zEnd',
