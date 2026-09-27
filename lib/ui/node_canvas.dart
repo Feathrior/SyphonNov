@@ -30,6 +30,7 @@ import 'ninja_mode.dart';
 import 'node_card.dart';
 import 'node_context_menus.dart';
 import 'radial_node_menu.dart';
+import 'table_window.dart';
 import 'theme.dart';
 
 // ==================== 背景网格 ====================
@@ -1343,6 +1344,10 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
   Offset? _downPosScreen;
   bool _boxDragging = false;
 
+  // 双击表格类节点打开编辑窗口:记录上一次主键按下的节点与时间戳
+  String? _lastTableTapId;
+  Duration _lastTableTapAt = Duration.zero;
+
   bool get _ctrl => HardwareKeyboard.instance.isControlPressed;
   bool get _alt => HardwareKeyboard.instance.isAltPressed;
   bool get _shift => HardwareKeyboard.instance.isShiftPressed;
@@ -2560,6 +2565,25 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       final size = _nodeVisualSize(n);
       final r = n.position & size;
       if (r.contains(flow)) {
+        // 双击自带数据表的节点(表格输入)打开独立表格编辑窗口。用原始指针的
+        // 时间戳判定,不走 GestureDetector 的 double tap —— 否则单击选中会被
+        // 双击超时拖后 300ms。时间戳相同(合成事件)不算双击,否则两次独立
+        // 的按下会被误判。
+        if (e.buttons & kPrimaryButton != 0 &&
+            (getConfig(n.configId)?.tableEditor ?? false)) {
+          final delta = e.timeStamp - _lastTableTapAt;
+          if (_lastTableTapId == n.id &&
+              delta > Duration.zero &&
+              delta < const Duration(milliseconds: 400)) {
+            _lastTableTapId = null;
+            openTableWindow(n.id);
+            return;
+          }
+          _lastTableTapId = n.id;
+          _lastTableTapAt = e.timeStamp;
+        } else {
+          _lastTableTapId = null;
+        }
         if (_shift) {
           // Shift:已在多选的节点保持原状(tap 时切换去留),未选中的立即加入
           // —— 拖动立即包含新加入节点;tap 端通过 _downAddedNode 避免重复切换
@@ -3442,6 +3466,8 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
     store.updateNodeParams(id, {
       'mode': 'manual',
       'dataText': text,
+      // 清掉表格编辑窗口留下的结构化表格:否则它会盖过刚导入的文件数据
+      'tableJson': '',
       'delimiter': delimiter,
       'name': fileName,
     });

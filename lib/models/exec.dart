@@ -8,6 +8,7 @@ import 'data.dart';
 import 'math.dart';
 import 'sample_data.dart';
 import 'scales.dart';
+import 'table_edit.dart';
 
 class _SegmentBox {
   final Pt a;
@@ -197,6 +198,9 @@ Map<String, ExecFn> _buildExec() {
     'table_input': (ctx) {
       final mode = str(ctx.params['mode'], 'preset');
       if (mode == 'manual') {
+        // 表格编辑窗口保存的结构化表格优先(列类型/标记随表保存)
+        final edited = EditableTable.decode(str(ctx.params['tableJson'], ''));
+        if (edited != null) return {'out0': TableData(edited.toColumns())};
         final text = str(ctx.params['dataText'], '');
         if (text.trim().isEmpty) throw Exception('未提供数据文本');
         final delimiter = str(ctx.params['delimiter'], 'csv') == 'tsv'

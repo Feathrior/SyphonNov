@@ -23,6 +23,7 @@ import 'ui/properties_panel.dart';
 import 'ui/settings_panel.dart';
 import 'ui/shortcuts_panel.dart';
 import 'ui/status_bar.dart';
+import 'ui/table_window.dart';
 import 'ui/theme.dart';
 import 'ui/toolbar.dart';
 import 'i18n.dart';
@@ -509,6 +510,8 @@ class _AppShellState extends State<_AppShell> {
               },
               onExportImage: _exportCanvasImage,
             ),
+            // 表格编辑浮窗层:双击表格输入节点弹出,浮在顶栏之上
+            const TableWindowLayer(),
           ],
         ),
       ),

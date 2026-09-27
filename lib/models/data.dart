@@ -126,9 +126,26 @@ class Column {
   String name;
   List<dynamic> values;
 
-  Column({required this.name, required this.values});
+  /// 列数据类型('double' | 'int' | 'text');空串表示未知(由内容推断)。
+  /// 表格编辑窗口用它显示/解析 SciDAVis 风格的 `{双精度浮点}` 标记。
+  String type;
 
-  Column copy() => Column(name: name, values: List.of(values));
+  /// 列标记('none' | 'x' | 'y' | 'z' | 'xerr' | 'yerr'),表头显示 `[X]` 等。
+  String designation;
+
+  Column({
+    required this.name,
+    required this.values,
+    this.type = '',
+    this.designation = 'none',
+  });
+
+  Column copy() => Column(
+    name: name,
+    values: List.of(values),
+    type: type,
+    designation: designation,
+  );
 }
 
 /// 2D 点
@@ -181,6 +198,8 @@ List<Column> _rectangularColumns(List<Column> source) {
       .map(
         (column) => Column(
           name: column.name,
+          type: column.type,
+          designation: column.designation,
           values: [
             ...column.values,
             ...List<dynamic>.filled(width - column.values.length, null),
@@ -625,6 +644,9 @@ class NodeConfig {
   final double? width;
   final bool isViewer;
 
+  /// 双击节点即可打开独立表格编辑窗口(表格输入等自带数据表的节点)
+  final bool tableEditor;
+
   /// 参数键:其值非空时作为节点标题栏文字显示(优先于 [label])。
   /// 如“表格输入”导入文件后标题显示文件名。
   final String? titleParam;
@@ -640,6 +662,7 @@ class NodeConfig {
     this.exec,
     this.width,
     this.isViewer = false,
+    this.tableEditor = false,
     this.titleParam,
   });
 }

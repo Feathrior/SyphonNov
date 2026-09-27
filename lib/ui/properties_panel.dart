@@ -17,6 +17,7 @@ import '../models/exec_engine.dart';
 import '../models/registry.dart';
 import '../store/graph_store.dart';
 import 'motion.dart';
+import 'table_window.dart';
 import 'theme.dart';
 
 // ==================== 输出描述 ====================
@@ -1562,12 +1563,15 @@ class _ParamControl extends StatelessWidget {
     final t = SyphonTheme.of(context);
     if (spec.type == 'button') {
       // .nf-btn .nf-btn-sm .nf-btn-import:全宽、accent 文字、虚线 strokeStrong 边框
+      final editTable = spec.action == 'edit-table';
       return _SmButton(
-        label: '选择 CSV/Excel 文件…',
+        label: editTable ? '打开表格编辑窗口…' : '选择 CSV/Excel 文件…',
         dashed: true,
         accent: true,
         fullWidth: true,
-        onPressed: () => _pickDataFile(context),
+        onPressed: editTable
+            ? () => openTableWindow(nodeId)
+            : () => _pickDataFile(context),
       );
     }
     final v = value ?? spec.defaultValue;
@@ -1758,6 +1762,8 @@ class _ParamControl extends StatelessWidget {
     GraphStore.instance.updateNodeParams(nodeId, {
       'mode': 'manual',
       'dataText': text,
+      // 清掉表格编辑窗口留下的结构化表格:否则它会盖过刚导入的文件数据
+      'tableJson': '',
       'delimiter': delimiter,
       'name': fileBaseName(path),
     });

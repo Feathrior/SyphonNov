@@ -208,7 +208,15 @@ final List<NodeConfig> kNodeConfigs = [
         defaultValue: null,
         action: 'import-csv',
       ),
+      param(
+        key: 'editTable',
+        label: '编辑表格数据',
+        type: 'button',
+        defaultValue: null,
+        action: 'edit-table',
+      ),
     ],
+    tableEditor: true,
     exec: kExec['table_input'],
   ),
   NodeConfig(
