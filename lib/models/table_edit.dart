@@ -69,7 +69,10 @@ String detectColumnType(List<dynamic> values) {
   return allInt ? 'int' : 'double';
 }
 
-String _cellText(dynamic v) {
+String _cellText(dynamic v) => formatCellValue(v);
+
+/// 单元格值 → 编辑文本
+String formatCellValue(dynamic v) {
   if (v == null) return '';
   if (v is double) {
     if (v == v.roundToDouble() && v.abs() < 1e15) {
@@ -321,30 +324,11 @@ class EditableTable {
           type: types[c],
           designation: designations[c],
           values: [
-            for (var r = 0; r < rowCount; r++) _parseCell(cells[r][c], types[c]),
+            for (var r = 0; r < rowCount; r++)
+              parseCellValue(cells[r][c], types[c]),
           ],
         ),
     ];
-  }
-
-  static dynamic _parseCell(String text, String type) {
-    final raw = text.trim();
-    if (raw.isEmpty) return null;
-    switch (type) {
-      case 'text':
-        return text;
-      case 'int':
-        final i = int.tryParse(raw);
-        if (i != null) return i;
-        final d = double.tryParse(raw);
-        if (d != null && d == d.roundToDouble()) return d.toInt();
-        return text;
-      default:
-        final d = double.tryParse(raw);
-        if (d != null) return d;
-        final i = int.tryParse(raw);
-        return i ?? text;
-    }
   }
 
   Map<String, dynamic> toJson() => {
@@ -356,7 +340,7 @@ class EditableTable {
           'designation': designations[c],
           'values': [
             for (var r = 0; r < rowCount; r++)
-              _parseCell(cells[r][c], types[c]),
+              parseCellValue(cells[r][c], types[c]),
           ],
         },
     ],
@@ -397,9 +381,29 @@ class EditableTable {
   }
 }
 
+/// 单元格文本 → 该列类型的值(空 → null)
+dynamic parseCellValue(String text, String type) {
+  final raw = text.trim();
+  if (raw.isEmpty) return null;
+  switch (type) {
+    case 'text':
+      return text;
+    case 'int':
+      final i = int.tryParse(raw);
+      if (i != null) return i;
+      final d = double.tryParse(raw);
+      if (d != null && d == d.roundToDouble()) return d.toInt();
+      return text;
+    default:
+      final d = double.tryParse(raw);
+      if (d != null) return d;
+      final i = int.tryParse(raw);
+      return i ?? text;
+  }
+}
+
 /// 撤销/重做:保存整表快照(表格通常只有几百个单元格,快照足够廉价)
-class TableEditHistory {
-  final int limit;
+class TableEditHistory {  final int limit;
   final List<EditableTable> _past = [];
   final List<EditableTable> _future = [];
 

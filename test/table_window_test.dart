@@ -5,6 +5,7 @@ library;
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pluto_grid/pluto_grid.dart';
 
 import 'package:syphon_nov/main.dart';
 import 'package:syphon_nov/models/data.dart' as md;
@@ -226,10 +227,45 @@ void main() {
 
       expect(find.byKey(ValueKey('table-window-$id')), findsOneWidget);
       expect(find.text('表格编辑 — 表格输入'), findsOneWidget);
-      // 表头按 SciDAVis 风格显示列字母 / 类型 / 标记(1..4 全是整数)
-      expect(find.text('{整数}'), findsNWidgets(2));
-      expect(find.text('[X]'), findsNothing);
-      expect(find.text('1'), findsWidgets);
+      expect(find.byType(PlutoGrid), findsOneWidget);
+      // 表头按 SciDAVis 风格显示列字母 + 类型(1..4 全是整数);pluto 用
+      // TextSpan 渲染标题,所以按 RichText 的纯文本判断
+      bool hasTitle(String text) => tester
+          .widgetList<RichText>(find.byType(RichText))
+          .any((w) => w.text.toPlainText().contains(text));
+      expect(hasTitle('A {整数}'), isTrue);
+      expect(hasTitle('B {整数}'), isTrue);
+    });
+
+    testWidgets('窗口可以拖动与缩放,且不重建表格', (tester) async {
+      await pumpApp(tester);
+      final id = await addTableNode(tester);
+      openTableWindow(id);
+      await tester.pumpAndSettle();
+
+      final window = find.byKey(ValueKey('table-window-$id'));
+      final before = tester.getRect(window);
+
+      // 拖标题栏
+      await tester.dragFrom(
+        before.topCenter + const Offset(0, 12),
+        const Offset(120, 60),
+      );
+      await tester.pumpAndSettle();
+      final moved = tester.getRect(window);
+      expect(moved.left - before.left, closeTo(120, 4), reason: '窗口应跟随指针水平移动');
+      expect(moved.top - before.top, closeTo(60, 4), reason: '窗口应跟随指针垂直移动');
+
+      // 拖右下角缩放手柄
+      await tester.dragFrom(
+        moved.bottomRight - const Offset(6, 6),
+        const Offset(90, 50),
+      );
+      await tester.pumpAndSettle();
+      final resized = tester.getRect(window);
+      expect(resized.width - moved.width, closeTo(90, 4));
+      expect(resized.height - moved.height, closeTo(50, 4));
+      expect(find.byType(PlutoGrid), findsOneWidget, reason: '拖动/缩放不应弄丢表格');
     });
 
     testWidgets('单元格编辑提交后写回节点参数', (tester) async {
@@ -238,23 +274,14 @@ void main() {
       openTableWindow(id);
       await tester.pumpAndSettle();
 
-      // 双击第 2 行第 2 列(值 4)。两次点击间隔需 ≥ kDoubleTapMinTime(40ms)
-      // 且 < kDoubleTapTimeout,中间不能 pumpAndSettle(那会越过超时)。
-      final cellArea = tester.getTopLeft(
-        find.byKey(const ValueKey('table-cell-area')),
-      );
-      final cellCentre = cellArea + const Offset(132 + 60, 26 + 13);
-      await tester.tapAt(cellCentre);
-      await tester.pump(const Duration(milliseconds: 60));
-      await tester.tapAt(cellCentre);
+      // 让网格改一个单元格的值 —— 等价于用户在该单元格输入并回车
+      // (pluto_grid 的编辑 UI 与键盘导航由库自己保证,这里验证的是本窗口把
+      // onChanged 写回节点参数这条链路)
+      final grid = tester.state<PlutoGridState>(find.byType(PlutoGrid));
+      final stateManager = grid.stateManager;
+      stateManager.setCurrentCell(stateManager.rows[1].cells['c1']!, 1);
       await tester.pumpAndSettle();
-
-      expect(find.byKey(const ValueKey('table-cell-editor')), findsOneWidget);
-      await tester.enterText(
-        find.byKey(const ValueKey('table-cell-editor')),
-        '42',
-      );
-      await tester.testTextInput.receiveAction(TextInputAction.done);
+      stateManager.changeCellValue(stateManager.rows[1].cells['c1']!, 42);
       await tester.pumpAndSettle();
 
       final table = EditableTable.decode(
@@ -315,9 +342,9 @@ void main() {
       await tester.pumpAndSettle();
 
       // 选中 A 列,把标记设成 [X]
-      await tester.tap(find.text('A').first);
+      await tester.tap(find.text('A').last);
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('table-col-flag-label-0')));
+      await tester.tap(find.byKey(const ValueKey('table-col-flag-0')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('[X]').last);
       await tester.pumpAndSettle();
