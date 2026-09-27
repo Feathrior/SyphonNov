@@ -3,7 +3,13 @@ import 'package:flutter/foundation.dart' show ValueKey;
 import 'package:flutter/gestures.dart'
     show PointerDeviceKind, kSecondaryButton;
 import 'package:flutter/material.dart'
-    show AlertDialog, DecoratedBox, IgnorePointer, Key, MouseRegion, SystemMouseCursors;
+    show
+        AlertDialog,
+        IgnorePointer,
+        Key,
+        MouseRegion,
+        SystemMouseCursors,
+        Text;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -208,23 +214,22 @@ void main() {
       ),
     );
     expect(proxy, findsOneWidget);
-    final overview = find.byKey(ValueKey('package-glass-overview-$packageId'));
-    expect(overview, findsOneWidget);
+    // 折叠代理改为"堆叠展示成员":卡片只有色条与空白本体,不写任何文字细节
+    final stack = find.byKey(ValueKey('package-stack-$packageId'));
+    expect(stack, findsOneWidget);
     expect(
-      find.descendant(of: overview, matching: find.byType(DecoratedBox)),
+      find.descendant(of: stack, matching: find.byType(Text)),
       findsNothing,
+      reason: '堆叠的迷你卡片不应显示文字',
+    );
+    expect(
+      find.byKey(ValueKey('package-toggle-$packageId')),
+      findsOneWidget,
+      reason: '展开按钮移到头部右侧',
     );
     expect(find.byType(NodeCard), findsNWidgets(2));
     expect(memberPointer(first).ignoring, isTrue);
     expect(memberPointer(second).ignoring, isTrue);
-    expect(
-      find.byKey(ValueKey('package-input-label-$packageId')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(ValueKey('package-output-label-$packageId')),
-      findsOneWidget,
-    );
     expect(find.byKey(ValueKey('package-input-$second-in0')), findsOneWidget);
     expect(find.byKey(ValueKey('package-output-$first-out0')), findsOneWidget);
     final beforeExpansion = {
@@ -293,6 +298,45 @@ void main() {
       isTrue,
     );
     expect(proxy.hitTestable(), findsOneWidget);
+  });
+
+  testWidgets('折叠 Package 只堆叠展示最上方的三个成员', (tester) async {
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final store = GraphStore.instance;
+    final ids = [
+      for (var i = 0; i < 4; i++)
+        store.addNode('table_input', Offset(120 + i * 40, 90), triggerRun: false),
+    ];
+    final packageId = store.createPackage(ids, '四个成员');
+    await tester.pumpWidget(const SyphonApp());
+    await tester.pumpAndSettle();
+
+    final stacked = [
+      for (final id in ids)
+        find.byKey(ValueKey('package-mini-$id')).evaluate().length,
+    ];
+    final shown = [
+      for (final id in ids)
+        if (find.byKey(ValueKey('package-mini-$id')).evaluate().isNotEmpty) id,
+    ];
+    expect(stacked.where((count) => count > 0).length, kPackageStackMax);
+    expect(shown.length, kPackageStackMax, reason: '最多堆叠三个成员卡片');
+    // 节点树最上方的成员必须出现在栈里(createPackage 会选中第一个成员)
+    expect(shown, contains(store.selectedId));
+    // 最前面的卡片画在左下角(位置最低),它应该就是最上方的那个成员
+    final front = shown
+        .map(
+          (id) => (
+            id,
+            tester.getRect(find.byKey(ValueKey('package-mini-$id'))),
+          ),
+        )
+        .reduce((a, b) => a.$2.top >= b.$2.top ? a : b);
+    expect(front.$1, store.selectedId, reason: '最上方的成员画在最前面');
+    expect(find.byKey(ValueKey('package-node-$packageId')), findsOneWidget);
   });
 
   testWidgets('Package creation dialog matches the About dialog style', (

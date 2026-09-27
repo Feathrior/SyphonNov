@@ -33,6 +33,15 @@ import 'radial_node_menu.dart';
 import 'table_window.dart';
 import 'theme.dart';
 
+/// 折叠 Package 代理里最多堆叠展示的成员卡片数
+const int kPackageStackMax = 3;
+
+/// 堆叠时每向后一层向右上错开的距离(世界单位)
+const double _kPackageStackOffset = 7;
+
+/// 迷你卡片色条高度
+const double _kPackageCardHeaderH = 14;
+
 // ==================== 背景网格 ====================
 
 class _BgPainter extends CustomPainter {
@@ -141,97 +150,6 @@ class _PackageRegionPainter extends CustomPainter {
       oldDelegate.zoom != zoom ||
       oldDelegate.fill != fill ||
       oldDelegate.frame != frame;
-}
-
-class _PackageOverviewPainter extends CustomPainter {
-  final List<GraphNode> nodes;
-  final List<GraphEdge> edges;
-  final Color color;
-  final int revision;
-
-  const _PackageOverviewPainter({
-    required this.nodes,
-    required this.edges,
-    required this.color,
-    required this.revision,
-  });
-
-  Color _nodeColor(GraphNode node) {
-    final category = getConfig(node.configId)?.category;
-    final hex = category == null ? null : kCategoryInfo[category]?.color;
-    return parseColor(hex, color);
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (nodes.isEmpty || size.isEmpty) return;
-    final nodeRects = <String, Rect>{
-      for (final node in nodes) node.id: node.position & nodeSize(node, edges),
-    };
-    Rect? world;
-    for (final rect in nodeRects.values) {
-      world = world == null ? rect : world.expandToInclude(rect);
-    }
-    if (world == null || world.width <= 0 || world.height <= 0) return;
-    final scale = math.min(
-      (size.width - 12) / world.width,
-      (size.height - 10) / world.height,
-    );
-    final fitted = Size(world.width * scale, world.height * scale);
-    final origin = Offset(
-      (size.width - fitted.width) / 2 - world.left * scale,
-      (size.height - fitted.height) / 2 - world.top * scale,
-    );
-    Offset map(Offset point) => origin + point * scale;
-
-    final ids = nodeRects.keys.toSet();
-    final edgePaint = Paint()
-      ..color = color.withValues(alpha: .42)
-      ..strokeWidth = 1.15
-      ..strokeCap = StrokeCap.round;
-    for (final edge in edges) {
-      if (!ids.contains(edge.source) || !ids.contains(edge.target)) continue;
-      final source = nodeRects[edge.source]!;
-      final target = nodeRects[edge.target]!;
-      final a = map(source.centerRight);
-      final b = map(target.centerLeft);
-      final path = Path()
-        ..moveTo(a.dx, a.dy)
-        ..cubicTo((a.dx + b.dx) / 2, a.dy, (a.dx + b.dx) / 2, b.dy, b.dx, b.dy);
-      canvas.drawPath(path, edgePaint);
-    }
-    for (final node in nodes) {
-      final nodeColor = _nodeColor(node);
-      final rect = nodeRects[node.id]!;
-      final mapped = Rect.fromPoints(map(rect.topLeft), map(rect.bottomRight));
-      final compact = Rect.fromCenter(
-        center: mapped.center,
-        width: mapped.width.clamp(12, 34),
-        height: mapped.height.clamp(7, 19),
-      );
-      final rrect = RRect.fromRectAndRadius(compact, const Radius.circular(3));
-      canvas.drawRRect(
-        rrect,
-        Paint()
-          ..color = nodeColor.withValues(alpha: .48)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.3),
-      );
-      canvas.drawRRect(
-        rrect,
-        Paint()
-          ..color = nodeColor.withValues(alpha: .92)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.1,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _PackageOverviewPainter oldDelegate) =>
-      oldDelegate.revision != revision ||
-      oldDelegate.color != color ||
-      oldDelegate.nodes.length != nodes.length ||
-      oldDelegate.edges.length != edges.length;
 }
 
 // ==================== 连线绘制 ====================
@@ -4245,9 +4163,13 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
       if (group.collapsed) {
         final rect = packageProxyRect(group, store.nodes, store.edges);
         if (rect == null) continue;
-        // 折叠代理:右下角 8,8 处的 28×24 按钮
-        if (Rect.fromLTWH(rect.right - 8 - 28, rect.bottom - 8 - 24, 28, 24)
-            .contains(flow)) {
+        // 折叠代理:头部右侧的展开按钮(与 _buildPackageHeader 一致)
+        if (Rect.fromLTWH(
+          rect.right - 4 - 28,
+          rect.top + 3,
+          28,
+          20,
+        ).contains(flow)) {
           return true;
         }
       } else {
@@ -4348,10 +4270,11 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
         final selected = current.nodeIds.every(store.multiSelected.contains);
         final inputs = packageInputPorts(current, store.nodes, store.edges);
         final outputs = packageOutputPorts(current, store.nodes, store.edges);
-        final members = [
-          for (final node in store.nodes)
+        // 堆叠展示:取绘制顺序最上方的三个成员(最上面的画在最前面)
+        final stacked = [
+          for (final node in _nodesTopFirst())
             if (current.nodeIds.contains(node.id)) node,
-        ];
+        ].take(kPackageStackMax).toList();
         return Positioned(
           key: ValueKey('package-node-${group.id}'),
           left: rect.left,
@@ -4402,35 +4325,21 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                           child: Stack(
                             clipBehavior: Clip.none,
                             children: [
+                              // 顶部色条 + 名称 + 展开按钮(与节点卡片同一套语言)
                               Positioned(
-                                left: 10,
-                                top: 10,
-                                child: Text(
-                                  inputs.isEmpty ? '无前置输入' : '前置输入',
-                                  key: ValueKey(
-                                    'package-input-label-${group.id}',
-                                  ),
-                                  style: TextStyle(
-                                    color: t.textFaint,
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
+                                left: 0,
+                                top: 0,
+                                right: 0,
+                                height: 26,
+                                child: _buildPackageHeader(t, current),
                               ),
+                              // 成员节点堆叠展示(只画色条与卡片本体,不写文字)
                               Positioned(
-                                right: 10,
-                                top: 10,
-                                child: Text(
-                                  outputs.isEmpty ? '无后续输出' : '后续输出',
-                                  key: ValueKey(
-                                    'package-output-label-${group.id}',
-                                  ),
-                                  style: TextStyle(
-                                    color: t.textFaint,
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
+                                left: 74,
+                                right: 74,
+                                top: 34,
+                                bottom: 10,
+                                child: _buildPackageStack(t, stacked, current),
                               ),
                               for (
                                 var index = 0;
@@ -4454,114 +4363,6 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
                                   isSource: true,
                                   theme: t,
                                 ),
-                              Positioned(
-                                left: 72,
-                                right: 72,
-                                top: 27,
-                                bottom: 8,
-                                child: RepaintBoundary(
-                                  key: ValueKey(
-                                    'package-glass-overview-${current.id}',
-                                  ),
-                                  child: ImageFiltered(
-                                    imageFilter: ui.ImageFilter.blur(
-                                      sigmaX: .75,
-                                      sigmaY: .75,
-                                    ),
-                                    child: CustomPaint(
-                                      painter: _PackageOverviewPainter(
-                                        nodes: members,
-                                        edges: store.edges,
-                                        color: const Color(0xFF737983),
-                                        revision: store.layoutRevision.value,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              Positioned(
-                                left: 86,
-                                right: 86,
-                                bottom: 13,
-                                child: IgnorePointer(
-                                  child: Text(
-                                    '${current.name} · ${current.nodeIds.length}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: t.text,
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w700,
-                                      shadows: [
-                                        Shadow(
-                                          color: t.bgNode.withValues(alpha: .9),
-                                          blurRadius: 5,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              Positioned(
-                                right: 8,
-                                bottom: 8,
-                                child: Tooltip(
-                                  message: '展开 Package',
-                                  child: MouseRegion(
-                                    cursor: SystemMouseCursors.click,
-                                    // 同右上角"收起":按下即切换,不与画布 pan 竞争
-                                    child: Listener(
-                                      key: ValueKey(
-                                        'package-toggle-${current.id}',
-                                      ),
-                                      behavior: HitTestBehavior.opaque,
-                                      onPointerDown: (_) =>
-                                          _expandPackage(current),
-                                      child: Container(
-                                        width: 28,
-                                        height: 24,
-                                        decoration: BoxDecoration(
-                                          color: const Color(
-                                            0xFF8A9099,
-                                          ).withValues(alpha: .16),
-                                          borderRadius: BorderRadius.circular(
-                                            7,
-                                          ),
-                                        ),
-                                        child: const Icon(
-                                          Icons.unfold_more_rounded,
-                                          size: 16,
-                                          color: Color(0xFF737983),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              Positioned(
-                                left: 92,
-                                right: 92,
-                                top: 7,
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.drag_indicator_rounded,
-                                      size: 12,
-                                      color: t.textFaint,
-                                    ),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      '拖动区域',
-                                      style: TextStyle(
-                                        color: t.textFaint,
-                                        fontSize: 8,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
                             ],
                           ),
                         ),
@@ -4574,6 +4375,137 @@ class NodeCanvasState extends State<NodeCanvas> with TickerProviderStateMixin {
           ),
         );
       },
+    );
+  }
+
+  /// Package 折叠代理的头部:分类色条 + 包名 + 展开按钮
+  Widget _buildPackageHeader(SyphonTheme t, NodeGroup group) {
+    final tint = t.isDark
+        ? t.darken(const Color(0xFF8A9099), .1)
+        : t.darken(const Color(0xFF8A9099), .12);
+    return Container(
+      color: tint,
+      padding: const EdgeInsets.only(left: 10, right: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              group.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Tooltip(
+            message: '展开 Package',
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              // 同右上角"收起":按下即切换,不与画布 pan 竞争
+              child: Listener(
+                key: ValueKey('package-toggle-${group.id}'),
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: (_) => _expandPackage(group),
+                child: Container(
+                  width: 28,
+                  height: 20,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: .22),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(
+                    Icons.unfold_more_rounded,
+                    size: 15,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 折叠代理里的成员堆叠:最多 [kPackageStackMax] 张卡片,越靠前的节点画在越前面,
+  /// 后面每层向右上错开一点;卡片只保留分类色条与空白本体,不显示任何文字细节。
+  Widget _buildPackageStack(
+    SyphonTheme t,
+    List<GraphNode> stacked,
+    NodeGroup group,
+  ) {
+    if (stacked.isEmpty) {
+      return Align(
+        alignment: Alignment.bottomLeft,
+        child: Text(
+          '空 Package',
+          style: TextStyle(color: t.textFaint, fontSize: 9),
+        ),
+      );
+    }
+    return LayoutBuilder(
+      key: ValueKey('package-stack-${group.id}'),
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final height = constraints.maxHeight;
+        final layers = stacked.length;
+        final spread = (layers - 1) * _kPackageStackOffset;
+        final cardW = math.max(28.0, width - spread);
+        final cardH = math.max(18.0, height - spread);
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // 从最后一层(最靠后)开始画,最上方的节点最后画 → 在最前面
+            for (var i = layers - 1; i >= 0; i--)
+              Positioned(
+                left: i * _kPackageStackOffset,
+                bottom: i * _kPackageStackOffset,
+                width: cardW,
+                height: cardH,
+                child: _buildPackageMiniCard(t, stacked[i]),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 堆叠里的一张"仅有配色"的节点卡片
+  Widget _buildPackageMiniCard(SyphonTheme t, GraphNode node) {
+    final cfg = getConfig(node.configId);
+    final info = cfg == null ? null : kCategoryInfo[cfg.category];
+    final catColor = info == null
+        ? const Color(0xFF8A9099)
+        : parseColor(info.color);
+    final headerBg = t.isDark ? t.darken(catColor, .15) : catColor;
+    return Container(
+      key: ValueKey('package-mini-${node.id}'),
+      decoration: BoxDecoration(
+        color: t.bgNode,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: Colors.black.withValues(alpha: t.isDark ? .55 : .38),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: .12),
+            blurRadius: 6,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(height: _kPackageCardHeaderH, color: headerBg),
+          Expanded(child: ColoredBox(color: t.bgNode)),
+        ],
+      ),
     );
   }
 
