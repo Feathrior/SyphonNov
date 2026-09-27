@@ -37,7 +37,19 @@ void main() {
           .expand((group) => group)
           .toSet();
       expect(grouped, containsAll(keys));
-      expect(kAxisPropertyGroups.keys, contains('坐标轴与网格'));
+      // 分组需全部落在绘图区域面板的五个大类页签里。
+      expect(kAxisPropertyGroups.keys, contains('区域边框与坐标轴'));
+      final tabbed = kAxisPropertyTabs.values
+          .expand((groups) => groups)
+          .toSet();
+      expect(tabbed, containsAll(kAxisPropertyGroups.keys));
+      expect(kAxisPropertyTabs.keys, [
+        '常规',
+        '标题',
+        '布局',
+        '区域',
+        '游标',
+      ]);
     },
   );
 

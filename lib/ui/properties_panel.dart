@@ -82,39 +82,84 @@ double _numericWheelUnit(double current) {
 }
 
 const Map<String, Set<String>> kAxisPropertyGroups = {
-  '基础': {'name', 'dim', 'axisVisibility', 'axisOrigin'},
+  '基础': {
+    'name',
+    'comment',
+    'dim',
+    'axisVisibility',
+    'axisOrigin',
+    'visible',
+  },
+  '数据范围': {'dataScope', 'extendAuto', 'plotRangeName', 'plotRangeDefault'},
   '尺寸与比例': {'xLen', 'yLen', 'zLen', 'aspectMode'},
   '范围与尺度': {
+    'xAuto',
+    'xFormat',
     'xScale',
-    'yScale',
-    'zScale',
-    'symlogThreshold',
     'xStart',
     'xEnd',
+    'yAuto',
+    'yFormat',
+    'yScale',
     'yStart',
     'yEnd',
+    'zScale',
     'zStart',
     'zEnd',
+    'symlogThreshold',
   },
-  '坐标轴与网格': {
+  '标题与文字': {
+    'titleMode',
+    'titleText',
+    'fontSize',
+    'fontFamily',
+    'titleFontColor',
+    'titleBgColor',
+    'labelX',
+    'labelY',
+    'labelZ',
+  },
+  '标题几何': {
+    'logicalCoords',
+    'titleHAlign',
+    'titleVAlign',
+    'titleRotate',
+    'titleFrame',
+  },
+  '布局与边距': {
+    'layoutLeft',
+    'layoutTop',
+    'layoutWidth',
+    'layoutHeight',
+    'marginSymmetric',
+    'marginLeft',
+    'marginTop',
+    'marginRight',
+    'marginBottom',
+  },
+  '区域背景': {'colorPreset', 'bgColor', 'areaBgStyle', 'areaBgOpacity'},
+  '区域边框与坐标轴': {
     'showBorder',
+    'borderStyle',
+    'borderOpacity',
+    'cornerRadius',
     'axisColorX',
     'axisColorY',
     'axisColorZ',
     'axisWidthX',
     'axisWidthY',
     'axisWidthZ',
-    'gridX',
-    'gridY',
-    'gridZ',
-    'labelX',
-    'labelY',
-    'labelZ',
-    'arrowX',
-    'arrowY',
+  },
+  '网格': {'gridX', 'gridY', 'gridZ'},
+  '游标': {
+    'cursorEnabled',
+    'cursorColor',
+    'cursorWidth',
+    'cursorStyle',
+    'cursorSnap',
   },
   '三维视角': {'rotX', 'rotY', 'rotZ'},
-  '场景外观': {'fontSize', 'fontFamily', 'colorPreset', 'bgColor'},
+  '箭头': {'arrowX', 'arrowY'},
   '图例': {
     'legendMode',
     'legendPosition',
@@ -130,6 +175,16 @@ const Map<String, Set<String>> kAxisPropertyGroups = {
     'exportDpi',
     'fontExportStrategy',
   },
+};
+
+/// 侧边栏顶部大类(页签)。轴节点完全按绘图区域面板的组织方式:
+/// 常规 / 标题 / 布局 / 区域 / 游标。
+const Map<String, List<String>> kAxisPropertyTabs = {
+  '常规': ['基础', '数据范围', '范围与尺度'],
+  '标题': ['标题与文字', '标题几何', '图例'],
+  '布局': ['三维视角', '尺寸与比例', '布局与边距', '论文导出'],
+  '区域': ['区域背景', '区域边框与坐标轴', '网格', '箭头'],
+  '游标': ['游标'],
 };
 
 const List<String> kGenericPropertyGroupOrder = [
@@ -357,6 +412,140 @@ class _PropertyDisclosureState extends State<_PropertyDisclosure>
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ==================== 顶部分类页签 ====================
+
+/// 属性面板主体:顶部固定"节点标题 + 说明 + 大类页签",当前页签的参数与
+/// 输出状态/节点操作一起滚动。页签选择按节点记忆,切换时只重建当前页。
+class _PropertiesBody extends StatefulWidget {
+  const _PropertiesBody({
+    required this.theme,
+    required this.header,
+    required this.tabs,
+    required this.footer,
+  });
+
+  final SyphonTheme theme;
+  final List<Widget> header;
+  final Map<String, List<Widget>> tabs;
+  final List<Widget> footer;
+
+  @override
+  State<_PropertiesBody> createState() => _PropertiesBodyState();
+}
+
+class _PropertiesBodyState extends State<_PropertiesBody> {
+  String? _tab;
+
+  String _activeTab(List<String> names) {
+    final want = _tab;
+    if (want != null && widget.tabs.containsKey(want)) return want;
+    return names.first;
+  }
+
+  void _select(String name) {
+    if (name == _tab) return;
+    setState(() => _tab = name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = widget.theme;
+    final names = widget.tabs.keys.toList(growable: false);
+    if (names.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(12),
+        children: [...widget.header, ...widget.footer],
+      );
+    }
+    final active = _activeTab(names);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: widget.header,
+          ),
+        ),
+        if (names.length > 1)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (var i = 0; i < names.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 6),
+                    _tabChip(t, names[i], names[i] == active),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              AnimatedSwitcher(
+                duration: MotionTokens.quick(context),
+                reverseDuration: MotionTokens.quick(context),
+                switchInCurve: MotionTokens.emphasized,
+                switchOutCurve: MotionTokens.exit,
+                child: Column(
+                  key: ValueKey('props-tab:$active'),
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: widget.tabs[active]!,
+                ),
+              ),
+              ...widget.footer,
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // 与货架胶囊同一套样式:低透明填充 + 内描边,选中时用强调色点亮。
+  Widget _tabChip(SyphonTheme t, String name, bool active) {
+    return Semantics(
+      button: true,
+      selected: active,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _select(name),
+          child: AnimatedContainer(
+            duration: MotionTokens.quick(context),
+            curve: MotionTokens.emphasized,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: active ? t.accent.withValues(alpha: .16) : t.bgRaise,
+              border: Border.all(
+                color: active ? t.accent.withValues(alpha: .55) : t.stroke,
+                width: 1,
+              ),
+              borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+            ),
+            child: Text(
+              name,
+              key: ValueKey('props-tab-$name'),
+              style: TextStyle(
+                fontSize: 12,
+                color: active ? t.text : t.textDim,
+                letterSpacing: .4,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1762,6 +1951,46 @@ class PropertiesPanel extends StatelessWidget {
         final catInfo = md.kCategoryInfo[cfg.category];
         final selId = node.id;
 
+        // 参数按顶部分类组织;输出状态与节点操作始终跟随当前页签滚动。
+        final pages = _parameterTabs(context, t, cfg, node, exposedKeys);
+        final footer = <Widget>[
+          if (cfg.outputs.isNotEmpty)
+            _section(t, '输出状态', [
+              for (final o in cfg.outputs) _outputRow(t, o, result),
+              if (result?.error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '错误:${result!.error}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: t.danger,
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+            ]),
+
+          // 节点操作
+          _section(t, '节点操作', [
+            // .nf-props-actions:flex gap 6
+            Row(
+              children: [
+                _SmButton(
+                  label: '复制',
+                  onPressed: () => store.duplicateNodes([selId]),
+                ),
+                const SizedBox(width: 6),
+                _SmButton(
+                  label: '删除',
+                  danger: true,
+                  onPressed: () => store.removeNodes([selId]),
+                ),
+              ],
+            ),
+          ]),
+        ];
+
         // .nf-props:width 300、bg-surface、border-left 1px stroke
         return _animatedPanel(
           context,
@@ -1772,53 +2001,14 @@ class PropertiesPanel extends StatelessWidget {
               color: t.bgSurface,
               border: Border(left: BorderSide(color: t.stroke, width: 1)),
             ),
-            child: ListView(
-              padding: const EdgeInsets.all(12), // .nf-props-body
-              children: [
+            child: _PropertiesBody(
+              theme: t,
+              header: [
                 _buildHead(t, cfg, catColor, catInfo),
                 _buildDesc(t, cfg),
-
-                // 参数
-                if (cfg.params.isNotEmpty)
-                  ..._parameterSections(context, t, cfg, node, exposedKeys),
-
-                // 输出状态
-                if (cfg.outputs.isNotEmpty)
-                  _section(t, '输出状态', [
-                    for (final o in cfg.outputs) _outputRow(t, o, result),
-                    if (result?.error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Text(
-                          '错误:${result!.error}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: t.danger,
-                            height: 1.5,
-                          ),
-                        ),
-                      ),
-                  ]),
-
-                // 节点操作
-                _section(t, '节点操作', [
-                  // .nf-props-actions:flex gap 6
-                  Row(
-                    children: [
-                      _SmButton(
-                        label: '复制',
-                        onPressed: () => store.duplicateNodes([selId]),
-                      ),
-                      const SizedBox(width: 6),
-                      _SmButton(
-                        label: '删除',
-                        danger: true,
-                        onPressed: () => store.removeNodes([selId]),
-                      ),
-                    ],
-                  ),
-                ]),
               ],
+              tabs: pages,
+              footer: footer,
             ),
           ),
         );
@@ -1938,57 +2128,99 @@ class PropertiesPanel extends StatelessWidget {
     );
   }
 
-  List<Widget> _parameterSections(
+  /// 参数分组 → 顶部分类页签。轴节点按绘图区域面板的五大类(常规/标题/
+  /// 布局/区域/游标)归类,其它节点直接以语义分组名作为页签。
+  Map<String, List<Widget>> _parameterTabs(
     BuildContext context,
     SyphonTheme t,
     md.NodeConfig cfg,
     GraphNode node,
     List<String> exposedKeys,
   ) {
-    late final Map<String, Set<String>> allGroups;
+    final allGroups = <String, Set<String>>{};
     if (cfg.id == 'axis_input') {
       final assigned = kAxisPropertyGroups.values
           .expand((keys) => keys)
           .toSet();
-      allGroups = <String, Set<String>>{
-        ...kAxisPropertyGroups,
-        if (cfg.params.any((p) => !assigned.contains(p.key)))
-          '其他': {
-            for (final p in cfg.params)
-              if (!assigned.contains(p.key)) p.key,
-          },
+      allGroups.addAll(kAxisPropertyGroups);
+      final rest = <String>{
+        for (final p in cfg.params)
+          if (!assigned.contains(p.key)) p.key,
       };
+      if (rest.isNotEmpty) allGroups['其他'] = rest;
     } else {
-      allGroups = {
-        for (final title in kGenericPropertyGroupOrder)
-          title: {
-            for (final p in cfg.params)
-              if (propertyGroupForParam(p) == title) p.key,
-          },
-      };
+      for (final title in kGenericPropertyGroupOrder) {
+        allGroups[title] = {
+          for (final p in cfg.params)
+            if (propertyGroupForParam(p) == title) p.key,
+        };
+      }
     }
-    final visibleGroups = allGroups.entries
-        .where(
-          (entry) => cfg.params.any(
-            (p) => entry.value.contains(p.key) && _paramVisible(cfg, node, p),
-          ),
-        )
-        .toList(growable: false);
-    return [
-      for (var i = 0; i < visibleGroups.length; i++)
+
+    List<Widget> rowsOf(String group) => [
+      for (final p in cfg.params)
+        if (allGroups[group]!.contains(p.key) && _paramVisible(cfg, node, p))
+          _paramRow(context, t, p, node, exposedKeys),
+    ];
+
+    final tabDefs = cfg.id == 'axis_input'
+        ? kAxisPropertyTabs
+        : <String, List<String>>{
+            for (final g in kGenericPropertyGroupOrder) g: [g],
+          };
+
+    final usedGroups = <String>{};
+    final pages = <String, List<Widget>>{};
+    for (final entry in tabDefs.entries) {
+      final content = <Widget>[];
+      for (final group in entry.value) {
+        if (!allGroups.containsKey(group)) continue;
+        final rows = rowsOf(group);
+        if (rows.isEmpty) continue;
+        usedGroups.add(group);
+        // 页签内只有一组时不再重复分组标题,多组时按分组卡片分隔。
+        if (entry.value.length == 1) {
+          content.addAll(rows);
+        } else {
+          content.add(
+            _collapsibleSection(
+              t,
+              '${node.id}:properties:$group',
+              group,
+              rows,
+              initiallyExpanded: true,
+            ),
+          );
+        }
+      }
+      if (content.isNotEmpty) pages[entry.key] = content;
+    }
+
+    // 未归入任何页签的参数兜底并入第一个页签。
+    final leftovers = <Widget>[];
+    for (final group in allGroups.keys) {
+      if (usedGroups.contains(group)) continue;
+      final rows = rowsOf(group);
+      if (rows.isEmpty) continue;
+      leftovers.add(
         _collapsibleSection(
           t,
-          '${node.id}:properties:${visibleGroups[i].key}',
-          visibleGroups[i].key,
-          [
-            for (final p in cfg.params)
-              if (visibleGroups[i].value.contains(p.key) &&
-                  _paramVisible(cfg, node, p))
-                _paramRow(context, t, p, node, exposedKeys),
-          ],
-          initiallyExpanded: i == 0,
+          '${node.id}:properties:$group',
+          group,
+          rows,
+          initiallyExpanded: true,
         ),
-    ];
+      );
+    }
+    if (leftovers.isNotEmpty) {
+      if (pages.isEmpty) {
+        pages['其他'] = leftovers;
+      } else {
+        final first = pages.keys.first;
+        pages[first] = [...pages[first]!, ...leftovers];
+      }
+    }
+    return pages;
   }
 
   Widget _collapsibleSection(

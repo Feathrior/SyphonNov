@@ -16,6 +16,13 @@ void main() {
     await tester.pump();
   }
 
+  Future<void> tapTab(WidgetTester tester, String name) async {
+    final chip = find.byKey(ValueKey('props-tab-$name'));
+    expect(chip, findsOneWidget, reason: '缺少页签 $name');
+    await tester.tap(chip);
+    await tester.pumpAndSettle();
+  }
+
   setUp(() {
     GraphStore.useIsolate = false;
     GraphStore.instance.clearAll();
@@ -26,47 +33,54 @@ void main() {
     GraphStore.useIsolate = true;
   });
 
-  testWidgets(
-    'coordinate sections expand with a bounded disclosure animation',
-    (tester) async {
-      await pumpApp(tester);
-      GraphStore.instance.addNode('axis_input', Offset.zero, triggerRun: false);
-      await tester.pump();
+  testWidgets('coordinate panel is split into top category tabs', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    GraphStore.instance.addNode('axis_input', Offset.zero, triggerRun: false);
+    await tester.pump();
 
-      expect(find.text('基础'), findsOneWidget);
-      await tester.drag(
-        find.descendant(
-          of: find.byType(PropertiesPanel),
-          matching: find.byType(ListView),
-        ),
-        const Offset(0, -420),
+    // 顶部分类完全对齐绘图区域面板:常规 / 标题 / 布局 / 区域 / 游标。
+    for (final name in ['常规', '标题', '布局', '区域', '游标']) {
+      expect(
+        find.byKey(ValueKey('props-tab-$name')),
+        findsOneWidget,
+        reason: '坐标系输入应有 $name 页签',
       );
-      await tester.pump();
-      expect(find.text('坐标轴与网格'), findsOneWidget);
-      expect(find.text('X 方向网格线'), findsNothing);
+    }
 
-      await tester.tap(find.text('坐标轴与网格'));
-      await tester.pump(const Duration(milliseconds: 90));
+    // 默认停在常规页:基础 / 数据范围 / 范围与尺度 三张分组卡片。
+    expect(find.text('范围与尺度'), findsOneWidget);
+    expect(find.text('区域背景'), findsNothing);
+    expect(find.text('启用游标'), findsNothing);
 
-      expect(find.text('X 方向网格线'), findsOneWidget);
-      expect(find.byType(ExpansionTile), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpAndSettle();
-    },
-  );
+    // 区域页承载背景/边框/网格/箭头。
+    await tapTab(tester, '区域');
+    expect(find.text('区域背景'), findsOneWidget);
+    expect(find.text('范围与尺度'), findsNothing);
 
-  testWidgets('ordinary nodes use semantic property sections', (tester) async {
+    // 游标页只放游标参数。
+    await tapTab(tester, '游标');
+    expect(find.text('游标线宽(pt)'), findsOneWidget);
+    expect(find.text('区域背景'), findsNothing);
+
+    // 切回常规页。
+    await tapTab(tester, '常规');
+    expect(find.text('范围与尺度'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ordinary nodes use semantic property tabs', (tester) async {
     await pumpApp(tester);
     GraphStore.instance.addNode('func_curve', Offset.zero, triggerRun: false);
     await tester.pump();
 
-    expect(find.text('基础'), findsOneWidget);
-    expect(find.text('数据与计算'), findsOneWidget);
-    expect(find.text('范围与精度'), findsOneWidget);
+    expect(find.byKey(const ValueKey('props-tab-基础')), findsOneWidget);
+    expect(find.byKey(const ValueKey('props-tab-数据与计算')), findsOneWidget);
+    expect(find.byKey(const ValueKey('props-tab-范围与精度')), findsOneWidget);
     expect(find.text('表达式'), findsNothing);
 
-    await tester.tap(find.text('数据与计算'));
-    await tester.pump();
+    await tapTab(tester, '数据与计算');
     expect(find.text('表达式'), findsWidgets);
     expect(tester.takeException(), isNull);
   });

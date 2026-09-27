@@ -232,9 +232,16 @@ class BlurScaleTransition extends AnimatedWidget {
         ),
       ),
     );
-    if (frame.blur <= 0.05) return content;
+    // 模糊必须用 ImageFiltered.enabled 开关而不是有条件地包一层:否则滤镜
+    // 消失的瞬间子树会整体重建,子节点的 State(页签、展开态、输入焦点)会被
+    // 丢掉。sigma 取 0 时滤镜对象相等,不会触发额外的合成层更新。
+    final blurring = amplitude > 0 && frame.blur > 0.05;
     return ImageFiltered(
-      imageFilter: ui.ImageFilter.blur(sigmaX: frame.blur, sigmaY: frame.blur),
+      enabled: blurring,
+      imageFilter: ui.ImageFilter.blur(
+        sigmaX: blurring ? frame.blur : 0,
+        sigmaY: blurring ? frame.blur : 0,
+      ),
       child: content,
     );
   }

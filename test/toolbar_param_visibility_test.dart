@@ -29,10 +29,9 @@ void main() {
     final store = GraphStore.instance;
     store.selectNode('fc'); // 演示图中的 func_curve 节点
     await tester.pump();
-    await tester.tap(find.text('数据与计算'));
-    await tester.pump();
-    await tester.tap(find.text('范围与精度'));
-    await tester.pump();
+    // 顶部分类页签:数据与计算 / 范围与精度 各自成页。
+    await tester.tap(find.byKey(const ValueKey('props-tab-数据与计算')));
+    await tester.pumpAndSettle();
 
     // 默认 function 模式:显示"表达式",不显示 x(t)/y(t)
     expect(find.text('表达式'), findsWidgets, reason: '函数模式应显示表达式');
@@ -50,6 +49,8 @@ void main() {
     store.updateNodeParams('fc', {'mode': 'implicit'});
     await tester.pump();
     expect(find.text('表达式'), findsWidgets);
+    await tester.tap(find.byKey(const ValueKey('props-tab-范围与精度')));
+    await tester.pumpAndSettle();
     expect(find.text('Y 起始'), findsOneWidget);
     expect(find.text('x(t) 参数式'), findsNothing);
     expect(find.text('y(t) 参数式'), findsNothing);
