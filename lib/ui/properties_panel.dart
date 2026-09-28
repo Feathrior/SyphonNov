@@ -532,31 +532,10 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
           child: Stack(
             clipBehavior: Clip.none,
             children: [
-              // 选中项底部两侧"向外"翻的圆角:像水滴一样流进下方内容板
-              if (active) ...[
-                Positioned(
-                  left: -8,
-                  bottom: 0,
-                  width: 8,
-                  height: 8,
-                  child: CustomPaint(
-                    painter: _TabFlarePainter(t.bgRaise, flip: false),
-                  ),
-                ),
-                Positioned(
-                  right: -8,
-                  bottom: 0,
-                  width: 8,
-                  height: 8,
-                  child: CustomPaint(
-                    painter: _TabFlarePainter(t.bgRaise, flip: true),
-                  ),
-                ),
-              ],
               AnimatedContainer(
                 duration: MotionTokens.quick(context),
                 curve: MotionTokens.emphasized,
-                // 选中项:与内容板同色、无描边,顶部圆角朝内、底部不收口
+                // 选中项:与内容板同色、无描边,顶部圆角朝内、底部方角
                 decoration: BoxDecoration(
                   color: active ? t.bgRaise : t.bgFloat,
                   borderRadius: BorderRadius.vertical(
@@ -579,6 +558,27 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
                   ),
                 ),
               ),
+              // 选中项底部两角"向内凹":用页签条底色在底角画小圆,把方角咬成内凹
+              if (active) ...[
+                Positioned(
+                  left: 0,
+                  bottom: 0,
+                  width: 8,
+                  height: 8,
+                  child: CustomPaint(
+                    painter: _TabFlarePainter(t.bgSurface, flip: false),
+                  ),
+                ),
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  width: 8,
+                  height: 8,
+                  child: CustomPaint(
+                    painter: _TabFlarePainter(t.bgSurface, flip: true),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -2466,7 +2466,7 @@ class PropertiesPanel extends StatelessWidget {
 }
 
 
-/// 页签底部"向外翻"的圆角(凹形飞边):圆心落在方块的底角上,
+/// 页签底部两角的内凹圆角:圆心落在方块的底角上,用页签条底色画圆,
 /// 画出来就是与内容板同色的一小段喇叭口,让页签和内容融为一体。
 class _TabFlarePainter extends CustomPainter {
   const _TabFlarePainter(this.color, {required this.flip});
