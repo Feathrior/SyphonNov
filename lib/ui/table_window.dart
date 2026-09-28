@@ -217,6 +217,27 @@ class _TableWindowState extends State<_TableWindow>
   final TextEditingController _cellEditor = TextEditingController();
   final FocusNode _cellFocus = FocusNode(debugLabel: 'sheet-cell');
 
+  /// 公式提示(等同代码补全)
+  static const List<String> _kFormulaFunctions = [
+    'SUM(',
+    'AVERAGE(',
+    'MIN(',
+    'MAX(',
+    'COUNT(',
+    'ABS(',
+    'ROUND(',
+    'SQRT(',
+    'POWER(',
+  ];
+  final GlobalKey _editorKey = GlobalKey();
+  OverlayEntry? _suggestionEntry;
+  List<String> _suggestions = const [];
+  int _suggestionIndex = 0;
+
+  /// 编辑公式时用鼠标圈选的多行多列范围
+  ({int row, int column})? _rangeAnchor;
+  ({int row, int column})? _rangeEnd;
+
   @override
   void initState() {
     super.initState();
@@ -451,6 +472,37 @@ class _TableWindowState extends State<_TableWindow>
         if (isSelected && _editingCell) {
           return _buildCellEditor(t, r, colIdx);
         }
+        // 正在编辑公式:点/圈选其它格子把引用插进公式(Excel 的选多行多列)
+        if (_editingCell) {
+          final inRange = _inDragRange(r, colIdx);
+          return Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (_) => setState(() {
+              _rangeAnchor = (row: r, column: colIdx);
+              _rangeEnd = (row: r, column: colIdx);
+            }),
+            onPointerUp: (_) => _insertRangeRef(),
+            child: MouseRegion(
+              onEnter: (_) {
+                if (_rangeAnchor == null) return;
+                setState(() => _rangeEnd = (row: r, column: colIdx));
+              },
+              child: Container(
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                color: inRange
+                    ? t.accent.withValues(alpha: .22)
+                    : Colors.transparent,
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: t.text),
+                ),
+              ),
+            ),
+          );
+        }
         return GestureDetector(
           key: ValueKey('sheet-cell-$r-$colIdx'),
           behavior: HitTestBehavior.opaque,
@@ -500,35 +552,240 @@ class _TableWindowState extends State<_TableWindow>
     return Material(
       type: MaterialType.transparency,
       child: Focus(
-        onKeyEvent: (node, event) {
-          if (event is KeyUpEvent) return KeyEventResult.ignored;
-          if (event.logicalKey == LogicalKeyboardKey.escape) {
-            setState(() => _editingCell = false);
-            return KeyEventResult.handled;
-          }
-          if (event.logicalKey == LogicalKeyboardKey.enter ||
-              event.logicalKey == LogicalKeyboardKey.numpadEnter) {
-            _commitCellEditor();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: TextField(
-          key: const ValueKey('sheet-cell-editor'),
-          controller: _cellEditor,
-          focusNode: _cellFocus,
-          autofocus: true,
-          style: TextStyle(fontSize: 12, color: t.text),
-          decoration: const InputDecoration(
-            isDense: true,
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.symmetric(horizontal: 6),
+        onKeyEvent: _onEditorKey,
+        // 编辑态:纯白背景
+        child: Container(
+          key: _editorKey,
+          color: Colors.white,
+          child: TextField(
+            key: const ValueKey('sheet-cell-editor'),
+            controller: _cellEditor,
+            focusNode: _cellFocus,
+            autofocus: true,
+            style: TextStyle(fontSize: 12, color: t.text),
+            decoration: const InputDecoration(
+              isDense: true,
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(horizontal: 6),
+            ),
+            onChanged: (_) => _refreshSuggestions(),
+            onSubmitted: (_) => _commitCellEditor(),
           ),
-          onSubmitted: (_) => _commitCellEditor(),
         ),
       ),
     );
   }
+
+  KeyEventResult _onEditorKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (_suggestions.isNotEmpty) {
+      if (key == LogicalKeyboardKey.arrowDown) {
+        setState(
+          () => _suggestionIndex = (_suggestionIndex + 1) % _suggestions.length,
+        );
+        _showSuggestions();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(
+          () => _suggestionIndex =
+              (_suggestionIndex - 1 + _suggestions.length) % _suggestions.length,
+        );
+        _showSuggestions();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.tab ||
+          key == LogicalKeyboardKey.enter ||
+          key == LogicalKeyboardKey.numpadEnter) {
+        _acceptSuggestion(_suggestions[_suggestionIndex]);
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.escape) {
+        _hideSuggestions();
+        return KeyEventResult.handled;
+      }
+    }
+    if (key == LogicalKeyboardKey.escape) {
+      _hideSuggestions();
+      setState(() => _editingCell = false);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      _commitCellEditor();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  // ==================== 公式提示(类似代码补全) ====================
+
+  /// 光标前的标识符前缀 → 过滤函数名;`=` 之后或 `(`/`,`/运算符之后列全部
+  void _refreshSuggestions() {
+    final text = _cellEditor.text;
+    if (!text.trimLeft().startsWith('=')) {
+      _hideSuggestions();
+      return;
+    }
+    final caret = _cellEditor.selection.isValid
+        ? _cellEditor.selection.start
+        : text.length;
+    final head = text.substring(0, caret);
+    final match = RegExp(r'([A-Za-z]+)$').firstMatch(head);
+    final prefix = match?.group(1)?.toUpperCase() ?? '';
+    final tail = head.substring(0, head.length - prefix.length);
+    final allowed =
+        prefix.isNotEmpty ||
+        tail.isEmpty ||
+        RegExp(r'[=(,+\-*/^:]$').hasMatch(tail);
+    final next = allowed
+        ? [
+            for (final f in _kFormulaFunctions)
+              if (f.startsWith(prefix)) f,
+          ]
+        : const <String>[];
+    setState(() {
+      _suggestions = next;
+      _suggestionIndex = 0;
+    });
+    if (next.isEmpty) {
+      _hideSuggestions();
+    } else {
+      _showSuggestions();
+    }
+  }
+
+  void _showSuggestions() {
+    _suggestionEntry?.remove();
+    _suggestionEntry = null;
+    final box = _editorKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return;
+    final origin = box.localToGlobal(Offset.zero, ancestor: overlay);
+    final theme = SyphonTheme.of(context);
+    _suggestionEntry = OverlayEntry(
+      builder: (ctx) => Positioned(
+        left: origin.dx,
+        top: origin.dy + box.size.height,
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            constraints: const BoxConstraints(minWidth: 132),
+            decoration: BoxDecoration(
+              color: theme.bgFloat,
+              border: Border.all(color: theme.strokeStrong),
+              borderRadius: BorderRadius.circular(SyphonDims.radiusS),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < _suggestions.length; i++)
+                  GestureDetector(
+                    key: ValueKey('formula-suggestion-$i'),
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _acceptSuggestion(_suggestions[i]),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      color: i == _suggestionIndex
+                          ? theme.accent.withValues(alpha: .18)
+                          : null,
+                      child: Text(
+                        _suggestions[i].replaceAll('(', ''),
+                        style: TextStyle(fontSize: 11.5, color: theme.text),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    Overlay.of(context).insert(_suggestionEntry!);
+  }
+
+  void _hideSuggestions() {
+    _suggestionEntry?.remove();
+    _suggestionEntry = null;
+    if (_suggestions.isNotEmpty) _suggestions = const [];
+  }
+
+  /// 用提示里的函数替换光标前的标识符
+  void _acceptSuggestion(String function) {
+    final text = _cellEditor.text;
+    final caret = _cellEditor.selection.isValid
+        ? _cellEditor.selection.start
+        : text.length;
+    final head = text.substring(0, caret);
+    final match = RegExp(r'[A-Za-z]*$').firstMatch(head)!;
+    final next = text.replaceRange(match.start, caret, function);
+    _cellEditor.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: match.start + function.length),
+    );
+    _hideSuggestions();
+    _cellFocus.requestFocus();
+  }
+
+  // ==================== 编辑时圈选多行多列 ====================
+
+  void _insertAtCaret(String snippet) {
+    final value = _cellEditor.value;
+    final selection = value.selection;
+    final start = selection.isValid ? selection.start : value.text.length;
+    final end = selection.isValid ? selection.end : value.text.length;
+    final next = value.text.replaceRange(start, end, snippet);
+    _cellEditor.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + snippet.length),
+    );
+    _refreshSuggestions();
+  }
+
+  /// 拖拽中的范围高亮
+  bool _inDragRange(int row, int column) {
+    final a = _rangeAnchor;
+    final b = _rangeEnd;
+    if (a == null || b == null) return false;
+    final r0 = a.row < b.row ? a.row : b.row;
+    final r1 = a.row < b.row ? b.row : a.row;
+    final c0 = a.column < b.column ? a.column : b.column;
+    final c1 = a.column < b.column ? b.column : a.column;
+    return row >= r0 && row <= r1 && column >= c0 && column <= c1;
+  }
+
+  /// 圈选结束:插入 `A1` 或 `A1:B3`
+  void _insertRangeRef() {
+    final a = _rangeAnchor;
+    final b = _rangeEnd ?? a;
+    if (a == null || b == null) return;
+    setState(() {
+      _rangeAnchor = null;
+      _rangeEnd = null;
+    });
+    final r0 = a.row < b.row ? a.row : b.row;
+    final r1 = a.row < b.row ? b.row : a.row;
+    final c0 = a.column < b.column ? a.column : b.column;
+    final c1 = a.column < b.column ? b.column : a.column;
+    final start = '${columnLetter(c0)}${r0 + 1}';
+    final snippet = (r0 == r1 && c0 == c1)
+        ? start
+        : '$start:${columnLetter(c1)}${r1 + 1}';
+    _insertAtCaret(snippet);
+  }
+
 
   void _commitCellEditor() {
     final text = _cellEditor.text;
