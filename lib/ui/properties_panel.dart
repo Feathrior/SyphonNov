@@ -529,50 +529,57 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => _select(name),
-          child: AnimatedContainer(
-            duration: MotionTokens.quick(context),
-            curve: MotionTokens.emphasized,
-            // 顶部分类:选中项与下方亮底同色,底部描边用同色小块盖掉 → 不封口
-            decoration: BoxDecoration(
-              color: active ? t.bgRaise : t.bgFloat,
-              border: Border.all(
-                color: active ? t.accent : Colors.transparent,
-                width: 1.4,
-              ),
-              borderRadius: BorderRadius.vertical(
-                top: Radius.circular(SyphonDims.radiusM),
-                bottom: Radius.circular(active ? 0 : SyphonDims.radiusM),
-              ),
-            ),
-            child: Stack(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 8,
-                  ),
-                  child: Text(
-                    name,
-                    key: ValueKey('props-tab-$name'),
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: active ? t.accent : t.text,
-                      fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                      letterSpacing: .4,
-                    ),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // 选中项底部两侧"向外"翻的圆角:像水滴一样流进下方内容板
+              if (active) ...[
+                Positioned(
+                  left: -8,
+                  bottom: 0,
+                  width: 8,
+                  height: 8,
+                  child: CustomPaint(
+                    painter: _TabFlarePainter(t.bgRaise, flip: false),
                   ),
                 ),
-                // 选中时把底部那条描边盖成底色,和下方内容连成一体
-                if (active)
-                  Positioned(
-                    left: 1.4,
-                    right: 1.4,
-                    bottom: 0,
-                    height: 1.4,
-                    child: ColoredBox(color: t.bgRaise),
+                Positioned(
+                  right: -8,
+                  bottom: 0,
+                  width: 8,
+                  height: 8,
+                  child: CustomPaint(
+                    painter: _TabFlarePainter(t.bgRaise, flip: true),
                   ),
+                ),
               ],
-            ),
+              AnimatedContainer(
+                duration: MotionTokens.quick(context),
+                curve: MotionTokens.emphasized,
+                // 选中项:与内容板同色、无描边,顶部圆角朝内、底部不收口
+                decoration: BoxDecoration(
+                  color: active ? t.bgRaise : t.bgFloat,
+                  borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(SyphonDims.radiusM),
+                    bottom: Radius.circular(active ? 0 : SyphonDims.radiusM),
+                  ),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
+                child: Text(
+                  name,
+                  key: ValueKey('props-tab-$name'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: active ? t.accent : t.text,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                    letterSpacing: .4,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -2456,4 +2463,27 @@ class PropertiesPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+
+/// 页签底部"向外翻"的圆角(凹形飞边):圆心落在方块的底角上,
+/// 画出来就是与内容板同色的一小段喇叭口,让页签和内容融为一体。
+class _TabFlarePainter extends CustomPainter {
+  const _TabFlarePainter(this.color, {required this.flip});
+
+  final Color color;
+  final bool flip;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawCircle(
+      Offset(flip ? 0 : size.width, size.height),
+      size.width,
+      Paint()..color = color,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _TabFlarePainter old) =>
+      old.color != color || old.flip != flip;
 }
