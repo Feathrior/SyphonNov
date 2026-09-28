@@ -212,6 +212,11 @@ class _TableWindowState extends State<_TableWindow>
   /// 正在写回节点:期间的 store 通知不算外部改动
   bool _writing = false;
 
+  /// 单元格内联编辑:第二次点击同一格才进入
+  bool _editingCell = false;
+  final TextEditingController _cellEditor = TextEditingController();
+  final FocusNode _cellFocus = FocusNode(debugLabel: 'sheet-cell');
+
   @override
   void initState() {
     super.initState();
@@ -436,26 +441,31 @@ class _TableWindowState extends State<_TableWindow>
           ),
         );
       case GridSheetCellKind.row:
-        final selected = rowIdx == _row && colIdx == _col;
-        // 选中的格子交回库的可编辑单元格:第二次点击同一格进入编辑
-        if (selected) return null;
+        final r = rowIdx ?? 0;
+        final isRow = r == _row;
+        final isCol = colIdx == _col;
+        final isSelected = isRow && isCol;
         final row = cell.row;
         final value = row == null ? '' : '${row.data[colIdx] ?? ''}';
+        // 第二次点击同一格才出现输入框(第一次只高亮整行整列)
+        if (isSelected && _editingCell) {
+          return _buildCellEditor(t, r, colIdx);
+        }
         return GestureDetector(
-          key: ValueKey('sheet-cell-$rowIdx-$colIdx'),
+          key: ValueKey('sheet-cell-$r-$colIdx'),
           behavior: HitTestBehavior.opaque,
-          onTap: () => setState(() {
-            _row = rowIdx ?? 0;
-            _col = colIdx;
-          }),
+          onTap: () => _onCellTap(r, colIdx),
           child: Container(
             alignment: Alignment.centerLeft,
             padding: const EdgeInsets.symmetric(horizontal: 6),
+            color: isSelected
+                ? t.accent.withValues(alpha: .20)
+                : (isRow || isCol ? t.accent.withValues(alpha: .08) : null),
             child: Text(
               value,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 11.5, color: t.text),
+              style: TextStyle(fontSize: 12, color: t.text),
             ),
           ),
         );
@@ -465,7 +475,75 @@ class _TableWindowState extends State<_TableWindow>
     }
   }
 
+  /// 第一次点击:只把整行整列高亮;再次点击同一格:进入编辑
+  void _onCellTap(int row, int column) {
+    if (row == _row && column == _col) {
+      _cellEditor.text = _table.cellAt(row, column);
+      _cellEditor.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _cellEditor.text.length,
+      );
+      setState(() => _editingCell = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _cellFocus.requestFocus();
+      });
+      return;
+    }
+    setState(() {
+      _row = row;
+      _col = column;
+      _editingCell = false;
+    });
+  }
+
+  Widget _buildCellEditor(SyphonTheme t, int row, int column) {
+    return Material(
+      type: MaterialType.transparency,
+      child: Focus(
+        onKeyEvent: (node, event) {
+          if (event is KeyUpEvent) return KeyEventResult.ignored;
+          if (event.logicalKey == LogicalKeyboardKey.escape) {
+            setState(() => _editingCell = false);
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.enter ||
+              event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+            _commitCellEditor();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: TextField(
+          key: const ValueKey('sheet-cell-editor'),
+          controller: _cellEditor,
+          focusNode: _cellFocus,
+          autofocus: true,
+          style: TextStyle(fontSize: 12, color: t.text),
+          decoration: const InputDecoration(
+            isDense: true,
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.symmetric(horizontal: 6),
+          ),
+          onSubmitted: (_) => _commitCellEditor(),
+        ),
+      ),
+    );
+  }
+
+  void _commitCellEditor() {
+    final text = _cellEditor.text;
+    final row = _row;
+    final column = _col;
+    if (mounted) setState(() => _editingCell = false);
+    if (_table.cellAt(row, column) == text) return;
+    _history.record(_table);
+    _table.setCell(row, column, text);
+    _commit();
+    setState(() => _generation++);
+  }
+
   void _onCellChanged(GridSheetCellValueChangedEvent event) {
+    _editingCell = false;
     final row = _rowIndexOf(event.rowKey);
     final column = event.columnIndex;
     if (row < 0 || column < 0 || column >= _table.columnCount) return;
