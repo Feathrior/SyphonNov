@@ -784,6 +784,12 @@ class _TableWindowState extends State<_TableWindow>
           columns: _sheetColumns(),
           rows: _sheetRows(),
           cellBuilder: _sheetCellBuilder,
+          // 与设计图一致:全部数据放在一张表里,不翻页、不显示行号列
+          indexColumn: null,
+          configuration: const GridSheetConfiguration(
+            enableDefaultPagination: false,
+            showColumnFilters: false,
+          ),
           autofillConfiguration: const GridSheetAutoFillConfiguration(
             enabled: true,
             fillHandleSize: 7,
