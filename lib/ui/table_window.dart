@@ -208,7 +208,6 @@ class _TableWindowState extends State<_TableWindow>
   String? _error;
   String _title = '表格编辑';
   String _sourceStamp = '';
-  bool _fromPreset = false;
 
   /// 正在写回节点:期间的 store 通知不算外部改动
   bool _writing = false;
@@ -269,8 +268,7 @@ class _TableWindowState extends State<_TableWindow>
     final edited = EditableTable.decode('${node.params['tableJson'] ?? ''}');
     if (edited != null) {
       _table = edited;
-      _fromPreset = false;
-    } else if ('${node.params['mode'] ?? 'preset'}' == 'manual') {
+      } else if ('${node.params['mode'] ?? 'preset'}' == 'manual') {
       final text = '${node.params['dataText'] ?? ''}';
       List<md.Column> columns = const [];
       if (text.trim().isNotEmpty) {
@@ -294,15 +292,13 @@ class _TableWindowState extends State<_TableWindow>
       _table = columns.isEmpty
           ? EditableTable.empty(rows: 0, columns: 2)
           : EditableTable.fromColumns(columns);
-      _fromPreset = false;
-    } else {
+      } else {
       _table = EditableTable.fromColumns(
         presetTable(
           '${node.params['preset'] ?? 'phys'}',
           seed: num.tryParse('${node.params['seed'] ?? 0}')?.round() ?? 0,
         ),
       );
-      _fromPreset = true;
     }
     _generation++;
   }
@@ -325,7 +321,6 @@ class _TableWindowState extends State<_TableWindow>
     } finally {
       _writing = false;
     }
-    _fromPreset = false;
     final node = store.nodeOf(widget.nodeId);
     if (node != null) _sourceStamp = _stampOf(node);
   }
@@ -823,33 +818,14 @@ class _TableWindowState extends State<_TableWindow>
     return Container(
       height: _statusBarH,
       padding: const EdgeInsets.symmetric(horizontal: 10),
+      alignment: Alignment.centerLeft,
       decoration: BoxDecoration(
         color: t.bgRaise,
         border: Border(top: BorderSide(color: t.stroke)),
       ),
-      child: Row(
-        children: [
-          Text(
-            '${_table.rowCount} 行 × ${_table.columnCount} 列',
-            style: TextStyle(fontSize: 10, color: t.textDim),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              '双击/直接输入编辑 · Shift+方向键框选 · Ctrl+C/V 复制粘贴 · Ctrl+Z 撤销 · Delete 清空',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 10, color: t.textFaint),
-            ),
-          ),
-          Text(
-            _fromPreset ? '预设数据 · 修改后转为文件数据' : '已实时同步到节点',
-            style: TextStyle(
-              fontSize: 10,
-              color: _fromPreset ? t.warn : t.textFaint,
-            ),
-          ),
-        ],
+      child: Text(
+        '${_table.rowCount} 行 × ${_table.columnCount} 列',
+        style: TextStyle(fontSize: 10, color: t.textDim),
       ),
     );
   }
