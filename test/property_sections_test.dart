@@ -85,6 +85,20 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('table input sidebar keeps its content under the top categories', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    GraphStore.instance.addNode('table_input', Offset.zero, triggerRun: false);
+    await tester.pumpAndSettle();
+    for (final name in ['基础', '范围与精度', '导入导出']) {
+      expect(find.byKey(ValueKey('props-tab-$name')), findsOneWidget);
+    }
+    // 基础页要有内容(不能只剩页签)
+    expect(find.text('名称'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   test('ordinary parameters are assigned to semantic groups', () {
     final config = getConfig('func_curve')!;
     String group(String key) => propertyGroupForParam(

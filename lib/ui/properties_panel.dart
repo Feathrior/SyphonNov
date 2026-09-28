@@ -528,12 +528,13 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
           child: AnimatedContainer(
             duration: MotionTokens.quick(context),
             curve: MotionTokens.emphasized,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            // 顶部分类:灰底未选中、白底 + 强调色描边选中(分段控件的样子)
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
-              color: active ? t.accent.withValues(alpha: .16) : t.bgRaise,
+              color: active ? t.bgFloat : t.bgRaise,
               border: Border.all(
-                color: active ? t.accent.withValues(alpha: .55) : t.stroke,
-                width: 1,
+                color: active ? t.accent : Colors.transparent,
+                width: active ? 1.4 : 1,
               ),
               borderRadius: BorderRadius.circular(SyphonDims.radiusM),
             ),
@@ -542,7 +543,8 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
               key: ValueKey('props-tab-$name'),
               style: TextStyle(
                 fontSize: 12,
-                color: active ? t.text : t.textDim,
+                color: active ? t.accent : t.text,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
                 letterSpacing: .4,
               ),
             ),
