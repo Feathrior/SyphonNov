@@ -373,7 +373,7 @@ class _TableWindowState extends State<_TableWindow>
         title: _columnTitle(c),
         // 全部按公式列:单元格可以放 '=A1+B2',由库负责求值与显示
         type: GridSheetColumnType.formula,
-        width: 168,
+        width: 172,
       ),
   ];
 
@@ -784,6 +784,7 @@ class _TableWindowState extends State<_TableWindow>
           configuration: const GridSheetConfiguration(
             enableDefaultPagination: false,
             showColumnFilters: false,
+            stretchColumnsToFillWidth: true,
           ),
           autofillConfiguration: const GridSheetAutoFillConfiguration(
             enabled: true,
@@ -797,9 +798,9 @@ class _TableWindowState extends State<_TableWindow>
             rowBorderColor: t.stroke,
             columnBorderColor: t.stroke,
             selectionColor: t.accent,
-            cellTextStyle: TextStyle(fontSize: 11.5, color: t.text),
+            cellTextStyle: TextStyle(fontSize: 12, color: t.text),
             headerTextStyle: TextStyle(
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
               color: t.text,
             ),
