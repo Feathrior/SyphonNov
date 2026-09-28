@@ -492,23 +492,27 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
             ),
           ),
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(12),
-            children: [
-              AnimatedSwitcher(
-                duration: MotionTokens.quick(context),
-                reverseDuration: MotionTokens.quick(context),
-                switchInCurve: MotionTokens.emphasized,
-                switchOutCurve: MotionTokens.exit,
-                child: Column(
-                  key: ValueKey('props-tab:$active'),
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: widget.tabs[active]!,
+          // 内容区提亮:选中的页签与它连成一体(水滴融入大海)
+          child: Container(
+            color: t.bgFloat,
+            child: ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                AnimatedSwitcher(
+                  duration: MotionTokens.quick(context),
+                  reverseDuration: MotionTokens.quick(context),
+                  switchInCurve: MotionTokens.emphasized,
+                  switchOutCurve: MotionTokens.exit,
+                  child: Column(
+                    key: ValueKey('props-tab:$active'),
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: widget.tabs[active]!,
+                  ),
                 ),
-              ),
-              ...widget.footer,
-            ],
+                ...widget.footer,
+              ],
+            ),
           ),
         ),
       ],
@@ -528,15 +532,32 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
           child: AnimatedContainer(
             duration: MotionTokens.quick(context),
             curve: MotionTokens.emphasized,
-            // 顶部分类:灰底未选中、白底 + 强调色描边选中(分段控件的样子)
+            // 顶部分类:选中项与下方亮底同色、下边不封口,像水滴融入大海
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: active ? t.bgFloat : t.bgRaise,
-              border: Border.all(
-                color: active ? t.accent : Colors.transparent,
-                width: active ? 1.4 : 1,
+              border: Border(
+                top: BorderSide(
+                  color: active ? t.accent : Colors.transparent,
+                  width: 1.4,
+                ),
+                left: BorderSide(
+                  color: active ? t.accent : Colors.transparent,
+                  width: 1.4,
+                ),
+                right: BorderSide(
+                  color: active ? t.accent : Colors.transparent,
+                  width: 1.4,
+                ),
+                bottom: BorderSide(
+                  color: active ? t.bgFloat : Colors.transparent,
+                  width: 1.4,
+                ),
               ),
-              borderRadius: BorderRadius.circular(SyphonDims.radiusM),
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(SyphonDims.radiusM),
+                bottom: Radius.circular(active ? 0 : SyphonDims.radiusM),
+              ),
             ),
             child: Text(
               name,
