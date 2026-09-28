@@ -117,6 +117,17 @@ class MotionTokens {
   /// 面板/标签页等切换的弹性回弹在最慢档位下仍然偏快,这里整体放慢一倍
   /// (时长 ×2 = 速度 ×0.5)。它与设置里的"动画速度"相乘,所以快速/适中/慢速
   /// 三档会一起变慢;想回调只需改这一个数。
+  /// 只有"完整"动效才画模糊;简化/关闭以及系统"减少动态效果"都不画
+  static bool blurEnabled(BuildContext context) {
+    final setting = SettingsStore.instance.motionMode;
+    final systemReduced =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    return setting == MotionMode.full && !systemReduced;
+  }
+
+  /// 简化/关闭动效时不做回弹(去掉 easeOutBack 的过冲)
+  static bool bounceEnabled(BuildContext context) => blurEnabled(context);
+
   static const double pacing = 2;
 
   /// "利落"系数:退场、圆环回弹这类希望干脆的过渡,在全局节奏上再乘它
@@ -145,10 +156,8 @@ class MotionTokens {
         MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     if (setting == MotionMode.off) return Duration.zero;
     if (setting == MotionMode.reduced || systemReduced) {
-      // 简化模式下"快速"过渡直接归零,其余按简化时长(同样受速度倍率影响)
-      return reduced == 70
-          ? Duration.zero
-          : scaled(Duration(milliseconds: reduced), times: times);
+      // 简化模式:只去掉模糊与回弹,时长照常(退场与进场同样呈现)
+      return scaled(Duration(milliseconds: reduced), times: times);
     }
     return scaled(Duration(milliseconds: full), times: times);
   }
@@ -198,13 +207,15 @@ class BlurScaleTransition extends AnimatedWidget {
     final value = animation.value.clamp(0.0, 1.0);
     final amplitude = MotionTokens.amplitude(context);
     final effectiveBeginScale = 1 - (1 - beginScale) * amplitude;
-    final effectiveBlur = maxBlur * amplitude;
+    // 简化/关闭动效时不画模糊:只保留淡入淡出与缩放
+    final effectiveBlur = MotionTokens.blurEnabled(context) ? maxBlur * amplitude : 0.0;
     // 显形进度:在前 reveal 段内完成(reveal = 1 时就是整体进度)
     final revealed = reveal <= 0 ? 1.0 : (value / reveal).clamp(0.0, 1.0);
     final blurFade = blurUntil <= 0
         ? 1 - revealed
         : 1 - (value / blurUntil).clamp(0.0, 1.0);
-    final frame = elastic
+    final bouncy = elastic && MotionTokens.bounceEnabled(context);
+    final frame = bouncy
         ? popMotionFrame(
             value,
             beginScale: effectiveBeginScale,
@@ -214,7 +225,9 @@ class BlurScaleTransition extends AnimatedWidget {
             blurUntil: blurUntil,
           )
         : PopMotionFrame(
-            scale: effectiveBeginScale + (1 - effectiveBeginScale) * value,
+            // 简化动效:去掉 easeOutBack 过冲,用平滑减速,进出场同样呈现
+            scale: effectiveBeginScale +
+                (1 - effectiveBeginScale) * Curves.easeOutCubic.transform(value),
             // 线性分支保持线性节奏,reveal 只压缩显形区间(1 时与旧行为一致)
             opacity: revealed,
             blur: effectiveBlur * blurFade,
