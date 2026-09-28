@@ -532,42 +532,46 @@ class _PropertiesBodyState extends State<_PropertiesBody> {
           child: AnimatedContainer(
             duration: MotionTokens.quick(context),
             curve: MotionTokens.emphasized,
-            // 顶部分类:选中项与下方亮底同色、下边不封口,像水滴融入大海
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            // 顶部分类:选中项与下方亮底同色,底部描边用同色小块盖掉 → 不封口
             decoration: BoxDecoration(
-              color: active ? t.bgFloat : t.bgRaise,
-              border: Border(
-                top: BorderSide(
-                  color: active ? t.accent : Colors.transparent,
-                  width: 1.4,
-                ),
-                left: BorderSide(
-                  color: active ? t.accent : Colors.transparent,
-                  width: 1.4,
-                ),
-                right: BorderSide(
-                  color: active ? t.accent : Colors.transparent,
-                  width: 1.4,
-                ),
-                bottom: BorderSide(
-                  color: active ? t.bgFloat : Colors.transparent,
-                  width: 1.4,
-                ),
+              color: active ? t.bgRaise : t.bgFloat,
+              border: Border.all(
+                color: active ? t.accent : Colors.transparent,
+                width: 1.4,
               ),
               borderRadius: BorderRadius.vertical(
                 top: Radius.circular(SyphonDims.radiusM),
                 bottom: Radius.circular(active ? 0 : SyphonDims.radiusM),
               ),
             ),
-            child: Text(
-              name,
-              key: ValueKey('props-tab-$name'),
-              style: TextStyle(
-                fontSize: 12,
-                color: active ? t.accent : t.text,
-                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                letterSpacing: .4,
-              ),
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    name,
+                    key: ValueKey('props-tab-$name'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: active ? t.accent : t.text,
+                      fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                      letterSpacing: .4,
+                    ),
+                  ),
+                ),
+                // 选中时把底部那条描边盖成底色,和下方内容连成一体
+                if (active)
+                  Positioned(
+                    left: 1.4,
+                    right: 1.4,
+                    bottom: 0,
+                    height: 1.4,
+                    child: ColoredBox(color: t.bgRaise),
+                  ),
+              ],
             ),
           ),
         ),
