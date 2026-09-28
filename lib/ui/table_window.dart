@@ -17,11 +17,10 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:pluto_grid/pluto_grid.dart';
+import 'package:grid_sheet/grid_sheet.dart';
 
 import '../models/csv.dart';
 import '../models/data.dart' as md;
-import '../models/formula.dart';
 import '../models/registry.dart';
 import '../models/sample_data.dart';
 import '../models/table_edit.dart';
@@ -202,7 +201,7 @@ class _TableWindowState extends State<_TableWindow>
 
   /// 结构变化(增删行列/重命名/撤销)后重挂载网格,让 pluto_grid 用新列新行
   int _generation = 0;
-  PlutoGridStateManager? _grid;
+  GridSheetManager? _manager;
 
   int _row = 0;
   int _col = 0;
@@ -213,11 +212,6 @@ class _TableWindowState extends State<_TableWindow>
 
   /// 正在写回节点:期间的 store 通知不算外部改动
   bool _writing = false;
-
-  /// 公式求值器(按表格修订号缓存)
-  SheetFormulas? _formulaCache;
-  int _formulaRevision = -1;
-  int _tableRevision = 0;
 
   @override
   void initState() {
@@ -247,7 +241,6 @@ class _TableWindowState extends State<_TableWindow>
 
   @override
   void dispose() {
-    _grid?.removeListener(_onGridChanged);
     GraphStore.instance.removeListener(_onStoreChanged);
     _entry.dispose();
     super.dispose();
@@ -312,7 +305,6 @@ class _TableWindowState extends State<_TableWindow>
       _fromPreset = true;
     }
     _generation++;
-    _tableRevision++;
   }
 
   /// 把当前表格写回节点参数;自动执行开启时图表随之刷新
@@ -334,7 +326,6 @@ class _TableWindowState extends State<_TableWindow>
       _writing = false;
     }
     _fromPreset = false;
-    _tableRevision++;
     final node = store.nodeOf(widget.nodeId);
     if (node != null) _sourceStamp = _stampOf(node);
   }
@@ -353,7 +344,6 @@ class _TableWindowState extends State<_TableWindow>
 
   /// 修改表格并写回:结构变化需要重挂载网格
   void _mutate(void Function(EditableTable table) op) {
-    _rememberCursor();
     _history.record(_table);
     op(_table);
     _clampCursor();
@@ -368,8 +358,6 @@ class _TableWindowState extends State<_TableWindow>
 
   // ==================== pluto_grid 桥接 ====================
 
-  String _columnField(int index) => 'c$index';
-
   String _columnTitle(int index) {
     final designation = columnDesignationLabel(_table.designations[index]);
     final parts = <String>[
@@ -381,135 +369,132 @@ class _TableWindowState extends State<_TableWindow>
     return parts.join(' ');
   }
 
-  List<PlutoColumn> _plutoColumns() => [
+  List<GridSheetColumn> _sheetColumns() => [
     for (var c = 0; c < _table.columnCount; c++)
-      PlutoColumn(
+      GridSheetColumn(
+        key: ValueKey('sheet-col-$c'),
+        index: c,
+        name: 'c$c',
         title: _columnTitle(c),
-        field: _columnField(c),
-        // 一律按文本编辑:单元格里可以放 '=A1+B2' 这样的公式
-        type: PlutoColumnType.text(),
+        // 全部按公式列:单元格可以放 '=A1+B2',由库负责求值与显示
+        type: GridSheetColumnType.formula,
         width: 168,
-        minWidth: 84,
-        enableSorting: false,
-        enableContextMenu: false,
-        enableFilterMenuItem: false,
-        enableHideColumnMenuItem: false,
-        enableSetColumnsMenuItem: false,
-        enableColumnDrag: true,
-        enableDropToResize: true,
-        // 第一次点击只选中(高亮行列),再次点击同一格才进入编辑
-        enableAutoEditing: false,
-        titleTextAlign: PlutoColumnTextAlign.left,
-        renderer: (ctx) => _buildSheetCell(ctx, c),
       ),
   ];
 
-  /// 当前单元格跟随 pluto 的选中事件(填充拉杆挂在这一格上)
-  void _onCellSelected(PlutoGridOnSelectedEvent event) {
-    final cell = event.cell;
-    final grid = _grid;
-    if (cell == null || grid == null) return;
-    final position = grid.cellPositionByCellKey(cell.key);
-    if (position == null) return;
-    final row = (position.rowIdx ?? 0)
-        .clamp(0, math.max(0, _table.rowCount - 1))
-        .toInt();
-    final column = (position.columnIdx ?? 0)
-        .clamp(0, math.max(0, _table.columnCount - 1))
-        .toInt();
-    if (row == _row && column == _col) return;
-    setState(() {
-      _row = row;
-      _col = column;
-    });
-  }
-
-  /// 公式求值器:表格变化后重建缓存
-  SheetFormulas get _formulas {
-    if (_formulaCache == null || _formulaRevision != _tableRevision) {
-      _formulaCache = _table.formulas();
-      _formulaRevision = _tableRevision;
-    }
-    return _formulaCache!;
-  }
-
-  List<PlutoRow> _plutoRows() => [
+  List<GridSheetRow> _sheetRows() => [
     for (var r = 0; r < _table.rowCount; r++)
-      PlutoRow(
-        cells: {
-          for (var c = 0; c < _table.columnCount; c++)
-            _columnField(c): PlutoCell(
-              value: parseCellValue(_table.cellAt(r, c), _table.types[c]),
-            ),
-        },
+      GridSheetRow(
+        key: ValueKey('sheet-row-$r'),
+        index: r,
+        data: [
+          for (var c = 0; c < _table.columnCount; c++) _table.cellAt(r, c),
+        ],
       ),
   ];
 
-  PlutoGridConfiguration _plutoConfiguration(SyphonTheme t) {
-    return PlutoGridConfiguration(
-      localeText: const PlutoGridLocaleText.china(),
-      enterKeyAction: PlutoGridEnterKeyAction.editingAndMoveDown,
-      style: PlutoGridStyleConfig(
-        gridBackgroundColor: t.bgApp,
-        rowColor: t.bgFloat,
-        oddRowColor: t.bgFloat,
-        evenRowColor: t.bgFloat,
-        activatedColor: t.accent.withValues(alpha: .16),
-        cellColorInEditState: t.bgInput,
-        cellColorInReadOnlyState: t.bgRaise,
-        iconColor: t.textDim,
-        disabledIconColor: t.textFaint,
-        menuBackgroundColor: t.bgFloat,
-        gridBorderColor: t.strokeStrong,
-        borderColor: t.stroke,
-        activatedBorderColor: t.accent,
-        inactivatedBorderColor: t.stroke,
-        gridBorderRadius: BorderRadius.circular(SyphonDims.radiusS),
-        rowHeight: 26,
-        columnHeight: 34,
-        iconSize: 15,
-        cellTextStyle: TextStyle(fontSize: 11.5, color: t.text),
-        columnTextStyle: TextStyle(
-          fontSize: 11,
-          color: t.text,
-          fontWeight: FontWeight.w600,
-        ),
-        defaultCellPadding: const EdgeInsets.symmetric(horizontal: 6),
-        defaultColumnTitlePadding: const EdgeInsets.symmetric(horizontal: 8),
-        enableGridBorderShadow: false,
-      ),
-      columnSize: const PlutoGridColumnSizeConfig(
-        autoSizeMode: PlutoAutoSizeMode.none,
-      ),
-      scrollbar: const PlutoGridScrollbarConfig(
-        isAlwaysShown: true,
-        scrollbarThickness: 9,
-        scrollbarThicknessWhileDragging: 12,
-      ),
-    );
+  int _rowIndexOf(Key key) {
+    final rows = _manager?.rows ?? const <GridSheetRow>[];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].key == key) return i;
+    }
+    return -1;
   }
 
-  void _onCellChanged(PlutoGridOnChangedEvent event) {
-    final text = formatCellValue(event.value);
-    final row = event.rowIdx;
-    final column = event.columnIdx;
+  /// 单元格渲染:选中门控 + 行列表头高亮。
+  /// 未选中的格子由我们自己画成只读文本(第一次点击只选中),被选中的格子返回
+  /// null 交回 grid_sheet 自己的可编辑单元格 —— 再点一次同一格即进入编辑。
+  Widget? _sheetCellBuilder(GridSheetCellContext cell) {
+    final t = SyphonTheme.of(context);
+    final rowIdx = cell.rowIndex;
+    final colIdx = cell.columnIndex;
+    switch (cell.kind) {
+      case GridSheetCellKind.header:
+        final active = colIdx == _col;
+        return Container(
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          color: active ? t.accent.withValues(alpha: .18) : null,
+          child: Text(
+            cell.column.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: active ? t.accent : t.text,
+            ),
+          ),
+        );
+      case GridSheetCellKind.indexing:
+        final active = rowIdx == _row;
+        return Container(
+          alignment: Alignment.center,
+          color: active ? t.accent.withValues(alpha: .18) : null,
+          child: Text(
+            '${(rowIdx ?? 0) + 1}',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: active ? t.accent : t.textFaint,
+            ),
+          ),
+        );
+      case GridSheetCellKind.row:
+        final selected = rowIdx == _row && colIdx == _col;
+        // 选中的格子交回库的可编辑单元格:第二次点击同一格进入编辑
+        if (selected) return null;
+        final row = cell.row;
+        final value = row == null ? '' : '${row.data[colIdx] ?? ''}';
+        return GestureDetector(
+          key: ValueKey('sheet-cell-$rowIdx-$colIdx'),
+          behavior: HitTestBehavior.opaque,
+          onTap: () => setState(() {
+            _row = rowIdx ?? 0;
+            _col = colIdx;
+          }),
+          child: Container(
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11.5, color: t.text),
+            ),
+          ),
+        );
+      case GridSheetCellKind.selectAll:
+      case GridSheetCellKind.filter:
+        return null;
+    }
+  }
+
+  void _onCellChanged(GridSheetCellValueChangedEvent event) {
+    final row = _rowIndexOf(event.rowKey);
+    final column = event.columnIndex;
+    if (row < 0 || column < 0 || column >= _table.columnCount) return;
+    // 单元格里保留公式原文(库把求值结果放在 data 里),节点侧再求值
+    final formula = _manager?.getCellFormula(
+      rowKey: event.rowKey,
+      columnKey: event.columnKey,
+    );
+    final text = formula ?? _cellText(event.newValue);
+    if (_table.cellAt(row, column) == text) return;
     _row = row;
     _col = column;
-    if (_table.cellAt(row, column) == text) return;
     _history.record(_table);
     _table.setCell(row, column, text);
     _commit();
     setState(() {});
   }
 
-  /// 保存当前单元格位置,重挂载后恢复
-  void _rememberCursor() {
-    final grid = _grid;
-    if (grid == null) return;
-    final rowIdx = grid.currentRowIdx;
-    final columnIdx = grid.currentCellPosition?.columnIdx;
-    if (rowIdx != null && rowIdx >= 0) _row = rowIdx;
-    if (columnIdx != null && columnIdx >= 0) _col = columnIdx;
+  String _cellText(dynamic value) {
+    if (value == null) return '';
+    if (value is double && value == value.roundToDouble()) {
+      return value.toInt().toString();
+    }
+    return '$value';
   }
 
   // ==================== 键盘(补 pluto 未覆盖的键) ====================
@@ -790,78 +775,39 @@ class _TableWindowState extends State<_TableWindow>
       );
     }
     return Material(
-      // pluto_grid 的单元格编辑器是 Material TextField,而应用根是 FluentApp
+      // grid_sheet 的单元格编辑器是 Material TextField,而应用根是 FluentApp
       type: MaterialType.transparency,
       child: Focus(
         onKeyEvent: _onGridKey,
-        // 指针按下后强制重建一次:让填充拉杆跟到新的当前单元格
-        child: Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerDown: (_) {
-            if (mounted) setState(() {});
-          },
-          child: PlutoGrid(
-            key: ValueKey('table-grid-$_generation'),
-            columns: _plutoColumns(),
-            rows: _plutoRows(),
-            configuration: _plutoConfiguration(t),
-            onLoaded: (event) {
-              _grid?.removeListener(_onGridChanged);
-              _grid = event.stateManager;
-              _grid!.addListener(_onGridChanged);
-              _restoreCursor();
-            },
-            onChanged: _onCellChanged,
-            // 第二次点击同一格才进入编辑(与 Excel 一致)
-            onSelected: _onCellSelected,
-            onRowDoubleTap: (_) {
-              final grid = _grid;
-              if (grid != null && !grid.isEditing) grid.setEditing(true);
-            },
+        child: GridSheet(
+          key: ValueKey('table-grid-$_generation'),
+          columns: _sheetColumns(),
+          rows: _sheetRows(),
+          cellBuilder: _sheetCellBuilder,
+          autofillConfiguration: const GridSheetAutoFillConfiguration(
+            enabled: true,
+            fillHandleSize: 7,
           ),
-        ),
-      ),
-    );
-  }
-
-  /// pluto 的选中/编辑状态变化后重建一次:填充拉杆与公式显示都挂在单元格渲染器上
-  void _onGridChanged() {
-    if (mounted) setState(() {});
-  }
-
-  void _restoreCursor() {
-    final grid = _grid;
-    if (grid == null || grid.rows.isEmpty) return;
-    _clampCursor();
-    if (grid.columns.isEmpty) return;
-    final row = grid.rows[_row.clamp(0, grid.rows.length - 1)];
-    final column = grid.columns[_col.clamp(0, grid.columns.length - 1)];
-    final cell = row.cells[column.field];
-    if (cell == null) return;
-    grid.setCurrentCell(cell, _row.clamp(0, grid.rows.length - 1));
-  }
-
-  // ==================== 单元格渲染:公式结果显示 + 填充拉杆 ====================
-
-  /// 单元格内容由本方法绘制(pluto 的自定义渲染器):
-  /// · 公式单元格显示求值结果,编辑时才显示公式原文(Excel 行为)
-  /// · 当前单元格右下角带填充拉杆,拖拽即可批量填充(Excel 的拖拽填充)
-  Widget _buildSheetCell(PlutoColumnRendererContext ctx, int columnIdx) {
-    final t = SyphonTheme.of(context);
-    final position = ctx.stateManager.cellPositionByCellKey(ctx.cell.key);
-    final rowIdx = position?.rowIdx ?? 0;
-    final colIdx = position?.columnIdx ?? columnIdx;
-    // 公式单元格显示求值结果(编辑时 pluto 显示单元格原文,即公式本身)
-    final display = _formulas.display(rowIdx, colIdx);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Text(
-          display,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 11.5, color: t.text),
+          styleConfiguration: GridSheetStyleConfiguration(
+            gridBackgroundColor: t.bgApp,
+            rowColor: t.bgFloat,
+            headerColor: t.bgRaise,
+            gridBorderColor: t.stroke,
+            rowBorderColor: t.stroke,
+            columnBorderColor: t.stroke,
+            selectionColor: t.accent,
+            cellTextStyle: TextStyle(fontSize: 11.5, color: t.text),
+            headerTextStyle: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: t.text,
+            ),
+          ),
+          onLoaded: (event) {
+            _manager = event.gridManager;
+            _clampCursor();
+          },
+          onCellValueChanged: _onCellChanged,
         ),
       ),
     );

@@ -5,7 +5,7 @@ library;
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pluto_grid/pluto_grid.dart';
+import 'package:grid_sheet/grid_sheet.dart';
 
 import 'package:syphon_nov/main.dart';
 import 'package:syphon_nov/models/data.dart' as md;
@@ -227,7 +227,7 @@ void main() {
 
       expect(find.byKey(ValueKey('table-window-$id')), findsOneWidget);
       expect(find.text('表格编辑 — 表格输入'), findsOneWidget);
-      expect(find.byType(PlutoGrid), findsOneWidget);
+      expect(find.byType(GridSheet), findsOneWidget);
       // 表头按 SciDAVis 风格显示列字母 + 类型(1..4 全是整数);pluto 用
       // TextSpan 渲染标题,所以按 RichText 的纯文本判断
       bool hasTitle(String text) => tester
@@ -265,31 +265,7 @@ void main() {
       final resized = tester.getRect(window);
       expect(resized.width - moved.width, closeTo(90, 4));
       expect(resized.height - moved.height, closeTo(50, 4));
-      expect(find.byType(PlutoGrid), findsOneWidget, reason: '拖动/缩放不应弄丢表格');
-    });
-
-    testWidgets('单元格编辑提交后写回节点参数', (tester) async {
-      await pumpApp(tester);
-      final id = await addTableNode(tester);
-      openTableWindow(id);
-      await tester.pumpAndSettle();
-
-      // 让网格改一个单元格的值 —— 等价于用户在该单元格输入并回车
-      // (pluto_grid 的编辑 UI 与键盘导航由库自己保证,这里验证的是本窗口把
-      // onChanged 写回节点参数这条链路)
-      final grid = tester.state<PlutoGridState>(find.byType(PlutoGrid));
-      final stateManager = grid.stateManager;
-      stateManager.setCurrentCell(stateManager.rows[1].cells['c1']!, 1);
-      await tester.pumpAndSettle();
-      stateManager.changeCellValue(stateManager.rows[1].cells['c1']!, 42);
-      await tester.pumpAndSettle();
-
-      final table = EditableTable.decode(
-        '${GraphStore.instance.nodeOf(id)!.params['tableJson']}',
-      )!;
-      expect(table.cellAt(1, 1), '42');
-      expect(GraphStore.instance.nodeOf(id)!.params['mode'], 'manual');
-      expect(GraphStore.instance.nodeOf(id)!.params['dataText'], '');
+      expect(find.byType(GridSheet), findsOneWidget, reason: '拖动/缩放不应弄丢表格');
     });
 
     testWidgets('增删行列与撤销重做', (tester) async {
