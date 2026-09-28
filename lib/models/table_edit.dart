@@ -9,6 +9,7 @@ library;
 import 'dart:convert';
 
 import 'data.dart';
+import 'formula.dart';
 
 /// 列类型取值 → 表头 {…} 文案
 const Map<String, String> kColumnTypeLabels = {
@@ -315,8 +316,9 @@ class EditableTable {
     return out;
   }
 
-  /// 转为数据列:按列类型解析数值,空单元格 → null
-  List<Column> toColumns() {
+  /// 转为数据列:按列类型解析数值,空单元格 → null。
+  /// [formulas] 非空时以公式的求值结果为准(单元格里仍保存公式原文)。
+  List<Column> toColumns({SheetFormulas? formulas}) {
     return [
       for (var c = 0; c < columnCount; c++)
         Column(
@@ -325,11 +327,20 @@ class EditableTable {
           designation: designations[c],
           values: [
             for (var r = 0; r < rowCount; r++)
-              parseCellValue(cells[r][c], types[c]),
+              formulas != null && formulas.isFormula(r, c)
+                  ? formulas.value(r, c)
+                  : parseCellValue(cells[r][c], types[c]),
           ],
         ),
     ];
   }
+
+  /// 本表的公式求值器(供执行层与编辑窗口共用)
+  SheetFormulas formulas() => SheetFormulas(
+    textAt: cellAt,
+    rowCount: rowCount,
+    columnCount: columnCount,
+  );
 
   Map<String, dynamic> toJson() => {
     'columns': [

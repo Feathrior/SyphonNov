@@ -42,6 +42,7 @@ dependencies:
   xml: ^7.0.1
   pdf: ^3.13.0
   pluto_grid: ^8.1.0
+  expressions: ^0.2.5+3
 
 dev_dependencies:
   flutter_test:

@@ -201,7 +201,11 @@ Map<String, ExecFn> _buildExec() {
       if (mode == 'manual') {
         // 表格编辑窗口保存的结构化表格优先(列类型/标记随表保存)
         final edited = EditableTable.decode(str(ctx.params['tableJson'], ''));
-        if (edited != null) return {'out0': TableData(edited.toColumns())};
+        if (edited != null) {
+          return {
+            'out0': TableData(edited.toColumns(formulas: edited.formulas())),
+          };
+        }
         final text = str(ctx.params['dataText'], '');
         if (text.trim().isEmpty) throw Exception('未提供数据文本');
         final delimiter = str(ctx.params['delimiter'], 'csv') == 'tsv'
